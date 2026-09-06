@@ -274,6 +274,7 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 | 基线上游源 | src\baseline-lib\geometrize\(只读,对拍基准) |
 | 基准器 | src\geobench\(main.cpp 双口径哈希 + --shape-bounds + --dump-final) |
 | 对拍矩阵 | tools\run_ab.ps1(12 用例定义内嵌,含 1 个 EXPECTED_DIFF;-BaselineExe 外部基线) |
+| 补丁一致性校验 | tools\verify_patches.py + patches\regen\(规范全量补丁;G1 重放复现 / G2 归档新鲜度;历史拆分系列经实测不可顺序重放——行尾混杂/缺 hunk 头/同文件重复导出,详见 patches\regen\README) |
 | 单元测试 | src\test\(doctest 双变体,CMake target 在 src\geobench\CMakeLists.txt,ctest 门禁) |
 | 测试图 | src\testdata\images\(gen_test_images.py 可再生) |
 | 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间) |

@@ -74,15 +74,17 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 ```
 ├─ dist\Geometrize-Improved\   # 免安装发布包(双击即用)
 ├─ upstream\                    # 上游只读快照(lib + app + 全部子模块)
-├─ patches\lib\                 # 核心库编号补丁系列(apply 到 fresh clone 即得改进版)
+├─ patches\lib\                 # 核心库编号补丁系列(历史按特性归档,不可顺序重放,见 patches\regen\README)
 ├─ patches\qt\                  # 应用层改动(见下"应用构建")
+├─ patches\regen\               # 规范全量补丁(权威可重放集,verify_patches.py 双门禁管护)
 ├─ src\
 │   ├─ baseline-lib\           # 上游库快照(只读,对拍基准)
 │   ├─ improved-lib\           # 全部补丁后的库(geobench-fast / geotest-fast 链接它)
 │   ├─ geobench\               # CLI 基准器 + CMake 统一构建入口(SHA-256 + FNV 滚动指纹双口径对拍)
-│   ├─ test\                   # doctest 单元测试(双变体链接,41 用例 × 2,见"复现")
+│   ├─ test\                   # doctest 单元测试(双变体链接,105 用例 × fast / 39 × base,见"复现")
 │   └─ improved-app\           # 应用改进工作树(含改进版库 + 全部应用层 patch,可 qmake 构建)
-├─ tools\run_ab.ps1             # A/B 对拍矩阵(12 用例,全 PASS 才允许合入;含 1 个 EXPECTED_DIFF 分叉锁定)
+├─ tools\run_ab.ps1             # A/B 对拍矩阵(24 用例,全 PASS 才允许合入;12 bit-exact + 12 EXPECTED_DIFF 分叉哨兵)
+├─ tools\verify_patches.py      # 补丁↔工作树一致性双门禁(重放复现 + 归档新鲜度,lib 侧失败禁合入)
 ├─ benchmarks\report.md         # 性能报告(分阶段数据 + 大图可行性)
 └─ docs\                        # 等价性论证 / bug 分级 / Qt 评估
 ```
@@ -100,7 +102,10 @@ powershell -ExecutionPolicy Bypass -File tools\run_ab.ps1   # 12/12 PASS(含 1 �
 #   --quality-report N(每 N 步打印相似度分数)
 # run_ab.ps1 可加 -BaselineExe <exe> 对拍任意外部基线,失败自动保存双方 .raw 供 diff
 
-# 单元测试(双变体:geotest-base 链上游快照 / geotest-fast 链改进版,65 用例 × fast / 41 × base)
+# 补丁↔工作树一致性校验(双门禁:G1 重放复现 + G2 归档新鲜度;改库/改应用后必须重跑并重新提交 patches\regen\)
+python tools\verify_patches.py   # lib 门禁失败 exit 1;app 侧报告口径(--skip-app 只跑 lib,--keep-temp 留排查现场)
+
+# 单元测试(双变体:geotest-base 链上游快照 / geotest-fast 链改进版,105 用例 × fast / 39 × base)
 cmake --build build --config Release --target geotest-base geotest-fast
 ctest --test-dir build -C Release --output-on-failure        # 2/2 PASS
 # 共享 golden 用例双变体全绿 = 函数级 bit-exact 门禁;
