@@ -1,0 +1,2 @@
+﻿"case","img","steps","threads","types","verdict","sha_match","fingerprint_match","self_consistent","base_ms","fast_ms","speedup","note"
+"e2e_ellipse_seagull","tree_under_clouds.png","100","8","ellipse","FAIL","False","False","True","13858","4366","3.174","基线全管线"

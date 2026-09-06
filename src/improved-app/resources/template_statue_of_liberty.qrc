@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/statue_of_liberty/manifest.json</file>
+        <file>templates/templates/statue_of_liberty/settings.json</file>
+        <file>templates/templates/statue_of_liberty/statue_of_liberty.jpg</file>
+    </qresource>
+</RCC>

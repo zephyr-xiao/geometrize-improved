@@ -1,0 +1,82 @@
+--- upstream/geometrize-app/geometrize/dialog/imagetaskwindow.cpp	2026-08-27 13:24:25.950820100 +0800
++++ src/improved-app/geometrize/dialog/imagetaskwindow.cpp	2026-08-28 02:52:00.128999500 +0800
+@@ -14,6 +14,7 @@
+ #include <QLocale>
+ #include <QMessageBox>
+ #include <QPixmap>
++#include <QPointer>
+ #include <QRectF>
+ #include <QTimer>
+ 
+@@ -361,10 +362,34 @@
+             //geometrize::dialog::showImageTaskStopConditionMetMessage(q); // Letting the scripts handle notifying the user
+         });
+ 
+-        // Update the graphical image views after shapes are added
++        // Update the graphical image views after shapes are added.
++        // 节流合帧:高速步进时每步一次全图 Bitmap→QPixmap 上传代价高,改为 33ms 合并窗口,
++        // 到期时按"当时"的任务画面渲染一次,视觉上与逐步刷新无差。
++        // 注:Impl 非 QObject,不能用作 singleShot 的 context receiver;以 QPointer 守护窗口
++        // 存活,窗口销毁后待触发合帧自动失效。
+         connect(&m_shapes, &geometrize::task::ShapeCollection::signal_afterAppendShapes, [this](const std::vector<geometrize::ShapeResult>& shapes) {
+-            const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
+-            m_sceneManager.updateScenes(pixmap, shapes);
++            // ShapeResult 成员为 const(不可赋值),只能追加构造:重建整个待渲染列表
++            m_pendingSceneShapes.reserve(m_pendingSceneShapes.size() + shapes.size());
++            for(const auto& shape : shapes) {
++                m_pendingSceneShapes.emplace_back(shape);
++            }
++            if(!m_sceneUpdatePending) {
++                m_sceneUpdatePending = true;
++                QPointer<ImageTaskWindow> guard{q};
++                QTimer::singleShot(33, [this, guard] {
++                    if(guard.isNull()) {
++                        return;
++                    }
++                    m_sceneUpdatePending = false;
++                    if(m_task == nullptr) {
++                        m_pendingSceneShapes.clear();
++                        return;
++                    }
++                    const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
++                    m_sceneManager.updateScenes(pixmap, m_pendingSceneShapes);
++                    m_pendingSceneShapes.clear();
++                });
++            }
+         });
+ 
+         #if defined DATASLINGER_INCLUDED
+@@ -384,6 +409,8 @@
+         // Update the graphical image views when the number of shapes changes (e.g. when cleared)
+         connect(&m_shapes, &geometrize::task::ShapeCollection::signal_sizeChanged, [this](const std::size_t size) {
+             if(size == 0) {
++                // 清空立即刷新并丢弃待合并帧,防残影
++                m_pendingSceneShapes.clear();
+                 m_sceneManager.reset();
+             }
+         });
+@@ -530,8 +557,11 @@
+         // Start the timer used to track how long the image task has been in the running state
+         m_timeRunningTimer.start(static_cast<int>(m_timeRunningTimerResolutionMs));
+ 
+-        // Start the timer used to regularly update the associated image task's script engine (if any)
+-        m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
++        // Start the timer used to regularly update the associated image task's script engine (if any).
++        // 没有任何 timed-update 脚本时不启动轮询,避免空闲时 100ms 空转求值
++        if(ui->scriptsWidget->hasTimedUpdateScripts()) {
++            m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
++        }
+     }
+     ImageTaskWindowImpl& operator=(const ImageTaskWindowImpl&) = delete;
+     ImageTaskWindowImpl(const ImageTaskWindowImpl&) = delete;
+@@ -866,6 +896,10 @@
+ 
+     QTimer m_scriptEngineUpdateTimer; ///> Timer used to call an update function on the script engine of the associated image task
+     float m_scriptEngineUpdateTimerResolution{100.0f}; ///> Resolution of the script update timer in milliseconds
++
++    // 场景刷新节流:33ms 合帧期内累积的新形状,到期一次性渲染(见 signal_afterAppendShapes 连接处)
++    bool m_sceneUpdatePending{false};
++    std::vector<geometrize::ShapeResult> m_pendingSceneShapes;
+ };
+ 
+ ImageTaskWindow::ImageTaskWindow() :

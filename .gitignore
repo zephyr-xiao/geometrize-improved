@@ -1,0 +1,29 @@
+# 构建产物(全部可由源码重建:qmake/CMake + windeployqt)
+build/
+build-asan/
+obj/
+qt_gen/
+debug/
+release/
+Makefile
+Makefile.Debug
+Makefile.Release
+.qmake.stash
+*.pro.user*
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+
+# 发布包与根目录 exe(windeployqt 产物,可重建)
+/Geometrize.exe
+/dist/
+
+# 日志与系统临时文件
+aqtinstall.log
+__pycache__/
+.DS_Store
+Thumbs.db
+
+# 内嵌仓库元数据(改名为 .git-disabled 保留在盘,内容已入库;恢复 VCS 时改回 .git)
+.git-disabled/

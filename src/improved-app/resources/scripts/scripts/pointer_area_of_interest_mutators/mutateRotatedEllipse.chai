@@ -1,0 +1,24 @@
+def mutateRotatedEllipse(shape) {
+    var v = randomInVector(aoiPixels);
+
+    var r = randomInRange(0, 3);
+    switch(r) {
+        case (0) {
+            shape.m_x = v.first;
+            shape.m_y = v.second;
+            break;
+        }
+        case (1) {
+            shape.m_rx = clamp(shape.m_rx + randomInRange(-16, 16), 1, xMax - 1);
+            break;
+        }
+        case (2) {
+            shape.m_ry = clamp(shape.m_ry + randomInRange(-16, 16), 1, yMax - 1);
+            break;
+        }
+        case (3) {
+            shape.m_angle = clamp(shape.m_angle + randomInRange(-16, 16), 0, 360);
+            break;
+        }
+    }
+}

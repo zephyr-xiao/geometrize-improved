@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/beach_sunset/beach_sunset.jpg</file>
+        <file>templates/templates/beach_sunset/manifest.json</file>
+        <file>templates/templates/beach_sunset/settings.json</file>
+    </qresource>
+</RCC>

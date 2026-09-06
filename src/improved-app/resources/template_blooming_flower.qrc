@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/blooming_flower/blooming_flower.jpg</file>
+        <file>templates/templates/blooming_flower/manifest.json</file>
+        <file>templates/templates/blooming_flower/settings.json</file>
+    </qresource>
+</RCC>

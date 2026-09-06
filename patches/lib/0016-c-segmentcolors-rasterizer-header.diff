@@ -1,0 +1,28 @@
+# A2.4 分段颜色(第八批,2026-08-30)—— 补丁定位说明
+# 与 0012-0015 同款口径:baseline 侧 = 纯上游快照,+ 侧 = 改进库累积态(含 0001-0015 全部差异)。
+# 本组补丁覆盖 A2.4 触碰的文件;检阅本批增量请与 0015 交付态对照。
+# 触碰文件:shaperesult.h(ScanlineColor+segments)、core.h/cpp(segmentColors 开关 +
+#   computeSegmentColors + isLineLikeShape + defaultEnergyFunctionSegmented + 接入三元)、
+#   rasterizer.h/cpp(drawLinesSegmented)、model.h/cpp(useEnhanced 第四开关 + 分段落画 +
+#   collectAndDrawWithUndoSegmented + drawShape 三参重载)、svgexporter.h/cpp(色带组导出)、
+#   shapejsonexporter.cpp(可选 segments 数组)。
+# 双轨制:segmentColors 默认关,12 个 bit-exact 门禁不破;开启走增强轨道(run_ab segment_color_* 3 例锁定)。
+# 注意:本补丁含非 ASCII(UTF-8 中文注释);应用时保持 /utf-8。
+
+--- src/baseline-lib/geometrize/geometrize/rasterizer/rasterizer.h	2026-08-27 13:24:27.388152400 +0800
++++ src/improved-lib/geometrize/geometrize/rasterizer/rasterizer.h	2026-08-30 17:32:20.690484200 +0800
+@@ -48,6 +48,14 @@
+ void drawLines(geometrize::Bitmap& image, geometrize::rgba color, const std::vector<geometrize::Scanline>& lines);
+ 
+ /**
++ * @brief drawLinesSegmented A2.4 分段混合:每条扫描线用 colors 中对应颜色混合。
++ * @param image The image to be drawn to.
++ * @param colors Per-scanline colors, must match the lines vector one-to-one.
++ * @param lines The scanlines to draw.
++ */
++void drawLinesSegmented(geometrize::Bitmap& image, const std::vector<geometrize::rgba>& colors, const std::vector<geometrize::Scanline>& lines);
++
++/**
+  * @brief copyLines Copies source pixels to a destination defined by a set of scanlines.
+  * @param destination The destination bitmap to copy the lines to.
+  * @param source The source bitmap to copy the lines from.

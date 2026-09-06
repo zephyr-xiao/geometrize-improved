@@ -1,0 +1,33 @@
+--- src/baseline-lib/geometrize/geometrize/shape/shapemutator.h	2026-08-27 13:24:27.424670900 +0800
++++ src/improved-lib/geometrize/geometrize/shape/shapemutator.h	2026-08-29 12:47:05.803024200 +0800
+@@ -31,17 +31,19 @@
+ void setup(geometrize::RotatedRectangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+ void setup(geometrize::Triangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+ 
+-// Default implementations that mutate each type of shape
+-void mutate(geometrize::Shape& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Circle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Ellipse& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Line& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Polyline& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::QuadraticBezier& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Rectangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::RotatedEllipse& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::RotatedRectangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Triangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
++// Default implementations that mutate each type of shape.
++// stepShift 为步长移位数(0=基准,1=1/2,2=1/4...):随机偏移区间按 2^-stepShift 缩小。
++// 默认参数保证现存调用方(Shape::mutate 绑定、测试)零改动,取值分布与原实现逐字等价。
++void mutate(geometrize::Shape& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Circle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Ellipse& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Line& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Polyline& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::QuadraticBezier& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Rectangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::RotatedEllipse& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::RotatedRectangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Triangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
+ 
+ // Default implementations that translate each type of shape
+ void translate(geometrize::Shape& s, float x, float y);

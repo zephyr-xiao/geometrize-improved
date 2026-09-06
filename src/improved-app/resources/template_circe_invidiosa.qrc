@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/circe_invidiosa/circe_invidiosa.jpg</file>
+        <file>templates/templates/circe_invidiosa/manifest.json</file>
+        <file>templates/templates/circe_invidiosa/settings.json</file>
+    </qresource>
+</RCC>

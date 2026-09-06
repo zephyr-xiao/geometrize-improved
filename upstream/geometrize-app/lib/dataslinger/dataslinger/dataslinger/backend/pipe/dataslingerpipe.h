@@ -1,0 +1,36 @@
+#pragma once
+
+#include <functional>
+#include <memory>
+
+#include "dataslinger/slinger.h"
+
+namespace dataslinger::pipe
+{
+
+/// Pipe backend responsible for sending data
+class DataSlingerPipe
+{
+public:
+    DataSlingerPipe(const std::function<void(const dataslinger::message::Message&)>& onReceive, const std::function<void(const dataslinger::event::Event&)>& onEvent, const dataslinger::connection::ConnectionOptions& info);
+    ~DataSlingerPipe();
+    DataSlingerPipe(const DataSlingerPipe&) = delete;
+    DataSlingerPipe& operator=(const DataSlingerPipe&) = delete;
+    DataSlingerPipe(DataSlingerPipe&&) = default;
+    DataSlingerPipe& operator=(DataSlingerPipe&&) = default;
+
+    /// Call once to set the slinger up
+    void run();
+
+    /// Enqueue a message ready to be sent
+    void send(const dataslinger::message::Message& message);
+
+    /// Poll the slinger to send enqueued messages, process received messages, and handle errors/events that have occurred
+    void poll();
+
+private:
+    class DataSlingerPipeImpl;
+    std::unique_ptr<DataSlingerPipeImpl> d;
+};
+
+}

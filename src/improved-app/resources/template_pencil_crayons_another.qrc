@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/pencil_crayons_another/manifest.json</file>
+        <file>templates/templates/pencil_crayons_another/more_pencil_crayons.jpg</file>
+        <file>templates/templates/pencil_crayons_another/settings.json</file>
+    </qresource>
+</RCC>

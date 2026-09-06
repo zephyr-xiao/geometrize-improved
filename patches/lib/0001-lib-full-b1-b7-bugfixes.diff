@@ -1,0 +1,4699 @@
+diff -ru src/baseline-lib/geometrize/geometrize/bitmap/bitmap.cpp src/improved-lib/geometrize/geometrize/bitmap/bitmap.cpp
+--- src/baseline-lib/geometrize/geometrize/bitmap/bitmap.cpp	2026-08-27 13:24:27.433669300 +0800
++++ src/improved-lib/geometrize/geometrize/bitmap/bitmap.cpp	2026-08-29 09:17:22.596549500 +0800
+@@ -1,65 +1,58 @@
+-#include "bitmap.h"
+-
+-#include <cassert>
+-
+-#include "rgba.h"
+-
+-namespace geometrize
+-{
+-
+-Bitmap::Bitmap(const std::uint32_t width, const std::uint32_t height, const geometrize::rgba color) : m_width{width}, m_height{height}, m_data(width * height * 4U)
+-{
+-    fill(color);
+-}
+-
+-Bitmap::Bitmap(const std::uint32_t width, const std::uint32_t height, const std::vector<std::uint8_t>& data) : m_width{width}, m_height{height}, m_data{data}
+-{
+-    assert((width * height * 4U) == data.size());
+-}
+-
+-std::uint32_t Bitmap::getWidth() const
+-{
+-    return m_width;
+-}
+-
+-std::uint32_t Bitmap::getHeight() const
+-{
+-    return m_height;
+-}
+-
+-std::vector<std::uint8_t> Bitmap::copyData() const
+-{
+-    return m_data;
+-}
+-
+-const std::vector<std::uint8_t>& Bitmap::getDataRef() const
+-{
+-    return m_data;
+-}
+-
+-geometrize::rgba Bitmap::getPixel(const std::uint32_t x, const std::uint32_t y) const
+-{
+-    const std::size_t index{(m_width * y + x) * 4U};
+-    return geometrize::rgba{m_data[index], m_data[index + 1U], m_data[index + 2U], m_data[index + 3U]};
+-}
+-
+-void Bitmap::setPixel(const std::uint32_t x, const std::uint32_t y, const geometrize::rgba color)
+-{
+-    const std::uint32_t index{(m_width * y + x) * 4U};
+-    m_data[index] = color.r;
+-    m_data[index + 1U] = color.g;
+-    m_data[index + 2U] = color.b;
+-    m_data[index + 3U] = color.a;
+-}
+-
+-void Bitmap::fill(const geometrize::rgba color)
+-{
+-    for(std::size_t i = 0; i < m_data.size(); i += 4U) {
+-        m_data[i] = color.r;
+-        m_data[i + 1U] = color.g;
+-        m_data[i + 2U] = color.b;
+-        m_data[i + 3U] = color.a;
+-    }
+-}
+-
+-}
++#include "bitmap.h"
++
++#include <cassert>
++
++#include "rgba.h"
++
++namespace geometrize
++{
++
++// 访问器实现已全部移至 bitmap.h 内联定义,此处仅保留构造函数
++
++Bitmap::Bitmap(const std::uint32_t width, const std::uint32_t height, const geometrize::rgba color) : m_width{width}, m_height{height}, m_data(static_cast<std::size_t>(width) * height * 4U)
++{
++    fill(color);
++}
++
++Bitmap::Bitmap(const std::uint32_t width, const std::uint32_t height, const std::vector<std::uint8_t>& data) : m_width{width}, m_height{height}, m_data{data}
++{
++    assert((static_cast<std::size_t>(width) * height * 4U) == data.size());
++}
++
++geometrize::Bitmap downsampleHalf(const geometrize::Bitmap& image)
++{
++    const std::uint32_t halfWidth{(image.getWidth() + 1U) / 2U};
++    const std::uint32_t halfHeight{(image.getHeight() + 1U) / 2U};
++    const std::vector<std::uint8_t>& src{image.getDataRef()};
++    const std::uint32_t srcWidth{image.getWidth()};
++
++    std::vector<std::uint8_t> dst(static_cast<std::size_t>(halfWidth) * halfHeight * 4U);
++
++    // 2×2 box 求和取整:(sum + count/2) / count,count 由源图奇偶决定,
++    // 全程整数——金字塔轨道不新增浮点参与点,保证同输入逐位可复现
++    for(std::uint32_t y = 0; y < halfHeight; y++) {
++        // 该输出行覆盖的源行数:源行 y*2+1 存在则成对,否则(奇数尾行)单行
++        const std::uint32_t rowPairs{(y * 2U + 1U < image.getHeight()) ? 2U : 1U};
++        for(std::uint32_t x = 0; x < halfWidth; x++) {
++            // 该输出像素覆盖的源列数:源列 x*2+1 存在则成对,否则(奇数尾列)单列
++            const std::uint32_t colPairs{(x * 2U + 1U < image.getWidth()) ? 2U : 1U};
++            const std::size_t dstIndex{(static_cast<std::size_t>(halfWidth) * y + x) * 4U};
++            for(std::uint32_t c = 0; c < 4U; c++) {
++                std::uint32_t sum{0};
++                for(std::uint32_t dy = 0; dy < rowPairs; dy++) {
++                    const std::size_t srcIndex{(static_cast<std::size_t>(srcWidth) * (y * 2U + dy) + x * 2U) * 4U + c};
++                    sum += src[srcIndex];
++                    if(colPairs == 2U) {
++                        sum += src[srcIndex + 4U];
++                    }
++                }
++                const std::uint32_t count{rowPairs * colPairs};
++                dst[dstIndex + c] = static_cast<std::uint8_t>((sum + count / 2U) / count);
++            }
++        }
++    }
++
++    return geometrize::Bitmap(halfWidth, halfHeight, std::move(dst));
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/bitmap/bitmap.h src/improved-lib/geometrize/geometrize/bitmap/bitmap.h
+--- src/baseline-lib/geometrize/geometrize/bitmap/bitmap.h	2026-08-27 13:24:27.433669300 +0800
++++ src/improved-lib/geometrize/geometrize/bitmap/bitmap.h	2026-08-29 09:09:11.240527200 +0800
+@@ -1,6 +1,8 @@
+ #pragma once
+ 
++#include <cassert>
+ #include <cstdint>
++#include <utility>
+ #include <vector>
+ 
+ #include "rgba.h"
+@@ -16,6 +18,11 @@
+ {
+ public:
+     /**
++     * @brief Bitmap Creates an empty 0x0 bitmap (placeholder for lazy initialization).
++     */
++    Bitmap() : m_width{0}, m_height{0} {}
++
++    /**
+      * @brief Bitmap Creates a new bitmap.
+      * @param width The width of the bitmap.
+      * @param height The height of the bitmap.
+@@ -31,6 +38,14 @@
+      */
+     Bitmap(std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& data);
+ 
++    /**
++     * @brief Bitmap move 版本:直接接管外部数据,避免宿主侧加载路径的二次深拷。
++     */
++    Bitmap(std::uint32_t width, std::uint32_t height, std::vector<std::uint8_t>&& data) : m_width{width}, m_height{height}, m_data{std::move(data)}
++    {
++        assert((static_cast<std::size_t>(width) * height * 4U) == m_data.size());
++    }
++
+     ~Bitmap() = default;
+     Bitmap& operator=(const geometrize::Bitmap&) = default;
+     Bitmap(const geometrize::Bitmap&) = default;
+@@ -38,24 +53,46 @@
+     /**
+      * @brief getWidth Gets the width of the bitmap.
+      */
+-    std::uint32_t getWidth() const;
++    std::uint32_t getWidth() const
++    {
++        return m_width;
++    }
+ 
+     /**
+      * @brief getHeight Gets the height of the bitmap.
+      */
+-    std::uint32_t getHeight() const;
++    std::uint32_t getHeight() const
++    {
++        return m_height;
++    }
+ 
+     /**
+      * @brief copyData Gets a copy of the raw bitmap data.
+      * @return The bitmap data.
+      */
+-    std::vector<std::uint8_t> copyData() const;
++    std::vector<std::uint8_t> copyData() const
++    {
++        return m_data;
++    }
+ 
+     /**
+      * @brief getDataRef Gets a reference to the raw bitmap data.
+      * @return The bitmap data.
+      */
+-    const std::vector<std::uint8_t>& getDataRef() const;
++    const std::vector<std::uint8_t>& getDataRef() const
++    {
++        return m_data;
++    }
++
++    /**
++     * @brief getDataRefMut Gets a mutable reference to the raw bitmap data.
++     * 供热循环直接以裸指针读写,替代逐像素 setPixel 的函数调用税。
++     * @return The mutable bitmap data.
++     */
++    std::vector<std::uint8_t>& getDataRefMut()
++    {
++        return m_data;
++    }
+ 
+     /**
+      * @brief getPixel Gets a pixel color value.
+@@ -63,7 +100,12 @@
+      * @param y The y-coordinate of the pixel.
+      * @return The pixel RGBA color value.
+      */
+-    geometrize::rgba getPixel(std::uint32_t x, std::uint32_t y) const;
++    geometrize::rgba getPixel(std::uint32_t x, std::uint32_t y) const
++    {
++        // 64 位索引防大图时 width*y 溢出 int32(常规尺寸下数值与 32 位式恒等)
++        const std::size_t index{(static_cast<std::size_t>(m_width) * y + x) * 4U};
++        return geometrize::rgba{m_data[index], m_data[index + 1U], m_data[index + 2U], m_data[index + 3U]};
++    }
+ 
+     /**
+      * @brief setPixel Sets a pixel color value.
+@@ -71,13 +113,28 @@
+      * @param y The y-coordinate of the pixel.
+      * @param color The pixel RGBA color value.
+      */
+-    void setPixel(std::uint32_t x, std::uint32_t y, geometrize::rgba color);
++    void setPixel(std::uint32_t x, std::uint32_t y, geometrize::rgba color)
++    {
++        const std::size_t index{(static_cast<std::size_t>(m_width) * y + x) * 4U};
++        m_data[index] = color.r;
++        m_data[index + 1U] = color.g;
++        m_data[index + 2U] = color.b;
++        m_data[index + 3U] = color.a;
++    }
+ 
+     /**
+      * @brief fill Fills the bitmap with the given color.
+      * @param color The color to fill the bitmap with.
+      */
+-    void fill(geometrize::rgba color);
++    void fill(geometrize::rgba color)
++    {
++        for(std::size_t i = 0; i < m_data.size(); i += 4U) {
++            m_data[i] = color.r;
++            m_data[i + 1U] = color.g;
++            m_data[i + 2U] = color.b;
++            m_data[i + 3U] = color.a;
++        }
++    }
+ 
+ private:
+     std::uint32_t m_width; ///< The width of the bitmap.
+@@ -85,4 +142,14 @@
+     std::vector<std::uint8_t> m_data; ///< The bitmap data.
+ };
+ 
++/**
++ * @brief downsampleHalf 2×2 box 整数下采样,输出 ceil(宽/2)×ceil(高/2) 的位图。
++ * 金字塔搜索轨道专用:半分辨率目标图/当前图由此生成。纯整数运算(每像素
++ * count∈{4,2,1} 求和后 (sum + count/2) / count 四舍五入),不引入浮点参与点。
++ * 坐标映射约定为 floor:x → x/2,奇数末行/列由 ceil 尺寸兜住,无像素盲区。
++ * @param image The source bitmap.
++ * @return The downsampled bitmap (dimensions ceil(width/2) × ceil(height/2)).
++ */
++geometrize::Bitmap downsampleHalf(const geometrize::Bitmap& image);
++
+ }
+diff -ru src/baseline-lib/geometrize/geometrize/commonutil.cpp src/improved-lib/geometrize/geometrize/commonutil.cpp
+--- src/baseline-lib/geometrize/geometrize/commonutil.cpp	2026-08-27 13:24:27.429671200 +0800
++++ src/improved-lib/geometrize/geometrize/commonutil.cpp	2026-08-27 15:46:33.418851200 +0800
+@@ -63,7 +63,8 @@
+ {
+     const auto& trimmedScanlines = geometrize::trimScanlines(scanlines, 0, 0, image.getWidth(), image.getHeight());
+     for(const geometrize::Scanline& scanline : trimmedScanlines) {
+-        for(int x = scanline.x1; x < scanline.x2; x++) {
++        // 闭区间遍历与库内其余扫描线遍历一致(上游 x < x2 漏检末像素)
++        for(int x = scanline.x1; x <= scanline.x2; x++) {
+             if(image.getPixel(x, scanline.y).a < minAlpha) {
+                 return true;
+             }
+diff -ru src/baseline-lib/geometrize/geometrize/core.cpp src/improved-lib/geometrize/geometrize/core.cpp
+--- src/baseline-lib/geometrize/geometrize/core.cpp	2026-08-27 13:24:27.362629300 +0800
++++ src/improved-lib/geometrize/geometrize/core.cpp	2026-08-29 13:32:06.720249700 +0800
+@@ -18,24 +18,114 @@
+ namespace
+ {
+ 
+-/**
+-* @brief hillClimb Hill climbing optimization algorithm, attempts to minimize energy (the error/difference).
+-* @param state The state to optimize.
+-* @param maxAge The maximum age.
+-* @param target The target bitmap.
+-* @param current The current bitmap.
+-* @param buffer The buffer bitmap.
+-* @param lastScore The last score.
+-* @return The best state found from hillclimbing.
+-*/
+-geometrize::State hillClimb(
++// rasterizeInto 辅助:优先走形状的复用入口,未设置时回退传统路径(保持所有调用方行为一致)
++void rasterizeIntoVector(const geometrize::Shape& shape, std::vector<geometrize::Scanline>& lines)
++{
++    if(shape.rasterizeInto) {
++        shape.rasterizeInto(shape, lines);
++    } else {
++        lines = shape.rasterize(shape);
++    }
++}
++
++// B6 scratch 复用:光栅化结果写入调用方提供的向量,消除爬山循环里每 age 一次的堆分配往返。
++// 能量函数签名吃 const 引用,值内容与新建向量完全一致。
++
++/// hillClimb 的 scratch 版本,行为与上游逐位一致(仅容器复用差异)
++geometrize::State hillClimbScratch(
++        const geometrize::State& state,
++        const std::uint32_t maxAge,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        const double lastScore,
++        const geometrize::core::EnergyFunction& energyFunction,
++        std::vector<geometrize::Scanline>& lines)
++{
++    geometrize::State s(state);
++    geometrize::State bestState(state);
++    double bestEnergy{bestState.m_score};
++
++    std::uint32_t age{0};
++    while(age < maxAge) {
++        const geometrize::State undo{s.mutate()};
++        rasterizeIntoVector(*s.m_shape, lines);
++        s.m_score = energyFunction(lines, s.m_alpha, target, current, buffer, lastScore);
++        const double energy = s.m_score;
++        if(energy >= bestEnergy) {
++            s = undo;
++        } else {
++            bestEnergy = energy;
++            bestState = s;
++            age = -1;
++        }
++        age++;
++    }
++
++    return bestState;
++}
++
++/// bestRandomState 的 scratch 版本,off-by-one 怪癖(RNG 消费 n+2 次)原样保留
++geometrize::State bestRandomStateScratch(
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        const std::uint32_t alpha,
++        const std::uint32_t n,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        const double lastScore,
++        const geometrize::core::EnergyFunction& energyFunction,
++        std::vector<geometrize::Scanline>& lines)
++{
++    // 上游语义:State 构造时恰好 setup 一次(shapeCreator 的建形不含 setup)。
++    // 本函数手动 setup 一次后以裸 State 装配,避免 State 构造函数二次 setup 消耗双倍 RNG。
++    const auto makeState = [alpha](std::shared_ptr<geometrize::Shape> shape) {
++        geometrize::State state;
++        state.m_alpha = alpha;
++        state.m_score = -1.0;
++        state.m_shape = std::move(shape);
++        return state;
++    };
++
++    std::shared_ptr<geometrize::Shape> firstShape{shapeCreator()};
++    firstShape->setup(*firstShape);
++    rasterizeIntoVector(*firstShape, lines);
++    geometrize::State bestState = makeState(firstShape);
++    bestState.m_score = energyFunction(lines, bestState.m_alpha, target, current, buffer, lastScore);
++    double bestEnergy = bestState.m_score;
++
++    for(std::uint32_t i = 0; i <= n; i++) {
++        std::shared_ptr<geometrize::Shape> shape{shapeCreator()};
++        shape->setup(*shape);
++        rasterizeIntoVector(*shape, lines);
++
++        geometrize::State state = makeState(shape);
++        state.m_score = energyFunction(lines, state.m_alpha, target, current, buffer, lastScore);
++        const double energy = state.m_score;
++        if(i == 0 || energy < bestEnergy) {
++            bestEnergy = energy;
++            bestState = state;
++        }
++    }
++
++    return bestState;
++}
++
++/// hillClimb 的金字塔 scratch 变体:评估在半分辨率图上进行,搜索语义与全分辨率版一致。
++/// 与 hillClimbScratch 故意保持复制而非参数化——bit-exact 路径一个字节不动,
++/// 金字塔路径的 scanline 投影开销也不进全分辨率热循环。
++geometrize::State hillClimbScratchPyramid(
+         const geometrize::State& state,
+         const std::uint32_t maxAge,
+         const geometrize::Bitmap& target,
+         const geometrize::Bitmap& current,
+         geometrize::Bitmap& buffer,
+         const double lastScore,
+-        const geometrize::core::EnergyFunction& energyFunction)
++        const geometrize::core::EnergyFunction& energyFunction,
++        std::vector<geometrize::Scanline>& lines,
++        std::vector<geometrize::Scanline>& halfLines,
++        const std::int32_t halfWidth,
++        const std::int32_t halfHeight)
+ {
+     geometrize::State s(state);
+     geometrize::State bestState(state);
+@@ -44,7 +134,9 @@
+     std::uint32_t age{0};
+     while(age < maxAge) {
+         const geometrize::State undo{s.mutate()};
+-        s.m_score = energyFunction(s.m_shape->rasterize(*s.m_shape), s.m_alpha, target, current, buffer, lastScore);
++        rasterizeIntoVector(*s.m_shape, lines);
++        halfLines = geometrize::downscaleScanlines(lines, halfWidth, halfHeight);
++        s.m_score = energyFunction(halfLines, s.m_alpha, target, current, buffer, lastScore);
+         const double energy = s.m_score;
+         if(energy >= bestEnergy) {
+             s = undo;
+@@ -59,18 +151,180 @@
+     return bestState;
+ }
+ 
+-/**
+-* @brief bestRandomState Gets the best state using a random algorithm.
+-* @param shapeCreator A function that will create the shapes that will be chosen from.
+-* @param alpha The opacity of the shape.
+-* @param n The number of states to try.
+-* @param target The target bitmap.
+-* @param current The current bitmap.
+-* @param buffer The buffer bitmap.
+-* @param lastScore The last score.
+-* @return The best random state i.e. the one with the lowest energy.
+-*/
+-geometrize::State bestRandomState(
++/// bestRandomState 的金字塔 scratch 变体:RNG 消费序列与全分辨率版完全一致
++/// (shapeCreator/setup 次序不变,评估分辨率不影响 RNG 流),仅评估换半分辨率。
++geometrize::State bestRandomStateScratchPyramid(
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        const std::uint32_t alpha,
++        const std::uint32_t n,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        const double lastScore,
++        const geometrize::core::EnergyFunction& energyFunction,
++        std::vector<geometrize::Scanline>& lines,
++        std::vector<geometrize::Scanline>& halfLines,
++        const std::int32_t halfWidth,
++        const std::int32_t halfHeight)
++{
++    const auto makeState = [alpha](std::shared_ptr<geometrize::Shape> shape) {
++        geometrize::State state;
++        state.m_alpha = alpha;
++        state.m_score = -1.0;
++        state.m_shape = std::move(shape);
++        return state;
++    };
++
++    std::shared_ptr<geometrize::Shape> firstShape{shapeCreator()};
++    firstShape->setup(*firstShape);
++    rasterizeIntoVector(*firstShape, lines);
++    halfLines = geometrize::downscaleScanlines(lines, halfWidth, halfHeight);
++    geometrize::State bestState = makeState(firstShape);
++    bestState.m_score = energyFunction(halfLines, bestState.m_alpha, target, current, buffer, lastScore);
++    double bestEnergy = bestState.m_score;
++
++    for(std::uint32_t i = 0; i <= n; i++) {
++        std::shared_ptr<geometrize::Shape> shape{shapeCreator()};
++        shape->setup(*shape);
++        rasterizeIntoVector(*shape, lines);
++        halfLines = geometrize::downscaleScanlines(lines, halfWidth, halfHeight);
++
++        geometrize::State state = makeState(shape);
++        state.m_score = energyFunction(halfLines, state.m_alpha, target, current, buffer, lastScore);
++        const double energy = state.m_score;
++        if(i == 0 || energy < bestEnergy) {
++            bestEnergy = energy;
++            bestState = state;
++        }
++    }
++
++    return bestState;
++}
++
++// ---- 增强爬山轨道(A2.2 自适应步长 / A2.3 alpha 搜索;opt-in) ----
++// 设计约束:RNG 消费位置与经典路径完全相同——步长缩放只改 randomRange 的区间不改
++// draw 次数,alpha 搜索不消费 RNG。同 seed 下增强路径与经典路径生成同一候选序列,
++// 输出差异只来自搜索语义本身,这是 opt-in 模式自身确定性的根基。
++
++/// alpha 档位规范化:用户 alpha 恒可达(模型历史围绕它优化,常是胜者),合并去重后升序。
++/// 升序保证平局取低档(确定且偏向保守叠加);入口纯函数,零 RNG。
++std::vector<std::uint8_t> normalizeAlphaTiers(const std::uint8_t alpha, const std::vector<std::uint8_t>& candidates)
++{
++    std::vector<std::uint8_t> tiers{candidates};
++    tiers.push_back(alpha);
++    std::sort(tiers.begin(), tiers.end());
++    tiers.erase(std::unique(tiers.begin(), tiers.end()), tiers.end());
++    return tiers;
++}
++
++/// 增强求值(含 A2.3 alpha 穷举):投影到评估分辨率后,对全部档位求能量取最优。
++/// 胜者档写回 stateAlpha(调用方传入 State::m_alpha 的引用,回流到落画管线)。
++/// 档位评估顺序固定升序、严格 < 取先评估者——同输入同输出。
++/// 返回能量值;evalOut 引用传出本次评估所用的扫描线组(halfWidth>0 时是 halfLines,否则 lines)。
++double evaluateEnhanced(
++        const std::vector<geometrize::Scanline>& lines,
++        std::vector<geometrize::Scanline>& halfLines,
++        const std::vector<geometrize::Scanline>*& evalOut,
++        const geometrize::core::EnergyFunction& energyFunction,
++        std::uint8_t& stateAlpha,
++        const std::uint8_t userAlpha,
++        const std::vector<std::uint8_t>& alphaTiers,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        const double lastScore,
++        const std::int32_t halfWidth,
++        const std::int32_t halfHeight)
++{
++    if(halfWidth > 0) {
++        halfLines = geometrize::downscaleScanlines(lines, halfWidth, halfHeight);
++        evalOut = &halfLines;
++    } else {
++        evalOut = &lines;
++    }
++
++    // 单档退化:与经典路径的求值完全同构(alphaTiers 只含用户 alpha 一个元素时)
++    if(alphaTiers.size() <= 1) {
++        stateAlpha = userAlpha;
++        return energyFunction(*evalOut, stateAlpha, target, current, buffer, lastScore);
++    }
++
++    // 全档穷举:固定升序、严格 < 取先。buffer 每档求值前由 copyLines 重写覆盖区,档位间无串染。
++    double bestEnergy{0.0};
++    std::uint8_t bestAlpha{userAlpha};
++    for(std::size_t i = 0; i < alphaTiers.size(); i++) {
++        const std::uint8_t tier{alphaTiers[i]};
++        const double energy{energyFunction(*evalOut, tier, target, current, buffer, lastScore)};
++        if(i == 0 || energy < bestEnergy) {
++            bestEnergy = energy;
++            bestAlpha = tier;
++        }
++    }
++    stateAlpha = bestAlpha;
++    return bestEnergy;
++}
++
++/// hillClimb 的增强 scratch 变体:步长状态机为每候选独立的局部变量(种子纯函数,
++/// 不跨候选泄漏、不挂到 Shape 上——undo 回滚克隆不到它,无状态污染)。
++geometrize::State hillClimbScratchEnhanced(
++        const geometrize::State& state,
++        const std::uint32_t maxAge,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        const double lastScore,
++        const geometrize::core::EnergyFunction& energyFunction,
++        std::vector<geometrize::Scanline>& lines,
++        std::vector<geometrize::Scanline>& halfLines,
++        const std::int32_t halfWidth,
++        const std::int32_t halfHeight,
++        const geometrize::core::HillClimbEnhancements& enhancements)
++{
++    const std::vector<std::uint8_t> alphaTiers{normalizeAlphaTiers(state.m_alpha, enhancements.alphaCandidates)};
++
++    geometrize::State s(state);
++    geometrize::State bestState(state);
++    double bestEnergy{bestState.m_score};
++
++    std::int32_t stepShift{0};       // 0=基准,1=1/2,2=1/4,3=1/8(上限 maxStepShift,下限 0 不超基准)
++    std::uint32_t acceptRun{0};      // 连续接受计数(降档用)
++
++    std::uint32_t age{0};
++    while(age < maxAge) {
++        const geometrize::State undo{s.mutate(enhancements.adaptiveStep ? stepShift : 0)};
++        rasterizeIntoVector(*s.m_shape, lines);
++        const std::vector<geometrize::Scanline>* eval{nullptr};
++        const double energy{evaluateEnhanced(lines, halfLines, eval, energyFunction, s.m_alpha, state.m_alpha, alphaTiers, target, current, buffer, lastScore, halfWidth, halfHeight)};
++        s.m_score = energy;
++        if(energy >= bestEnergy) {
++            s = undo; // stepShift 不在 Shape 上,回滚不携带步长状态;alpha 由下一候选重写
++            acceptRun = 0;
++        } else {
++            bestEnergy = energy;
++            bestState = s;
++            age = -1;
++            if(enhancements.adaptiveStep) {
++                acceptRun++;
++                if(acceptRun >= enhancements.acceptEscalateRun && stepShift > 0) {
++                    stepShift--;
++                    acceptRun = 0;
++                }
++            }
++        }
++        age++;
++        // age 本身就是"连续拒绝计数"(接受时被 -1 清零):每满 rejectHalveInterval 升一档
++        if(enhancements.adaptiveStep && age > 0 && (age % enhancements.rejectHalveInterval) == 0
++                && stepShift < enhancements.maxStepShift) {
++            stepShift++;
++        }
++    }
++
++    return bestState;
++}
++
++/// bestRandomState 的增强 scratch 变体:候选阶段不爬山,自适应步长只作用于爬山阶段
++/// (与经典版两阶段结构一致)。alpha 搜索逐候选全档穷举。
++geometrize::State bestRandomStateScratchEnhanced(
+         const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
+         const std::uint32_t alpha,
+         const std::uint32_t n,
+@@ -78,15 +332,41 @@
+         const geometrize::Bitmap& current,
+         geometrize::Bitmap& buffer,
+         const double lastScore,
+-        const geometrize::core::EnergyFunction& energyFunction)
++        const geometrize::core::EnergyFunction& energyFunction,
++        std::vector<geometrize::Scanline>& lines,
++        std::vector<geometrize::Scanline>& halfLines,
++        const std::int32_t halfWidth,
++        const std::int32_t halfHeight,
++        const geometrize::core::HillClimbEnhancements& enhancements)
+ {
+-    geometrize::State bestState(shapeCreator(), alpha);
+-    bestState.m_score = energyFunction(bestState.m_shape->rasterize(*bestState.m_shape), bestState.m_alpha, target, current, buffer, lastScore);
++    const std::vector<std::uint8_t> alphaTiers{normalizeAlphaTiers(static_cast<std::uint8_t>(alpha), enhancements.alphaCandidates)};
++
++    const auto makeState = [alpha](std::shared_ptr<geometrize::Shape> shape) {
++        geometrize::State state;
++        state.m_alpha = alpha;
++        state.m_score = -1.0;
++        state.m_shape = std::move(shape);
++        return state;
++    };
++
++    std::shared_ptr<geometrize::Shape> firstShape{shapeCreator()};
++    firstShape->setup(*firstShape);
++    rasterizeIntoVector(*firstShape, lines);
++    geometrize::State bestState = makeState(firstShape);
++    {
++        const std::vector<geometrize::Scanline>* eval{nullptr};
++        bestState.m_score = evaluateEnhanced(lines, halfLines, eval, energyFunction, bestState.m_alpha, static_cast<std::uint8_t>(alpha), alphaTiers, target, current, buffer, lastScore, halfWidth, halfHeight);
++    }
+     double bestEnergy = bestState.m_score;
+ 
+     for(std::uint32_t i = 0; i <= n; i++) {
+-        geometrize::State state(shapeCreator(), alpha);
+-        state.m_score = energyFunction(state.m_shape->rasterize(*state.m_shape), state.m_alpha, target, current, buffer, lastScore);
++        std::shared_ptr<geometrize::Shape> shape{shapeCreator()};
++        shape->setup(*shape);
++        rasterizeIntoVector(*shape, lines);
++
++        geometrize::State state = makeState(shape);
++        const std::vector<geometrize::Scanline>* eval{nullptr};
++        state.m_score = evaluateEnhanced(lines, halfLines, eval, energyFunction, state.m_alpha, static_cast<std::uint8_t>(alpha), alphaTiers, target, current, buffer, lastScore, halfWidth, halfHeight);
+         const double energy = state.m_score;
+         if(i == 0 || energy < bestEnergy) {
+             bestEnergy = energy;
+@@ -134,27 +414,33 @@
+     std::int64_t totalGreen{0};
+     std::int64_t totalBlue{0};
+     std::int64_t count{0};
++    // 注意:此浮点表达式是全管线唯一的浮点参与点,float 截断行为是可观察输出的一部分,必须原样保留
+     const std::int32_t a{static_cast<std::int32_t>(257.0f * 255.0f / static_cast<float>(alpha))};
+ 
++    if(target.getDataRef().empty() || current.getDataRef().empty()) {
++        return geometrize::rgba{0, 0, 0, 0};
++    }
++
++    // 裸指针行游标:混色公式与求和次序逐像素保持
++    const auto* targetData = target.getDataRef().data();
++    const auto* currentData = current.getDataRef().data();
++    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
++
+     // For each scanline
+     for(const geometrize::Scanline& line : lines) {
+-        const std::int32_t y{line.y};
++        if(line.y < 0) {
++            continue;
++        }
++        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
++        const auto* cRow = currentData + rowStride * static_cast<std::size_t>(line.y);
++
+         for(std::int32_t x = line.x1; x <= line.x2; x++) {
+-            // Get the overlapping target and current colors
+-            const geometrize::rgba t(target.getPixel(x, y));
+-            const geometrize::rgba c(current.getPixel(x, y));
+-
+-            const std::int32_t tr{t.r};
+-            const std::int32_t tg{t.g};
+-            const std::int32_t tb{t.b};
+-            const std::int32_t cr{c.r};
+-            const std::int32_t cg{c.g};
+-            const std::int32_t cb{c.b};
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
+ 
+             // Mix the red, green and blue components, blending by the given alpha value
+-            totalRed += static_cast<std::int64_t>((tr - cr) * a + cr * 257);
+-            totalGreen += static_cast<std::int64_t>((tg - cg) * a + cg * 257);
+-            totalBlue += static_cast<std::int64_t>((tb - cb) * a + cb * 257);
++            totalRed += static_cast<std::int64_t>((tRow[offset] - cRow[offset]) * a + cRow[offset] * 257);
++            totalGreen += static_cast<std::int64_t>((tRow[offset + 1U] - cRow[offset + 1U]) * a + cRow[offset + 1U] * 257);
++            totalBlue += static_cast<std::int64_t>((tRow[offset + 2U] - cRow[offset + 2U]) * a + cRow[offset + 2U] * 257);
+             count++;
+         }
+     }
+@@ -180,15 +466,21 @@
+     const std::size_t height{first.getHeight()};
+     std::uint64_t total{0};
+ 
++    // 裸指针行游标:公式与累加次序逐像素保持
++    const auto* firstData = first.getDataRef().data();
++    const auto* secondData = second.getDataRef().data();
++    const std::size_t rowStride{width * 4U};
++
+     for(std::size_t y = 0; y < height; y++) {
++        const auto* fRow = firstData + rowStride * y;
++        const auto* sRow = secondData + rowStride * y;
+         for(std::size_t x = 0; x < width; x++) {
+-            const geometrize::rgba f(first.getPixel(x, y));
+-            const geometrize::rgba s(second.getPixel(x, y));
++            const std::size_t offset{x * 4U};
+ 
+-            const std::int32_t dr = {static_cast<std::int32_t>(f.r) - static_cast<std::int32_t>(s.r)};
+-            const std::int32_t dg = {static_cast<std::int32_t>(f.g) - static_cast<std::int32_t>(s.g)};
+-            const std::int32_t db = {static_cast<std::int32_t>(f.b) - static_cast<std::int32_t>(s.b)};
+-            const std::int32_t da = {static_cast<std::int32_t>(f.a) - static_cast<std::int32_t>(s.a)};
++            const std::int32_t dr = {static_cast<std::int32_t>(fRow[offset]) - static_cast<std::int32_t>(sRow[offset])};
++            const std::int32_t dg = {static_cast<std::int32_t>(fRow[offset + 1U]) - static_cast<std::int32_t>(sRow[offset + 1U])};
++            const std::int32_t db = {static_cast<std::int32_t>(fRow[offset + 2U]) - static_cast<std::int32_t>(sRow[offset + 2U])};
++            const std::int32_t da = {static_cast<std::int32_t>(fRow[offset + 3U]) - static_cast<std::int32_t>(sRow[offset + 3U])};
+             total += (dr * dr + dg * dg + db * db + da * da);
+         }
+     }
+@@ -202,24 +494,39 @@
+         const double score,
+         const std::vector<Scanline>& lines)
+ {
+-    const std::uint64_t rgbaCount{target.getWidth() * target.getHeight() * 4U};
+-    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * rgbaCount)};
++    const std::uint64_t rgbaCount{static_cast<std::uint64_t>(target.getWidth()) * target.getHeight() * 4U};
++    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * static_cast<double>(rgbaCount))};
++
++    if(target.getDataRef().empty() || before.getDataRef().empty() || after.getDataRef().empty()) {
++        return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
++    }
++
++    // 裸指针行游标:差分公式与累加次序逐像素保持
++    const auto* targetData = target.getDataRef().data();
++    const auto* beforeData = before.getDataRef().data();
++    const auto* afterData = after.getDataRef().data();
++    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
++
+     for(const geometrize::Scanline& line : lines) {
+-        const std::int32_t y{line.y};
++        if(line.y < 0) {
++            continue;
++        }
++        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
++        const auto* bRow = beforeData + rowStride * static_cast<std::size_t>(line.y);
++        const auto* aRow = afterData + rowStride * static_cast<std::size_t>(line.y);
++
+         for(std::int32_t x = line.x1; x <= line.x2; x++) {
+-            const geometrize::rgba t(target.getPixel(x, y));
+-            const geometrize::rgba b(before.getPixel(x, y));
+-            const geometrize::rgba a(after.getPixel(x, y));
+-
+-            const std::int32_t dtbr{static_cast<std::int32_t>(t.r) - static_cast<std::int32_t>(b.r)};
+-            const std::int32_t dtbg{static_cast<std::int32_t>(t.g) - static_cast<std::int32_t>(b.g)};
+-            const std::int32_t dtbb{static_cast<std::int32_t>(t.b) - static_cast<std::int32_t>(b.b)};
+-            const std::int32_t dtba{static_cast<std::int32_t>(t.a) - static_cast<std::int32_t>(b.a)};
+-
+-            const std::int32_t dtar{static_cast<std::int32_t>(t.r) - static_cast<std::int32_t>(a.r)};
+-            const std::int32_t dtag{static_cast<std::int32_t>(t.g) - static_cast<std::int32_t>(a.g)};
+-            const std::int32_t dtab{static_cast<std::int32_t>(t.b) - static_cast<std::int32_t>(a.b)};
+-            const std::int32_t dtaa{static_cast<std::int32_t>(t.a) - static_cast<std::int32_t>(a.a)};
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
++
++            const std::int32_t dtbr{static_cast<std::int32_t>(tRow[offset]) - static_cast<std::int32_t>(bRow[offset])};
++            const std::int32_t dtbg{static_cast<std::int32_t>(tRow[offset + 1U]) - static_cast<std::int32_t>(bRow[offset + 1U])};
++            const std::int32_t dtbb{static_cast<std::int32_t>(tRow[offset + 2U]) - static_cast<std::int32_t>(bRow[offset + 2U])};
++            const std::int32_t dtba{static_cast<std::int32_t>(tRow[offset + 3U]) - static_cast<std::int32_t>(bRow[offset + 3U])};
++
++            const std::int32_t dtar{static_cast<std::int32_t>(tRow[offset]) - static_cast<std::int32_t>(aRow[offset])};
++            const std::int32_t dtag{static_cast<std::int32_t>(tRow[offset + 1U]) - static_cast<std::int32_t>(aRow[offset + 1U])};
++            const std::int32_t dtab{static_cast<std::int32_t>(tRow[offset + 2U]) - static_cast<std::int32_t>(aRow[offset + 2U])};
++            const std::int32_t dtaa{static_cast<std::int32_t>(tRow[offset + 3U]) - static_cast<std::int32_t>(aRow[offset + 3U])};
+ 
+             total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
+             total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
+@@ -243,8 +550,52 @@
+ {
+     const EnergyFunction& e = customEnergyFunction ? customEnergyFunction : geometrize::core::defaultEnergyFunction;
+ 
+-    const geometrize::State state{bestRandomState(shapeCreator, alpha, n, target, current, buffer, lastScore, e)};
+-    return ::hillClimb(state, age, target, current, buffer, lastScore, e);
++    // B6:lines 向量跨 bestRandomState/hillClimb 全程复用,值行为与上游逐位一致
++    std::vector<geometrize::Scanline> lines;
++    const geometrize::State state{bestRandomStateScratch(shapeCreator, alpha, n, target, current, buffer, lastScore, e, lines)};
++    return ::hillClimbScratch(state, age, target, current, buffer, lastScore, e, lines);
++}
++
++geometrize::State bestHillClimbStatePyramid(
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        const std::uint32_t alpha,
++        const std::uint32_t n,
++        const std::uint32_t age,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        const double lastScore,
++        const std::int32_t halfWidth,
++        const std::int32_t halfHeight)
++{
++    // 金字塔轨道只走内置能量函数:自定义回调的语义按全分辨率位图约定,不接受半分辨率图
++    const EnergyFunction& e = geometrize::core::defaultEnergyFunction;
++
++    std::vector<geometrize::Scanline> lines;
++    std::vector<geometrize::Scanline> halfLines;
++    const geometrize::State state{bestRandomStateScratchPyramid(shapeCreator, alpha, n, target, current, buffer, lastScore, e, lines, halfLines, halfWidth, halfHeight)};
++    return ::hillClimbScratchPyramid(state, age, target, current, buffer, lastScore, e, lines, halfLines, halfWidth, halfHeight);
++}
++
++geometrize::State bestHillClimbStateEnhanced(
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        const std::uint32_t alpha,
++        const std::uint32_t n,
++        const std::uint32_t age,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        const double lastScore,
++        const std::int32_t halfWidth,
++        const std::int32_t halfHeight,
++        const HillClimbEnhancements& enhancements)
++{
++    const EnergyFunction& e = geometrize::core::defaultEnergyFunction;
++
++    std::vector<geometrize::Scanline> lines;
++    std::vector<geometrize::Scanline> halfLines;
++    const geometrize::State state{bestRandomStateScratchEnhanced(shapeCreator, alpha, n, target, current, buffer, lastScore, e, lines, halfLines, halfWidth, halfHeight, enhancements)};
++    return ::hillClimbScratchEnhanced(state, age, target, current, buffer, lastScore, e, lines, halfLines, halfWidth, halfHeight, enhancements);
+ }
+ 
+ }
+diff -ru src/baseline-lib/geometrize/geometrize/core.h src/improved-lib/geometrize/geometrize/core.h
+--- src/baseline-lib/geometrize/geometrize/core.h	2026-08-27 13:24:27.364137300 +0800
++++ src/improved-lib/geometrize/geometrize/core.h	2026-08-29 13:00:03.690694700 +0800
+@@ -21,6 +21,23 @@
+ {
+ 
+ /**
++ * @brief HillClimbEnhancements 增强爬山搜索的开关参数集(算法增强轨道,opt-in)。
++ * 任一开关打开时 Model 调度走 bestHillClimbStateEnhanced;全关时零参与,经典/金字塔路径不受影响。
++ */
++struct HillClimbEnhancements
++{
++    // ---- A2.2 自适应变异步长(1/5 成功法则) ----
++    bool adaptiveStep{false}; ///< 是否启用自适应步长:连续拒绝升档(步长减半)、连续接受降档(回升)。
++    std::uint32_t rejectHalveInterval{8}; ///< 连续拒绝多少次升一档(maxAge=100 预算下 8 连拒是强平台信号)。
++    std::uint32_t acceptEscalateRun{4}; ///< 连续接受多少次降一档(回升步长,密集改善期才触发)。
++    std::int32_t maxStepShift{3}; ///< 步长移位上限:0=基准,1=1/2,2=1/4,3=1/8;再深变异近似恒等,浪费评估。
++
++    // ---- A2.3 逐形状最优 alpha 微搜索 ----
++    bool alphaSearch{false}; ///< 是否启用逐候选 alpha 档位搜索:每候选对全部档位求能量取最优,胜者档回写 State::m_alpha。
++    std::vector<std::uint8_t> alphaCandidates{64U, 128U, 192U}; ///< alpha 候选档位;使用前与用户 alpha 合并规范化。
++};
++
++/**
+  * The core functions for Geometrize.
+  * @author Sam Twidale (https://samcodes.co.uk/)
+  */
+@@ -124,6 +141,55 @@
+         double lastScore,
+         const EnergyFunction& customEnergyFunction = nullptr);
+ 
++/**
++ * @brief bestHillClimbStatePyramid 金字塔搜索变体:候选生成与爬山评估在半分辨率图上进行,
++ * 形状坐标始终留在全分辨率空间(scanline 层投影,不做几何缩放)。RNG 消费序列与
++ * bestHillClimbState 完全一致,两模式可逐候选对照。搜索启发式轨道,输出与全分辨率
++ * 搜索不必相同属预期;最终接受判定由调用方在全分辨率进行。
++ * @param shapeCreator A function that will create the shapes that will be chosen from.
++ * @param alpha The opacity of the shape.
++ * @param n The number of random states to generate.
++ * @param age The number of hillclimbing steps.
++ * @param target The half-resolution target bitmap.
++ * @param current The half-resolution current bitmap.
++ * @param buffer The half-resolution buffer bitmap (private to the calling task).
++ * @param lastScore The last full-resolution score (all in-step evaluations share this constant baseline).
++ * @param halfWidth The width of the half-resolution bitmaps.
++ * @param halfHeight The height of the half-resolution bitmaps.
++ * @return The best state acquired from hill climbing i.e. the one with the lowest energy.
++ */
++geometrize::State bestHillClimbStatePyramid(
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        std::uint32_t alpha,
++        std::uint32_t n,
++        std::uint32_t age,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        double lastScore,
++        std::int32_t halfWidth,
++        std::int32_t halfHeight);
++
++/**
++ * @brief bestHillClimbStateEnhanced 增强爬山变体:按 HillClimbEnhancements 开关组合启用
++ * 自适应步长 / alpha 档位搜索;halfWidth>0 时评估在半分辨率图上进行(与金字塔轨道同语义)。
++ * RNG 消费位置与经典路径完全相同(步长缩放只改区间不改 draw 次数,alpha 搜索零 RNG),
++ * 同 seed 同输入同输出,且可与经典路径逐候选对照。算法增强轨道,输出与经典路径不同属预期。
++ * @param halfWidth 0 表示全分辨率评估;>0 时 target/current/buffer 均须为对应半分辨率位图。
++ */
++geometrize::State bestHillClimbStateEnhanced(
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        std::uint32_t alpha,
++        std::uint32_t n,
++        std::uint32_t age,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        double lastScore,
++        std::int32_t halfWidth,
++        std::int32_t halfHeight,
++        const HillClimbEnhancements& enhancements);
++
+ }
+ 
+ }
+diff -ru src/baseline-lib/geometrize/geometrize/model.cpp src/improved-lib/geometrize/geometrize/model.cpp
+--- src/baseline-lib/geometrize/geometrize/model.cpp	2026-08-27 13:24:27.384948900 +0800
++++ src/improved-lib/geometrize/geometrize/model.cpp	2026-08-29 13:32:31.377328600 +0800
+@@ -1,287 +1,594 @@
+-#include "model.h"
+-
+-#include <algorithm>
+-#include <atomic>
+-#include <cassert>
+-#include <cstdint>
+-#include <exception>
+-#include <functional>
+-#include <future>
+-#include <iostream>
+-#include <memory>
+-#include <vector>
+-
+-#include "bitmap/bitmap.h"
+-#include "commonutil.h"
+-#include "core.h"
+-#include "rasterizer/rasterizer.h"
+-#include "shape/shape.h"
+-#include "shaperesult.h"
+-#include "shape/shapetypes.h"
+-
+-namespace
+-{
+-
+-bool defaultAddShapePrecondition(
+-    const double lastScore,
+-    const double newScore,
+-    const geometrize::Shape&,
+-    const std::vector<geometrize::Scanline>&,
+-    const geometrize::rgba&,
+-    const geometrize::Bitmap&,
+-    const geometrize::Bitmap&,
+-    const geometrize::Bitmap&)
+-{
+-    return newScore < lastScore; // Adds the shape if the score improved (that is: the difference decreased)
+-}
+-
+-}
+-
+-namespace geometrize
+-{
+-
+-class Model::ModelImpl
+-{
+-public:
+-    ModelImpl(const geometrize::Bitmap& target) :
+-        m_target{target},
+-        m_current{target.getWidth(), target.getHeight(), geometrize::commonutil::getAverageImageColor(m_target)},
+-        m_lastScore{geometrize::core::differenceFull(m_target, m_current)},
+-        m_baseRandomSeed{0U},
+-        m_randomSeedOffset{0U}
+-    {}
+-
+-    ModelImpl(const geometrize::Bitmap& target, const geometrize::Bitmap& initial) :
+-        m_target{target},
+-        m_current{initial},
+-        m_lastScore{geometrize::core::differenceFull(m_target, m_current)},
+-        m_baseRandomSeed{0U},
+-        m_randomSeedOffset{0U}
+-    {
+-        assert(m_target.getWidth() == m_current.getWidth());
+-        assert(m_target.getHeight() == m_current.getHeight());
+-    }
+-
+-    ~ModelImpl() = default;
+-    ModelImpl& operator=(const ModelImpl&) = delete;
+-    ModelImpl(const ModelImpl&) = delete;
+-
+-    void reset(const geometrize::rgba backgroundColor)
+-    {
+-        m_current.fill(backgroundColor);
+-        m_lastScore = geometrize::core::differenceFull(m_target, m_current);
+-    }
+-
+-    std::int32_t getWidth() const
+-    {
+-        return m_target.getWidth();
+-    }
+-
+-    std::int32_t getHeight() const
+-    {
+-        return m_target.getHeight();
+-    }
+-
+-    std::vector<geometrize::State> getHillClimbState(
+-            const std::function<std::shared_ptr<geometrize::Shape>(void)> shapeCreator,
+-            const std::uint8_t alpha,
+-            const std::uint32_t shapeCount,
+-            const std::uint32_t maxShapeMutations,
+-            std::uint32_t maxThreads,
+-            const geometrize::core::EnergyFunction energyFunction)
+-    {
+-        // Ensure that the maximum number of threads is a sane value
+-        if(maxThreads == 0) {
+-            maxThreads = std::thread::hardware_concurrency();
+-            if(maxThreads == 0) {
+-                assert(0 && "Failed to get the number of concurrent threads supported by the implementation");
+-                maxThreads = defaultMaxThreads;
+-            }
+-        }
+-
+-        std::vector<std::future<geometrize::State>> futures{maxThreads};
+-        for(std::uint32_t i = 0; i < futures.size(); i++) {
+-            std::future<geometrize::State> handle{std::async(std::launch::async, [&](const std::uint32_t seed, const double lastScore) {
+-                // Ensure that the results of the random generation are the same between tasks with identical settings
+-                // The RNG is thread-local and std::async may use a thread pool (which is why this is necessary)
+-                // Note this implementation requires maxThreads to be the same between tasks for each task to produce the same results.
+-                geometrize::commonutil::seedRandomGenerator(seed);
+-
+-                geometrize::Bitmap buffer{m_current};
+-                return core::bestHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, energyFunction);
+-            }, m_baseRandomSeed + m_randomSeedOffset++, m_lastScore)};
+-            futures[i] = std::move(handle);
+-        }
+-
+-        std::vector<geometrize::State> states;
+-
+-        for(auto& f : futures) {
+-            try {
+-                states.emplace_back(f.get());
+-            } catch(std::exception& e) {
+-                assert(0 && "Encountered exception when getting hill climb state");
+-                std::cout << e.what() << std::endl;
+-                throw e;
+-            } catch (...) {
+-                assert(0 && "Encountered exception when getting hill climb state");
+-                throw;
+-            }
+-        }
+-        return states;
+-    }
+-
+-    std::vector<geometrize::ShapeResult> step(
+-            const std::function<std::shared_ptr<geometrize::Shape>(void)> shapeCreator,
+-            const std::uint8_t alpha,
+-            const std::uint32_t shapeCount,
+-            const std::uint32_t maxShapeMutations,
+-            const std::uint32_t maxThreads,
+-            const geometrize::core::EnergyFunction& energyFunction,
+-            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition)
+-    {
+-        std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction)};
+-        if(states.empty()) {
+-            assert(0 && "Failed to get a hill climb state");
+-            return {};
+-        }
+-
+-        std::vector<geometrize::State>::iterator it = std::min_element(states.begin(), states.end(), [](const geometrize::State& a, const geometrize::State& b) {
+-            return a.m_score < b.m_score;
+-        });
+-
+-        // Draw the shape onto the image
+-        const std::shared_ptr<geometrize::Shape> shape = it->m_shape;
+-        const std::vector<geometrize::Scanline> lines{shape->rasterize(*shape)};
+-        const geometrize::rgba color(geometrize::core::computeColor(m_target, m_current, lines, alpha));
+-        const geometrize::Bitmap before{m_current};
+-        geometrize::drawLines(m_current, color, lines);
+-
+-        // Check for an improvement - if not, roll back and return no result
+-        const double newScore = geometrize::core::differencePartial(m_target, before, m_current, m_lastScore, lines);
+-        const auto& addShapeCondition = addShapePrecondition ? addShapePrecondition : defaultAddShapePrecondition;
+-        if(!addShapeCondition(m_lastScore, newScore, *shape, lines, color, before, m_current, m_target)) {
+-            m_current = before;
+-            return {};
+-        }
+-
+-        // Improvement - set new baseline and return the new shape
+-        m_lastScore = newScore;
+-        const geometrize::ShapeResult result{m_lastScore, color, shape};
+-        return { result };
+-    }
+-
+-    geometrize::ShapeResult drawShape(
+-            const std::shared_ptr<geometrize::Shape> shape,
+-            const geometrize::rgba color)
+-    {
+-        const std::vector<geometrize::Scanline> lines{shape->rasterize(*shape)};
+-        const geometrize::Bitmap before{m_current};
+-        geometrize::drawLines(m_current, color, lines);
+-
+-        m_lastScore = geometrize::core::differencePartial(m_target, before, m_current, m_lastScore, lines);
+-
+-        const geometrize::ShapeResult result{m_lastScore, color, shape};
+-        return result;
+-    }
+-
+-    geometrize::Bitmap& getTarget()
+-    {
+-        return m_target;
+-    }
+-
+-    geometrize::Bitmap& getCurrent()
+-    {
+-        return m_current;
+-    }
+-
+-    const geometrize::Bitmap& getTarget() const
+-    {
+-        return m_target;
+-    }
+-
+-    const geometrize::Bitmap& getCurrent() const
+-    {
+-        return m_current;
+-    }
+-
+-    void setSeed(const std::uint32_t seed)
+-    {
+-        m_baseRandomSeed = seed;
+-    }
+-
+-private:
+-    geometrize::Bitmap m_target; ///< The target bitmap, the bitmap we aim to approximate.
+-    geometrize::Bitmap m_current; ///< The current bitmap.
+-    double m_lastScore; ///< Score derived from calculating the difference between bitmaps.
+-    const static std::uint32_t defaultMaxThreads{4};
+-    std::atomic<std::uint32_t> m_baseRandomSeed; ///< The base value used for seeding the random number generator (the one the user has control over).
+-    std::atomic<std::uint32_t> m_randomSeedOffset; ///< Seed used for random number generation. Note: incremented by each std::async call used for model stepping.
+-};
+-
+-Model::Model(const geometrize::Bitmap& target) : d{std::unique_ptr<Model::ModelImpl>(new Model::ModelImpl(target))}
+-{}
+-
+-Model::Model(const geometrize::Bitmap& target, const geometrize::Bitmap& initial) : d{std::unique_ptr<Model::ModelImpl>(new Model::ModelImpl(target, initial))}
+-{}
+-
+-Model::~Model()
+-{}
+-
+-void Model::reset(const geometrize::rgba backgroundColor)
+-{
+-    d->reset(backgroundColor);
+-}
+-
+-std::int32_t Model::getWidth() const
+-{
+-    return d->getWidth();
+-}
+-
+-std::int32_t Model::getHeight() const
+-{
+-    return d->getHeight();
+-}
+-
+-std::vector<geometrize::ShapeResult> Model::step(
+-        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
+-        const std::uint8_t alpha,
+-        const std::uint32_t shapeCount,
+-        const std::uint32_t maxShapeMutations,
+-        const std::uint32_t maxThreads,
+-        const geometrize::core::EnergyFunction& energyFunction,
+-        const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition)
+-{
+-    return d->step(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, addShapePrecondition);
+-}
+-
+-geometrize::ShapeResult Model::drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color)
+-{
+-    return d->drawShape(shape, color);
+-}
+-
+-geometrize::Bitmap& Model::getTarget()
+-{
+-    return d->getTarget();
+-}
+-
+-geometrize::Bitmap& Model::getCurrent()
+-{
+-    return d->getCurrent();
+-}
+-
+-const geometrize::Bitmap& Model::getTarget() const
+-{
+-    return d->getTarget();
+-}
+-
+-const geometrize::Bitmap& Model::getCurrent() const
+-{
+-    return d->getCurrent();
+-}
+-
+-void Model::setSeed(const std::uint32_t seed)
+-{
+-    d->setSeed(seed);
+-}
+-
+-}
++#include "model.h"
++
++#include <algorithm>
++#include <atomic>
++#include <cassert>
++#include <condition_variable>
++#include <cstdint>
++#include <exception>
++#include <functional>
++#include <future>
++#include <iostream>
++#include <memory>
++#include <mutex>
++#include <queue>
++#include <stdexcept>
++#include <thread>
++#include <vector>
++
++#include "bitmap/bitmap.h"
++#include "commonutil.h"
++#include "core.h"
++#include "rasterizer/rasterizer.h"
++#include "rasterizer/scanline.h"
++#include "shape/shape.h"
++#include "shaperesult.h"
++#include "shape/shapetypes.h"
++
++namespace
++{
++
++bool defaultAddShapePrecondition(
++    const double lastScore,
++    const double newScore,
++    const geometrize::Shape&,
++    const std::vector<geometrize::Scanline>&,
++    const geometrize::rgba&,
++    const geometrize::Bitmap&,
++    const geometrize::Bitmap&,
++    const geometrize::Bitmap&)
++{
++    return newScore < lastScore; // Adds the shape if the score improved (that is: the difference decreased)
++}
++
++// ---- 补丁式快照助手(B5):用覆盖区原值缓冲替代整图拷贝,消除 step 每步两次全图 memcpy ----
++
++/// 单趟遍历扫描线:先把每个像素的 4 字节原值追加进 undo 缓冲,再按 drawLines 的原公式就地混合。
++/// undo 布局 = 按 lines 顺序、行内 x 升序连续存放 4 字节 RGBA —— 与差分/回滚的遍历序天然对齐。
++void collectAndDrawWithUndo(geometrize::Bitmap& image, const geometrize::rgba color, const std::vector<geometrize::Scanline>& lines, std::vector<std::uint8_t>& undo)
++{
++    // Convert the non-premultiplied color to alpha-premultiplied 16-bits per channel RGBA
++    // In other words, scale the rgb color components by the alpha component
++    std::uint32_t sr{color.r};
++    sr |= sr << 8;
++    sr *= color.a;
++    sr /= UINT8_MAX;
++    std::uint32_t sg{color.g};
++    sg |= sg << 8;
++    sg *= color.a;
++    sg /= UINT8_MAX;
++    std::uint32_t sb{color.b};
++    sb |= sb << 8;
++    sb *= color.a;
++    sb /= UINT8_MAX;
++    std::uint32_t sa{color.a};
++    sa |= sa << 8;
++
++    const std::uint32_t m{UINT16_MAX};
++    const std::uint32_t aa{(m - sa) * 257U};
++
++    std::size_t totalBytes{0};
++    for(const geometrize::Scanline& line : lines) {
++        if(line.x2 >= line.x1) {
++            totalBytes += static_cast<std::size_t>(line.x2 - line.x1 + 1) * 4U;
++        }
++    }
++    undo.clear();
++    undo.reserve(totalBytes);
++
++    auto* data = image.getDataRefMut().data();
++    const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
++
++    for(const geometrize::Scanline& line : lines) {
++        if(line.y < 0) {
++            continue;
++        }
++        auto* row = data + rowStride * static_cast<std::size_t>(line.y);
++
++        for(std::int32_t x = line.x1; x <= line.x2; x++) {
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
++
++            // 先存原值(differencePartial 需要的 before 值、拒绝时回滚都取自这里)
++            undo.push_back(row[offset]);
++            undo.push_back(row[offset + 1U]);
++            undo.push_back(row[offset + 2U]);
++            undo.push_back(row[offset + 3U]);
++
++            // 再按 drawLines 原公式混合
++            row[offset]     = static_cast<std::uint8_t>(((row[offset] * aa + sr * m) / m) >> 8);
++            row[offset + 1U] = static_cast<std::uint8_t>(((row[offset + 1U] * aa + sg * m) / m) >> 8);
++            row[offset + 2U] = static_cast<std::uint8_t>(((row[offset + 2U] * aa + sb * m) / m) >> 8);
++            row[offset + 3U] = static_cast<std::uint8_t>(((row[offset + 3U] * aa + sa * m) / m) >> 8);
++        }
++    }
++}
++
++/// 差分快路径:before 取自 undo 快照(k 游标与 lines 遍历同序推进)、after 读已写盘的现值。
++/// 公式与 differencePartial 一致,仅 before 数据源换成补丁缓冲。
++double differencePartialPatched(
++        const geometrize::Bitmap& target,
++        const std::uint8_t* afterData,
++        const std::vector<std::uint8_t>& undo,
++        const double score,
++        const std::vector<geometrize::Scanline>& lines)
++{
++    const std::uint64_t rgbaCount{static_cast<std::uint64_t>(target.getWidth()) * target.getHeight() * 4U};
++    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * static_cast<double>(rgbaCount))};
++
++    const auto* targetData = target.getDataRef().data();
++    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
++
++    std::size_t k{0}; // undo 游标:按遍历序单调推进,无需坐标映射
++    for(const geometrize::Scanline& line : lines) {
++        if(line.y < 0) {
++            continue;
++        }
++        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
++        const auto* aRow = afterData + rowStride * static_cast<std::size_t>(line.y);
++
++        for(std::int32_t x = line.x1; x <= line.x2; x++) {
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
++
++            const std::int32_t dtbr{static_cast<std::int32_t>(tRow[offset]) - static_cast<std::int32_t>(undo[k])};
++            const std::int32_t dtbg{static_cast<std::int32_t>(tRow[offset + 1U]) - static_cast<std::int32_t>(undo[k + 1U])};
++            const std::int32_t dtbb{static_cast<std::int32_t>(tRow[offset + 2U]) - static_cast<std::int32_t>(undo[k + 2U])};
++            const std::int32_t dtba{static_cast<std::int32_t>(tRow[offset + 3U]) - static_cast<std::int32_t>(undo[k + 3U])};
++
++            const std::int32_t dtar{static_cast<std::int32_t>(tRow[offset]) - static_cast<std::int32_t>(aRow[offset])};
++            const std::int32_t dtag{static_cast<std::int32_t>(tRow[offset + 1U]) - static_cast<std::int32_t>(aRow[offset + 1U])};
++            const std::int32_t dtab{static_cast<std::int32_t>(tRow[offset + 2U]) - static_cast<std::int32_t>(aRow[offset + 2U])};
++            const std::int32_t dtaa{static_cast<std::int32_t>(tRow[offset + 3U]) - static_cast<std::int32_t>(aRow[offset + 3U])};
++
++            total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
++            total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
++
++            k += 4U;
++        }
++    }
++
++    return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
++}
++
++/// 拒绝回滚:把 undo 快照写回覆盖区。各扫描线区间互不相交,单趟写回即恢复,m_lastScore 不动。
++void restoreFromUndo(geometrize::Bitmap& image, const std::vector<geometrize::Scanline>& lines, const std::vector<std::uint8_t>& undo)
++{
++    auto* data = image.getDataRefMut().data();
++    const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
++
++    std::size_t k{0};
++    for(const geometrize::Scanline& line : lines) {
++        if(line.y < 0) {
++            continue;
++        }
++        auto* row = data + rowStride * static_cast<std::size_t>(line.y);
++
++        for(std::int32_t x = line.x1; x <= line.x2; x++) {
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
++            row[offset]     = undo[k];
++            row[offset + 1U] = undo[k + 1U];
++            row[offset + 2U] = undo[k + 2U];
++            row[offset + 3U] = undo[k + 3U];
++            k += 4U;
++        }
++    }
++}
++
++// ---- 持久线程池(B7):替代每步 std::async 新建线程 ----
++// 语义保证:任务按 submit 序落位到结果下标(调用侧负责);dtor 等待全部任务结束。
++class AsyncTaskPool
++{
++public:
++    explicit AsyncTaskPool(std::uint32_t threadCount) : m_stop{false}
++    {
++        m_workers.reserve(threadCount);
++        for(std::uint32_t i = 0; i < threadCount; i++) {
++            m_workers.emplace_back([this] { workerLoop(); });
++        }
++    }
++
++    ~AsyncTaskPool()
++    {
++        {
++            std::unique_lock<std::mutex> lock(m_mutex);
++            m_stop = true;
++        }
++        m_condition.notify_all();
++        for(auto& worker : m_workers) {
++            worker.join();
++        }
++    }
++
++    AsyncTaskPool& operator=(const AsyncTaskPool&) = delete;
++    AsyncTaskPool(const AsyncTaskPool&) = delete;
++
++    std::future<void> submit(std::function<void()> task)
++    {
++        // std::function 要求可拷贝,promise 用 shared_ptr 满足该约束
++        auto promise = std::make_shared<std::promise<void>>();
++        auto future = promise->get_future();
++        {
++            std::unique_lock<std::mutex> lock(m_mutex);
++            if(m_stop) {
++                throw std::runtime_error("submit on stopped AsyncTaskPool");
++            }
++            m_tasks.emplace([task{std::move(task)}, promise{std::move(promise)}]() mutable {
++                try {
++                    task();
++                } catch(...) {
++                    promise->set_exception(std::current_exception());
++                    return;
++                }
++                promise->set_value();
++            });
++        }
++        m_condition.notify_one();
++        return future;
++    }
++
++private:
++    void workerLoop()
++    {
++        for(;;) {
++            std::function<void()> task;
++            {
++                std::unique_lock<std::mutex> lock(m_mutex);
++                m_condition.wait(lock, [this] { return m_stop || !m_tasks.empty(); });
++                if(m_stop && m_tasks.empty()) {
++                    return;
++                }
++                task = std::move(m_tasks.front());
++                m_tasks.pop();
++            }
++            task();
++        }
++    }
++
++    std::vector<std::thread> m_workers;
++    std::queue<std::function<void()>> m_tasks;
++    std::mutex m_mutex;
++    std::condition_variable m_condition;
++    bool m_stop;
++};
++
++}
++
++namespace geometrize
++{
++
++class Model::ModelImpl
++{
++public:
++    ModelImpl(const geometrize::Bitmap& target) :
++        m_target{target},
++        m_current{target.getWidth(), target.getHeight(), geometrize::commonutil::getAverageImageColor(m_target)},
++        m_lastScore{geometrize::core::differenceFull(m_target, m_current)},
++        m_halfDirty{false},
++        m_baseRandomSeed{0U},
++        m_randomSeedOffset{0U}
++    {}
++
++    ModelImpl(const geometrize::Bitmap& target, const geometrize::Bitmap& initial) :
++        m_target{target},
++        m_current{initial},
++        m_lastScore{geometrize::core::differenceFull(m_target, m_current)},
++        m_halfDirty{false},
++        m_baseRandomSeed{0U},
++        m_randomSeedOffset{0U}
++    {
++        assert(m_target.getWidth() == m_current.getWidth());
++        assert(m_target.getHeight() == m_current.getHeight());
++    }
++
++    ~ModelImpl()
++    {
++        // 显式先释放线程池:池的析构 join 全部 worker,须在其他成员仍存活时进行
++        m_threadPool.reset();
++    }
++    ModelImpl& operator=(const ModelImpl&) = delete;
++    ModelImpl(const ModelImpl&) = delete;
++
++    void reset(const geometrize::rgba backgroundColor)
++    {
++        m_current.fill(backgroundColor);
++        m_lastScore = geometrize::core::differenceFull(m_target, m_current);
++        markHalfDirty();
++    }
++
++    std::int32_t getWidth() const
++    {
++        return m_target.getWidth();
++    }
++
++    std::int32_t getHeight() const
++    {
++        return m_target.getHeight();
++    }
++
++    std::vector<geometrize::State> getHillClimbState(
++            const std::function<std::shared_ptr<geometrize::Shape>(void)> shapeCreator,
++            const std::uint8_t alpha,
++            const std::uint32_t shapeCount,
++            const std::uint32_t maxShapeMutations,
++            std::uint32_t maxThreads,
++            const geometrize::core::EnergyFunction energyFunction,
++            const bool pyramidSearch,
++            const geometrize::core::HillClimbEnhancements& enhancements)
++    {
++        // Ensure that the maximum number of threads is a sane value
++        if(maxThreads == 0) {
++            maxThreads = std::thread::hardware_concurrency();
++            if(maxThreads == 0) {
++                assert(0 && "Failed to get the number of concurrent threads supported by the implementation");
++                maxThreads = defaultMaxThreads;
++            }
++        }
++
++        std::vector<geometrize::State> states{maxThreads};
++
++        // 持久线程池(B7):结果按下标归位保 submit 序收割 —— 上游用 std::async 时
++        // 种子在主线程 submit 循环内 base+offset++ 递增、futures 按 submit 序 get,
++        // 结果向量是 submit 序的函数而与线程完成顺序无关,本实现保持该性质逐位不变。
++        {
++            // 调度三分支:增强轨道(自适应步长/alpha 搜索)优先,金字塔次之,经典路径兜底。
++            // 金字塔+增强可组合(halfWidth>0 走半分辨率评估);金字塔+自定义能量函数仍静默忽略。
++            const bool useEnhanced{enhancements.adaptiveStep || enhancements.alphaSearch};
++            const bool usePyramid{!useEnhanced && pyramidSearch && !energyFunction};
++            if((useEnhanced && pyramidSearch) || usePyramid) {
++                refreshHalfResolution();
++            }
++            const bool evalHalf{(useEnhanced && pyramidSearch) || usePyramid};
++            const geometrize::Bitmap* halfTarget{evalHalf ? &m_targetHalf : nullptr};
++            const geometrize::Bitmap* halfCurrent{evalHalf ? &m_currentHalf : nullptr};
++
++            std::vector<std::future<void>> futures(maxThreads);
++            for(std::uint32_t i = 0; i < maxThreads; i++) {
++                const std::uint32_t seed = m_baseRandomSeed + m_randomSeedOffset++;
++                futures[i] = m_threadPool->submit([this, &states, i, seed, lastScore = m_lastScore, shapeCreator, alpha, shapeCount, maxShapeMutations, energyFunction, useEnhanced, usePyramid, halfTarget, halfCurrent, enhancements]() {
++                    // 每个任务体第一件事必须播种:pooled 线程残留的 thread_local RNG 状态由此永不被读到
++                    geometrize::commonutil::seedRandomGenerator(seed);
++
++                    if(useEnhanced) {
++                        // 增强轨道:halfWidth==0 全分辨率;>0 半分辨率(金字塔可组合)
++                        const bool half{usePyramid || (halfTarget != nullptr)};
++                        const std::int32_t halfWidth{half ? static_cast<std::int32_t>(halfTarget->getWidth()) : 0};
++                        const std::int32_t halfHeight{half ? static_cast<std::int32_t>(halfTarget->getHeight()) : 0};
++                        if(half) {
++                            geometrize::Bitmap halfBuffer{*halfCurrent};
++                            states[i] = core::bestHillClimbStateEnhanced(shapeCreator, alpha, shapeCount, maxShapeMutations, *halfTarget, *halfCurrent, halfBuffer, lastScore, halfWidth, halfHeight, enhancements);
++                        } else {
++                            geometrize::Bitmap buffer{m_current};
++                            states[i] = core::bestHillClimbStateEnhanced(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, 0, 0, enhancements);
++                        }
++                    } else if(usePyramid) {
++                        geometrize::Bitmap halfBuffer{*halfCurrent};
++                        states[i] = core::bestHillClimbStatePyramid(shapeCreator, alpha, shapeCount, maxShapeMutations, *halfTarget, *halfCurrent, halfBuffer, lastScore, static_cast<std::int32_t>(halfTarget->getWidth()), static_cast<std::int32_t>(halfTarget->getHeight()));
++                    } else {
++                        geometrize::Bitmap buffer{m_current};
++                        states[i] = core::bestHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, energyFunction);
++                    }
++                });
++            }
++            for(auto& f : futures) {
++                try {
++                    f.get();
++                } catch(std::exception& e) {
++                    assert(0 && "Encountered exception when getting hill climb state");
++                    std::cout << e.what() << std::endl;
++                    throw; // 按原异常对象重抛(上游按值 throw e 会切掉多态)
++                } catch (...) {
++                    assert(0 && "Encountered exception when getting hill climb state");
++                    throw;
++                }
++            }
++        }
++
++        return states;
++    }
++
++    std::vector<geometrize::ShapeResult> step(
++            const std::function<std::shared_ptr<geometrize::Shape>(void)> shapeCreator,
++            const std::uint8_t alpha,
++            const std::uint32_t shapeCount,
++            const std::uint32_t maxShapeMutations,
++            const std::uint32_t maxThreads,
++            const geometrize::core::EnergyFunction& energyFunction,
++            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition,
++            const bool pyramidSearch,
++            const geometrize::core::HillClimbEnhancements& enhancements)
++    {
++        std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, pyramidSearch, enhancements)};
++        if(states.empty()) {
++            assert(0 && "Failed to get a hill climb state");
++            return {};
++        }
++
++        std::vector<geometrize::State>::iterator it = std::min_element(states.begin(), states.end(), [](const geometrize::State& a, const geometrize::State& b) {
++            return a.m_score < b.m_score;
++        });
++
++        // Draw the shape onto the image
++        const std::shared_ptr<geometrize::Shape> shape = it->m_shape;
++        std::vector<geometrize::Scanline> lines;
++        if(shape->rasterizeInto) {
++            shape->rasterizeInto(*shape, lines);
++        } else {
++            lines = shape->rasterize(*shape);
++        }
++        // 胜者 alpha 回写通道:经典路径下 m_alpha 恒等于外部 alpha(不变量,单测锁定),
++        // alpha 搜索开启时 m_alpha 是逐形状搜出的胜者档,自然传导到落画/SVG/指纹
++        const geometrize::rgba color(geometrize::core::computeColor(m_target, m_current, lines, it->m_alpha));
++
++        const auto& addShapeCondition = addShapePrecondition ? addShapePrecondition : defaultAddShapePrecondition;
++        double newScore = 0.0;
++
++        if(!energyFunction && !addShapePrecondition) {
++            // 快路径:纯 C++ default 前条件忽略全部 Bitmap 参数,用补丁式快照替代整图拷贝
++            // (自定义回调可能读取任意全图像素,必须保留整图语义)
++            std::vector<std::uint8_t> undo;
++            collectAndDrawWithUndo(m_current, color, lines, undo);
++            newScore = differencePartialPatched(m_target, m_current.getDataRef().data(), undo, m_lastScore, lines);
++            if(!addShapeCondition(m_lastScore, newScore, *shape, lines, color, m_current, m_current, m_target)) {
++                restoreFromUndo(m_current, lines, undo);
++                return {};
++            }
++        } else {
++            // 整图路径:与上游逐行一致(before 全图拷贝 + 拒绝时回滚)
++            const geometrize::Bitmap before{m_current};
++            geometrize::drawLines(m_current, color, lines);
++
++            newScore = geometrize::core::differencePartial(m_target, before, m_current, m_lastScore, lines);
++            if(!addShapeCondition(m_lastScore, newScore, *shape, lines, color, before, m_current, m_target)) {
++                m_current = before;
++                return {};
++            }
++        }
++
++        // Improvement - set new baseline and return the new shape
++        m_lastScore = newScore;
++        markHalfDirty(); // m_current 已变化,半分辨率缓存失真待重建
++        const geometrize::ShapeResult result{m_lastScore, color, shape};
++        return { result };
++    }
++
++    geometrize::ShapeResult drawShape(
++            const std::shared_ptr<geometrize::Shape> shape,
++            const geometrize::rgba color)
++    {
++        const std::vector<geometrize::Scanline> lines{shape->rasterize(*shape)};
++        const geometrize::Bitmap before{m_current};
++        geometrize::drawLines(m_current, color, lines);
++
++        m_lastScore = geometrize::core::differencePartial(m_target, before, m_current, m_lastScore, lines);
++        markHalfDirty();
++
++        const geometrize::ShapeResult result{m_lastScore, color, shape};
++        return result;
++    }
++
++    geometrize::Bitmap& getTarget()
++    {
++        return m_target;
++    }
++
++    geometrize::Bitmap& getCurrent()
++    {
++        return m_current;
++    }
++
++    const geometrize::Bitmap& getTarget() const
++    {
++        return m_target;
++    }
++
++    const geometrize::Bitmap& getCurrent() const
++    {
++        return m_current;
++    }
++
++    void setSeed(const std::uint32_t seed)
++    {
++        m_baseRandomSeed = seed;
++    }
++
++private:
++    // ---- 金字塔搜索轨道:半分辨率位图懒维护 ----
++    // targetHalf 不变只建一次;currentHalf 由脏标记驱动,在下一次 getHillClimbState
++    // 提交前重建(futures 全 join 后主线程才动 m_current,重建与任务并发天然错开)。
++    // 奇数尺寸:ceil(W/2)×ceil(H/2),floor 坐标映射 x → x/2 下恰好覆盖无盲区。
++    void refreshHalfResolution()
++    {
++        if(m_targetHalf.getWidth() == 0) {
++            m_targetHalf = geometrize::downsampleHalf(m_target);
++        }
++        if(m_halfDirty || m_currentHalf.getWidth() == 0) {
++            m_currentHalf = geometrize::downsampleHalf(m_current);
++            m_halfDirty = false;
++        }
++    }
++
++    void markHalfDirty()
++    {
++        m_halfDirty = true;
++    }
++
++    geometrize::Bitmap m_target; ///< The target bitmap, the bitmap we aim to approximate.
++    geometrize::Bitmap m_current; ///< The current bitmap.
++    double m_lastScore; ///< Score derived from calculating the difference between bitmaps.
++    geometrize::Bitmap m_targetHalf; ///< 金字塔轨道:半分辨率目标图(懒建一次)。
++    geometrize::Bitmap m_currentHalf; ///< 金字塔轨道:半分辨率当前图(脏标记驱动懒重建)。
++    bool m_halfDirty; ///< m_current 是否已领先于 m_currentHalf。
++    const static std::uint32_t defaultMaxThreads{4};
++    std::unique_ptr<AsyncTaskPool> m_threadPool{std::make_unique<AsyncTaskPool>(std::max(1U, std::thread::hardware_concurrency()))}; ///< 持久线程池:容量取硬件并发数,过订阅场景由调用侧 futures 数量决定
++    std::atomic<std::uint32_t> m_baseRandomSeed; ///< The base value used for seeding the random number generator (the one the user has control over).
++    std::atomic<std::uint32_t> m_randomSeedOffset; ///< Seed used for random number generation. Note: incremented by each std::async call used for model stepping.
++};
++
++Model::Model(const geometrize::Bitmap& target) : d{std::unique_ptr<Model::ModelImpl>(new Model::ModelImpl(target))}
++{}
++
++Model::Model(const geometrize::Bitmap& target, const geometrize::Bitmap& initial) : d{std::unique_ptr<Model::ModelImpl>(new Model::ModelImpl(target, initial))}
++{}
++
++Model::~Model()
++{}
++
++void Model::reset(const geometrize::rgba backgroundColor)
++{
++    d->reset(backgroundColor);
++}
++
++std::int32_t Model::getWidth() const
++{
++    return d->getWidth();
++}
++
++std::int32_t Model::getHeight() const
++{
++    return d->getHeight();
++}
++
++std::vector<geometrize::ShapeResult> Model::step(
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        const std::uint8_t alpha,
++        const std::uint32_t shapeCount,
++        const std::uint32_t maxShapeMutations,
++        const std::uint32_t maxThreads,
++        const geometrize::core::EnergyFunction& energyFunction,
++        const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition,
++        const bool pyramidSearch,
++        const geometrize::core::HillClimbEnhancements& enhancements)
++{
++    return d->step(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, addShapePrecondition, pyramidSearch, enhancements);
++}
++
++geometrize::ShapeResult Model::drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color)
++{
++    return d->drawShape(shape, color);
++}
++
++geometrize::Bitmap& Model::getTarget()
++{
++    return d->getTarget();
++}
++
++geometrize::Bitmap& Model::getCurrent()
++{
++    return d->getCurrent();
++}
++
++const geometrize::Bitmap& Model::getTarget() const
++{
++    return d->getTarget();
++}
++
++const geometrize::Bitmap& Model::getCurrent() const
++{
++    return d->getCurrent();
++}
++
++void Model::setSeed(const std::uint32_t seed)
++{
++    d->setSeed(seed);
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/model.h src/improved-lib/geometrize/geometrize/model.h
+--- src/baseline-lib/geometrize/geometrize/model.h	2026-08-27 13:24:27.430671800 +0800
++++ src/improved-lib/geometrize/geometrize/model.h	2026-08-29 13:01:48.614911400 +0800
+@@ -91,6 +91,9 @@
+      * @param maxThreads The maximum number of threads to use during this step.
+      * @param energyFunction An optional function to calculate the energy (if unspecified a default implementation is used).
+      * @param addShapePrecondition An optional function to determine whether to accept a shape (if unspecified a default implementation is used).
++     * @param pyramidSearch 金字塔搜索开关:hill-climb 评估在半分辨率图上进行(算法增强轨道,默认关)。
++     * 自定义 energyFunction 存在时被忽略(自定义回调语义按全分辨率位图约定)。
++     * @param enhancements 增强爬山开关集(自适应步长/alpha 搜索;默认全关,经典路径零参与)。
+      * @return A vector containing data about the shapes added to the model in this step. This may be empty if no shape that improved the image could be found.
+      */
+     std::vector<geometrize::ShapeResult> step(
+@@ -100,7 +103,9 @@
+             std::uint32_t maxShapeMutations,
+             std::uint32_t maxThreads,
+             const geometrize::core::EnergyFunction& energyFunction = nullptr,
+-            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition = nullptr);
++            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition = nullptr,
++            bool pyramidSearch = false,
++            const geometrize::core::HillClimbEnhancements& enhancements = {});
+ 
+     /**
+      * @brief drawShape Draws a shape on the model. Typically used when to manually add a shape to the image (e.g. when setting an initial background).
+diff -ru src/baseline-lib/geometrize/geometrize/rasterizer/rasterizer.cpp src/improved-lib/geometrize/geometrize/rasterizer/rasterizer.cpp
+--- src/baseline-lib/geometrize/geometrize/rasterizer/rasterizer.cpp	2026-08-27 13:24:27.393651900 +0800
++++ src/improved-lib/geometrize/geometrize/rasterizer/rasterizer.cpp	2026-08-27 15:40:54.601177000 +0800
+@@ -5,6 +5,7 @@
+ #include <cmath>
+ #include <cstdint>
+ #include <cstdlib>
++#include <cstring>
+ #include <map>
+ #include <set>
+ #include <utility>
+@@ -93,29 +94,56 @@
+     const std::uint32_t m{UINT16_MAX};
+     const std::uint32_t aa{(m - sa) * 257U};
+ 
++    if(image.getDataRef().empty()) {
++        return;
++    }
++
++    // 裸指针行游标:公式与舍入次序逐像素保持,仅消除逐像素函数调用与索引重算
++    auto* data = image.getDataRefMut().data();
++    const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
++
+     for(const geometrize::Scanline& line : lines) {
+-        const std::int32_t y{line.y};
++        if(line.y < 0) {
++            continue;
++        }
++        auto* row = data + rowStride * static_cast<std::size_t>(line.y);
+ 
+         for(std::int32_t x = line.x1; x <= line.x2; x++) {
+-            const geometrize::rgba d(image.getPixel(x, y));
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
+ 
+-            const std::uint8_t r{static_cast<std::uint8_t>(((d.r * aa + sr * m) / m) >> 8)};
+-            const std::uint8_t g{static_cast<std::uint8_t>(((d.g * aa + sg * m) / m) >> 8)};
+-            const std::uint8_t b{static_cast<std::uint8_t>(((d.b * aa + sb * m) / m) >> 8)};
+-            const std::uint8_t a{static_cast<std::uint8_t>(((d.a * aa + sa * m) / m) >> 8)};
+-
+-            image.setPixel(x, y, geometrize::rgba{r, g, b, a});
++            const std::uint32_t d_r{row[offset]};
++            const std::uint32_t d_g{row[offset + 1U]};
++            const std::uint32_t d_b{row[offset + 2U]};
++            const std::uint32_t d_a{row[offset + 3U]};
++
++            row[offset]     = static_cast<std::uint8_t>(((d_r * aa + sr * m) / m) >> 8);
++            row[offset + 1U] = static_cast<std::uint8_t>(((d_g * aa + sg * m) / m) >> 8);
++            row[offset + 2U] = static_cast<std::uint8_t>(((d_b * aa + sb * m) / m) >> 8);
++            row[offset + 3U] = static_cast<std::uint8_t>(((d_a * aa + sa * m) / m) >> 8);
+         }
+     }
+ }
+ 
+ void copyLines(geometrize::Bitmap& destination, const geometrize::Bitmap& source, const std::vector<geometrize::Scanline>& lines)
+ {
++    if(destination.getDataRef().empty() || source.getDataRef().empty()) {
++        return;
++    }
++
++    // 行段连续区直接 memcpy;数据布局行宽恰为 width*4 无 padding,行内 [x1,x2] 对应连续 4*(x2-x1+1) 字节。
++    auto* dstData = destination.getDataRefMut().data();
++    const auto* srcData = source.getDataRef().data();
++    const std::size_t rowStride{static_cast<std::size_t>(destination.getWidth()) * 4U};
++
+     for(const geometrize::Scanline& line : lines) {
+-        const std::int32_t y{line.y};
+-        for(std::int32_t x = line.x1; x <= line.x2; x++) {
+-            destination.setPixel(x, y, source.getPixel(x, y));
++        if(line.y < 0 || line.x1 > line.x2) {
++            continue;
+         }
++        const std::size_t startOffset{static_cast<std::size_t>(line.x1) * 4U};
++        const std::size_t lengthBytes{static_cast<std::size_t>(line.x2 - line.x1 + 1) * 4U};
++        std::memcpy(dstData + rowStride * static_cast<std::size_t>(line.y) + startOffset,
++                    srcData + rowStride * static_cast<std::size_t>(line.y) + startOffset,
++                    lengthBytes);
+     }
+ }
+ 
+@@ -176,16 +204,24 @@
+         edges.insert(edges.end(), p1p2.begin(), p1p2.end());
+     }
+ 
+-    // Convert outline to scanlines
+-    std::map<std::int32_t, std::set<std::int32_t>> yToXs;
+-    for(std::pair<std::int32_t, std::int32_t> point : edges) {
+-        yToXs[point.second].insert(point.first);
+-    }
+-    for(const auto& it : yToXs) {
+-        const geometrize::Scanline scanline(it.first,
+-        *(std::min_element(it.second.begin(), it.second.end())),
+-        *(std::max_element(it.second.begin(), it.second.end())));
+-        lines.push_back(scanline);
++    // Convert outline to scanlines.
++    // 扁平化等价实现:map<,set<>> 的键升序 ↔ sort 后 y 升序;set 的 min/max ↔ 每 y 组内线性扫描。
++    // sort 是值排序且 (y,x) 全序确定,输出 Scanline 序列与原 map/set 路径一一对应。
++    std::sort(edges.begin(), edges.end(), [](const std::pair<std::int32_t, std::int32_t>& lhs, const std::pair<std::int32_t, std::int32_t>& rhs) {
++        return (lhs.second < rhs.second) || (lhs.second == rhs.second && lhs.first < rhs.first);
++    });
++
++    for(std::size_t i = 0; i < edges.size();) {
++        const std::int32_t y{edges[i].second};
++        const std::int32_t xMinOfRow{edges[i].first};
++        std::size_t j{i};
++        std::int32_t xMaxOfRow{xMinOfRow};
++        while(j < edges.size() && edges[j].second == y) {
++            xMaxOfRow = edges[j].first; // 同 y 组内 x 升序,末个即 max
++            j++;
++        }
++        lines.push_back(geometrize::Scanline(y, xMinOfRow, xMaxOfRow));
++        i = j;
+     }
+ 
+     return lines;
+@@ -223,20 +259,29 @@
+     std::vector<geometrize::Scanline> lines;
+ 
+     const std::int32_t r{static_cast<std::int32_t>(s.m_r)};
++
++    // O(r) 化:整数 x 满足 x²+y²≤r² ⟺ |x| ≤ ⌊√(r²−y²)⌋,
++    // 判定域关于 x=0 对称故原实现的 front/back 恒为 [−half,+half],与逐点扫描取端点等价。
++    // y∈[−r,r] 时 r²−y²≥0 恒成立(含 r=0 的单像素行),与原版"空行分支不可达"的行为一致。
++    const std::int64_t rr2{static_cast<std::int64_t>(r) * r};
+     for(std::int32_t y = -r; y <= r; y++) {
+-        std::vector<std::int32_t> xScan;
+-        for(std::int32_t x = -r; x <= r; x++) {
+-            if(x * x + y * y <= r * r) {
+-                xScan.push_back(x);
+-            }
++        const std::int64_t rem{rr2 - static_cast<std::int64_t>(y) * y};
++        if(rem < 0) {
++            continue; // 不可达分支,防御性保留以对齐原版空行语义
+         }
+-
+-        if(!xScan.empty()) {
+-            const std::int32_t fy{static_cast<std::int32_t>(s.m_y) + y};
+-            const std::int32_t x1{commonutil::clamp(static_cast<std::int32_t>(s.m_x) + xScan.front(), xMin, xMax - 1)};
+-            const std::int32_t x2{commonutil::clamp(static_cast<std::int32_t>(s.m_x) + xScan.back(), xMin, xMax - 1)};
+-            lines.push_back(geometrize::Scanline(fy, x1, x2));
++        // isqrt:浮点初值 + 校正循环,uint64 全程防溢出且精确
++        std::int64_t half{static_cast<std::int64_t>(std::sqrt(static_cast<double>(rem)))};
++        while(half > 0 && half * half > rem) {
++            half--;
+         }
++        while((half + 1) * (half + 1) <= rem) {
++            half++;
++        }
++
++        const std::int32_t fy{static_cast<std::int32_t>(s.m_y) + y};
++        const std::int32_t x1{commonutil::clamp(static_cast<std::int32_t>(s.m_x) - static_cast<std::int32_t>(half), xMin, xMax - 1)};
++        const std::int32_t x2{commonutil::clamp(static_cast<std::int32_t>(s.m_x) + static_cast<std::int32_t>(half), xMin, xMax - 1)};
++        lines.push_back(geometrize::Scanline(fy, x1, x2));
+     }
+ 
+     return geometrize::trimScanlines(lines, xMin, yMin, xMax, yMax);
+@@ -266,7 +311,7 @@
+             x2 = xMax - 1;
+         }
+ 
+-        if (y1 >= xMin && y1 < yMax) {
++        if (y1 >= yMin && y1 < yMax) {
+             lines.push_back(Scanline(y1, x1, x2));
+         }
+         if (y2 >= yMin && y2 < yMax && dy > 0) {
+diff -ru src/baseline-lib/geometrize/geometrize/rasterizer/scanline.cpp src/improved-lib/geometrize/geometrize/rasterizer/scanline.cpp
+--- src/baseline-lib/geometrize/geometrize/rasterizer/scanline.cpp	2026-08-27 13:24:27.390146900 +0800
++++ src/improved-lib/geometrize/geometrize/rasterizer/scanline.cpp	2026-08-29 09:03:34.469477400 +0800
+@@ -1,5 +1,6 @@
+ #include "scanline.h"
+ 
++#include <algorithm>
+ #include <cstdint>
+ #include <vector>
+ 
+@@ -23,6 +24,7 @@
+ std::vector<geometrize::Scanline> trimScanlines(const std::vector<geometrize::Scanline>& scanlines, std::int32_t minX, std::int32_t minY, std::int32_t maxX, std::int32_t maxY)
+ {
+     std::vector<geometrize::Scanline> trimmedScanlines;
++    trimmedScanlines.reserve(scanlines.size());
+ 
+     for(const geometrize::Scanline& line : scanlines) {
+         if(line.y < minY || line.y >= maxY) {
+@@ -31,11 +33,46 @@
+         if(line.x1 > line.x2) {
+             continue;
+         }
+-        const float x1 = geometrize::commonutil::clamp(line.x1, minX, maxX - 1);
+-        const float x2 = geometrize::commonutil::clamp(line.x2, minX, maxX - 1);
++        // int 直接 clamp(上游经 float 中转,float 可无损表示该域内整数,数值恒等)
++        const std::int32_t x1 = geometrize::commonutil::clamp(line.x1, minX, maxX - 1);
++        const std::int32_t x2 = geometrize::commonutil::clamp(line.x2, minX, maxX - 1);
+         trimmedScanlines.emplace_back(Scanline(line.y, x1, x2));
+     }
+     return trimmedScanlines;
+ }
+ 
++std::vector<geometrize::Scanline> downscaleScanlines(const std::vector<geometrize::Scanline>& lines, const std::int32_t halfWidth, const std::int32_t halfHeight)
++{
++    std::vector<geometrize::Scanline> downscaled;
++    downscaled.reserve(lines.size());
++
++    // 相邻行对 (2k, 2k+1) 折叠为半分辨率行 k;x 取并后 floor 除 2:
++    // 覆盖区只放不放收,搜索阶段的评估偏保守,不影响最终全分辨率判定。
++    // 细形状(Line/Polyline)同一源行可有多条退化扫描线,折叠后同一半分辨率
++    // 行可能落出相交区间——能量函数按像素遍历,重复覆盖会被重复累加,
++    // 故与上一条同行的相交区间就地合并,保证输出行内互不重叠。
++    for(std::size_t i = 0; i < lines.size();) {
++        const std::int32_t y{lines[i].y / 2};
++        std::int32_t x1{lines[i].x1};
++        std::int32_t x2{lines[i].x2};
++        if(i + 1 < lines.size() && lines[i + 1].y / 2 == y) {
++            x1 = (std::min)(x1, lines[i + 1].x1);
++            x2 = (std::max)(x2, lines[i + 1].x2);
++            i += 2;
++        } else {
++            i += 1;
++        }
++        x1 /= 2;
++        x2 /= 2;
++        if(!downscaled.empty() && downscaled.back().y == y && x1 <= downscaled.back().x2 && downscaled.back().x1 <= x2) {
++            downscaled.back().x1 = (std::min)(downscaled.back().x1, x1);
++            downscaled.back().x2 = (std::max)(downscaled.back().x2, x2);
++        } else {
++            downscaled.emplace_back(Scanline(y, x1, x2));
++        }
++    }
++
++    return geometrize::trimScanlines(downscaled, 0, 0, halfWidth, halfHeight);
++}
++
+ }
+diff -ru src/baseline-lib/geometrize/geometrize/rasterizer/scanline.h src/improved-lib/geometrize/geometrize/rasterizer/scanline.h
+--- src/baseline-lib/geometrize/geometrize/rasterizer/scanline.h	2026-08-27 13:24:27.392147300 +0800
++++ src/improved-lib/geometrize/geometrize/rasterizer/scanline.h	2026-08-29 09:02:31.208618500 +0800
+@@ -49,4 +49,17 @@
+  */
+ std::vector<geometrize::Scanline> trimScanlines(const std::vector<geometrize::Scanline>& scanlines, std::int32_t minX, std::int32_t minY, std::int32_t maxX, std::int32_t maxY);
+ 
++/**
++ * @brief downscaleScanlines 将全分辨率扫描线组映射到半分辨率坐标空间(坐标约定 floor:x → x/2)。
++ * 金字塔搜索轨道专用:形状坐标留在全分辨率空间,仅评估时把覆盖区投影到半分辨率图上。
++ * 相邻行对 (2k, 2k+1) 合并为半分辨率行 k,x 范围取两行的并(除以 2 向下取整,
++ * 保守超覆盖——搜索启发式允许,最终接受判定仍在全分辨率进行)。
++ * 输入须按 y 升序(库内所有光栅化输出均满足),单趟 O(n)。
++ * @param lines The full-resolution scanlines to project.
++ * @param halfWidth The width of the half-resolution bitmap (ceil(fullWidth / 2)).
++ * @param halfHeight The height of the half-resolution bitmap (ceil(fullHeight / 2)).
++ * @return The scanlines mapped into the half-resolution space, trimmed to the half-resolution bounds.
++ */
++std::vector<geometrize::Scanline> downscaleScanlines(const std::vector<geometrize::Scanline>& lines, std::int32_t halfWidth, std::int32_t halfHeight);
++
+ }
+diff -ru src/baseline-lib/geometrize/geometrize/runner/imagerunner.cpp src/improved-lib/geometrize/geometrize/runner/imagerunner.cpp
+--- src/baseline-lib/geometrize/geometrize/runner/imagerunner.cpp	2026-08-27 13:24:27.395657500 +0800
++++ src/improved-lib/geometrize/geometrize/runner/imagerunner.cpp	2026-08-29 13:04:08.522314800 +0800
+@@ -38,7 +38,7 @@
+         }
+ 
+         m_model.setSeed(options.seed);
+-        return m_model.step(shapeCreator, options.alpha, options.shapeCount, options.maxShapeMutations, options.maxThreads, energyFunction, addShapePrecondition);
++        return m_model.step(shapeCreator, options.alpha, options.shapeCount, options.maxShapeMutations, options.maxThreads, energyFunction, addShapePrecondition, options.pyramidSearch, options.enhancements);
+     }
+ 
+     geometrize::Bitmap& getCurrent()
+diff -ru src/baseline-lib/geometrize/geometrize/runner/imagerunneroptions.h src/improved-lib/geometrize/geometrize/runner/imagerunneroptions.h
+--- src/baseline-lib/geometrize/geometrize/runner/imagerunneroptions.h	2026-08-27 13:24:27.396655400 +0800
++++ src/improved-lib/geometrize/geometrize/runner/imagerunneroptions.h	2026-08-29 13:03:50.374430300 +0800
+@@ -1,7 +1,9 @@
+ #pragma once
+ 
+ #include <cstdint>
++#include <vector>
+ 
++#include "../core.h"
+ #include "../shape/shapetypes.h"
+ 
+ namespace geometrize
+@@ -33,6 +35,8 @@
+     std::uint32_t maxShapeMutations = 100U; ///< The maximum number of times each candidate shape will be modified to attempt to find a better fit.
+     std::uint32_t seed = 9001U; ///< The seed for the random number generators used by the image runner.
+     std::uint32_t maxThreads = 0; ///< The maximum number of separate threads for the implementation to use. 0 lets the implementation choose a reasonable number.
++    bool pyramidSearch = false; ///< 金字塔搜索:hill-climb 评估在半分辨率图上进行(算法增强轨道,输出与全分辨率搜索不同属预期)。自定义 energyFunction 存在时被忽略。
++    core::HillClimbEnhancements enhancements{}; ///< 增强爬山开关集(自适应步长/alpha 档位搜索,算法增强轨道,默认全关)。
+     ImageRunnerShapeBoundsOptions shapeBounds{}; ///< If zero or do not form a rectangle, the entire target image is used i.e. (0, 0, imageWidth, imageHeight)
+ };
+ 
+diff -ru src/baseline-lib/geometrize/geometrize/shape/circle.cpp src/improved-lib/geometrize/geometrize/shape/circle.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/circle.cpp	2026-08-27 13:24:27.400167000 +0800
++++ src/improved-lib/geometrize/geometrize/shape/circle.cpp	2026-08-29 12:52:10.546128600 +0800
+@@ -1,35 +1,37 @@
+-#include "circle.h"
+-
+-#include <cstdint>
+-#include <memory>
+-
+-#include "shape.h"
+-
+-namespace geometrize
+-{
+-
+-Circle::Circle(const float x, const float y, const float r) : Shape()
+-{
+-    m_x = x;
+-    m_y = y;
+-    m_r = r;
+-}
+-
+-std::shared_ptr<geometrize::Shape> Circle::clone() const
+-{
+-    std::shared_ptr<geometrize::Circle> circle{std::make_shared<geometrize::Circle>()};
+-    circle->m_x = m_x;
+-    circle->m_y = m_y;
+-    circle->m_r = m_r;
+-    circle->setup = setup;
+-    circle->mutate = mutate;
+-    circle->rasterize = rasterize;
+-    return circle;
+-}
+-
+-geometrize::ShapeTypes Circle::getType() const
+-{
+-    return geometrize::ShapeTypes::CIRCLE;
+-}
+-
+-}
++#include "circle.h"
++
++#include <cstdint>
++#include <memory>
++
++#include "shape.h"
++
++namespace geometrize
++{
++
++Circle::Circle(const float x, const float y, const float r) : Shape()
++{
++    m_x = x;
++    m_y = y;
++    m_r = r;
++}
++
++std::shared_ptr<geometrize::Shape> Circle::clone() const
++{
++    std::shared_ptr<geometrize::Circle> circle{std::make_shared<geometrize::Circle>()};
++    circle->m_x = m_x;
++    circle->m_y = m_y;
++    circle->m_r = m_r;
++    circle->setup = setup;
++    circle->mutate = mutate;
++    circle->mutateScaled = mutateScaled;
++    circle->rasterize = rasterize;
++    circle->rasterizeInto = [rf = circle->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    return circle;
++}
++
++geometrize::ShapeTypes Circle::getType() const
++{
++    return geometrize::ShapeTypes::CIRCLE;
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/shape/ellipse.cpp src/improved-lib/geometrize/geometrize/shape/ellipse.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/ellipse.cpp	2026-08-27 13:24:27.420057700 +0800
++++ src/improved-lib/geometrize/geometrize/shape/ellipse.cpp	2026-08-29 12:52:10.547488700 +0800
+@@ -1,37 +1,39 @@
+-#include "ellipse.h"
+-
+-#include <cstdint>
+-#include <memory>
+-
+-#include "shape.h"
+-
+-namespace geometrize
+-{
+-
+-Ellipse::Ellipse(const float x, const float y, const float rx, const float ry) : Shape()
+-{
+-    m_x = x;
+-    m_y = y;
+-    m_rx = rx;
+-    m_ry = ry;
+-}
+-
+-std::shared_ptr<geometrize::Shape> Ellipse::clone() const
+-{
+-    std::shared_ptr<geometrize::Ellipse> ellipse{std::make_shared<geometrize::Ellipse>()};
+-    ellipse->m_x = m_x;
+-    ellipse->m_y = m_y;
+-    ellipse->m_rx = m_rx;
+-    ellipse->m_ry = m_ry;
+-    ellipse->setup = setup;
+-    ellipse->mutate = mutate;
+-    ellipse->rasterize = rasterize;
+-    return ellipse;
+-}
+-
+-geometrize::ShapeTypes Ellipse::getType() const
+-{
+-    return geometrize::ShapeTypes::ELLIPSE;
+-}
+-
+-}
++#include "ellipse.h"
++
++#include <cstdint>
++#include <memory>
++
++#include "shape.h"
++
++namespace geometrize
++{
++
++Ellipse::Ellipse(const float x, const float y, const float rx, const float ry) : Shape()
++{
++    m_x = x;
++    m_y = y;
++    m_rx = rx;
++    m_ry = ry;
++}
++
++std::shared_ptr<geometrize::Shape> Ellipse::clone() const
++{
++    std::shared_ptr<geometrize::Ellipse> ellipse{std::make_shared<geometrize::Ellipse>()};
++    ellipse->m_x = m_x;
++    ellipse->m_y = m_y;
++    ellipse->m_rx = m_rx;
++    ellipse->m_ry = m_ry;
++    ellipse->setup = setup;
++    ellipse->mutate = mutate;
++    ellipse->mutateScaled = mutateScaled;
++    ellipse->rasterize = rasterize;
++    ellipse->rasterizeInto = [rf = ellipse->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    return ellipse;
++}
++
++geometrize::ShapeTypes Ellipse::getType() const
++{
++    return geometrize::ShapeTypes::ELLIPSE;
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/shape/line.cpp src/improved-lib/geometrize/geometrize/shape/line.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/line.cpp	2026-08-27 13:24:27.403674600 +0800
++++ src/improved-lib/geometrize/geometrize/shape/line.cpp	2026-08-29 12:52:10.548493900 +0800
+@@ -1,37 +1,39 @@
+-#include "line.h"
+-
+-#include <cstdint>
+-#include <memory>
+-
+-#include "shape.h"
+-
+-namespace geometrize
+-{
+-
+-Line::Line(const float x1, const float y1, const float x2, const float y2) : Shape()
+-{
+-    m_x1 = x1;
+-    m_y1 = y1;
+-    m_x2 = x2;
+-    m_y2 = y2;
+-}
+-
+-std::shared_ptr<geometrize::Shape> Line::clone() const
+-{
+-    std::shared_ptr<geometrize::Line> line{std::make_shared<geometrize::Line>()};
+-    line->m_x1 = m_x1;
+-    line->m_y1 = m_y1;
+-    line->m_x2 = m_x2;
+-    line->m_y2 = m_y2;
+-    line->setup = setup;
+-    line->mutate = mutate;
+-    line->rasterize = rasterize;
+-    return line;
+-}
+-
+-geometrize::ShapeTypes Line::getType() const
+-{
+-    return geometrize::ShapeTypes::LINE;
+-}
+-
+-}
++#include "line.h"
++
++#include <cstdint>
++#include <memory>
++
++#include "shape.h"
++
++namespace geometrize
++{
++
++Line::Line(const float x1, const float y1, const float x2, const float y2) : Shape()
++{
++    m_x1 = x1;
++    m_y1 = y1;
++    m_x2 = x2;
++    m_y2 = y2;
++}
++
++std::shared_ptr<geometrize::Shape> Line::clone() const
++{
++    std::shared_ptr<geometrize::Line> line{std::make_shared<geometrize::Line>()};
++    line->m_x1 = m_x1;
++    line->m_y1 = m_y1;
++    line->m_x2 = m_x2;
++    line->m_y2 = m_y2;
++    line->setup = setup;
++    line->mutate = mutate;
++    line->mutateScaled = mutateScaled;
++    line->rasterize = rasterize;
++    line->rasterizeInto = [rf = line->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    return line;
++}
++
++geometrize::ShapeTypes Line::getType() const
++{
++    return geometrize::ShapeTypes::LINE;
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/shape/polyline.cpp src/improved-lib/geometrize/geometrize/shape/polyline.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/polyline.cpp	2026-08-27 13:24:27.405683800 +0800
++++ src/improved-lib/geometrize/geometrize/shape/polyline.cpp	2026-08-29 12:52:10.548493900 +0800
+@@ -1,33 +1,35 @@
+-#include "polyline.h"
+-
+-#include <cstdint>
+-#include <memory>
+-#include <utility>
+-#include <vector>
+-
+-#include "shape.h"
+-
+-namespace geometrize
+-{
+-
+-Polyline::Polyline(const std::vector<std::pair<float, float>>& points) : Shape()
+-{
+-    m_points = points;
+-}
+-
+-std::shared_ptr<geometrize::Shape> Polyline::clone() const
+-{
+-    std::shared_ptr<geometrize::Polyline> polyline{std::make_shared<geometrize::Polyline>()};
+-    polyline->m_points = m_points;
+-    polyline->setup = setup;
+-    polyline->mutate = mutate;
+-    polyline->rasterize = rasterize;
+-    return polyline;
+-}
+-
+-geometrize::ShapeTypes Polyline::getType() const
+-{
+-    return geometrize::ShapeTypes::POLYLINE;
+-}
+-
+-}
++#include "polyline.h"
++
++#include <cstdint>
++#include <memory>
++#include <utility>
++#include <vector>
++
++#include "shape.h"
++
++namespace geometrize
++{
++
++Polyline::Polyline(const std::vector<std::pair<float, float>>& points) : Shape()
++{
++    m_points = points;
++}
++
++std::shared_ptr<geometrize::Shape> Polyline::clone() const
++{
++    std::shared_ptr<geometrize::Polyline> polyline{std::make_shared<geometrize::Polyline>()};
++    polyline->m_points = m_points;
++    polyline->setup = setup;
++    polyline->mutate = mutate;
++    polyline->mutateScaled = mutateScaled;
++    polyline->rasterize = rasterize;
++    polyline->rasterizeInto = [rf = polyline->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    return polyline;
++}
++
++geometrize::ShapeTypes Polyline::getType() const
++{
++    return geometrize::ShapeTypes::POLYLINE;
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/shape/quadraticbezier.cpp src/improved-lib/geometrize/geometrize/shape/quadraticbezier.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/quadraticbezier.cpp	2026-08-27 13:24:27.408691500 +0800
++++ src/improved-lib/geometrize/geometrize/shape/quadraticbezier.cpp	2026-08-29 12:52:10.549493900 +0800
+@@ -1,40 +1,42 @@
+-#include "quadraticbezier.h"
+-
+-#include <cstdint>
+-#include <memory>
+-#include "shape.h"
+-
+-namespace geometrize
+-{
+-
+-QuadraticBezier::QuadraticBezier(const float cx, const float cy, const float x1, const float y1, const float x2, const float y2) : Shape()
+-{
+-    m_cx = cx;
+-    m_cy = cy;
+-    m_x1 = x1;
+-    m_y1 = y1;
+-    m_x2 = x2;
+-    m_y2 = y2;
+-}
+-
+-std::shared_ptr<geometrize::Shape> QuadraticBezier::clone() const
+-{
+-    std::shared_ptr<geometrize::QuadraticBezier> bezier{std::make_shared<geometrize::QuadraticBezier>()};
+-    bezier->m_x1 = m_x1;
+-    bezier->m_y1 = m_y1;
+-    bezier->m_cx = m_cx;
+-    bezier->m_cy = m_cy;
+-    bezier->m_x2 = m_x2;
+-    bezier->m_y2 = m_y2;
+-    bezier->setup = setup;
+-    bezier->mutate = mutate;
+-    bezier->rasterize = rasterize;
+-    return bezier;
+-}
+-
+-geometrize::ShapeTypes QuadraticBezier::getType() const
+-{
+-    return geometrize::ShapeTypes::QUADRATIC_BEZIER;
+-}
+-
+-}
++#include "quadraticbezier.h"
++
++#include <cstdint>
++#include <memory>
++#include "shape.h"
++
++namespace geometrize
++{
++
++QuadraticBezier::QuadraticBezier(const float cx, const float cy, const float x1, const float y1, const float x2, const float y2) : Shape()
++{
++    m_cx = cx;
++    m_cy = cy;
++    m_x1 = x1;
++    m_y1 = y1;
++    m_x2 = x2;
++    m_y2 = y2;
++}
++
++std::shared_ptr<geometrize::Shape> QuadraticBezier::clone() const
++{
++    std::shared_ptr<geometrize::QuadraticBezier> bezier{std::make_shared<geometrize::QuadraticBezier>()};
++    bezier->m_x1 = m_x1;
++    bezier->m_y1 = m_y1;
++    bezier->m_cx = m_cx;
++    bezier->m_cy = m_cy;
++    bezier->m_x2 = m_x2;
++    bezier->m_y2 = m_y2;
++    bezier->setup = setup;
++    bezier->mutate = mutate;
++    bezier->mutateScaled = mutateScaled;
++    bezier->rasterize = rasterize;
++    bezier->rasterizeInto = [rf = bezier->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    return bezier;
++}
++
++geometrize::ShapeTypes QuadraticBezier::getType() const
++{
++    return geometrize::ShapeTypes::QUADRATIC_BEZIER;
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/shape/rectangle.cpp src/improved-lib/geometrize/geometrize/shape/rectangle.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/rectangle.cpp	2026-08-27 13:24:27.422660200 +0800
++++ src/improved-lib/geometrize/geometrize/shape/rectangle.cpp	2026-08-29 12:52:10.550494400 +0800
+@@ -1,37 +1,39 @@
+-#include "rectangle.h"
+-
+-#include <cstdint>
+-#include <memory>
+-
+-#include "shape.h"
+-
+-namespace geometrize
+-{
+-
+-Rectangle::Rectangle(const float x1, const float y1, const float x2, const float y2) : Shape()
+-{
+-    m_x1 = x1;
+-    m_y1 = y1;
+-    m_x2 = x2;
+-    m_y2 = y2;
+-}
+-
+-std::shared_ptr<geometrize::Shape> Rectangle::clone() const
+-{
+-    std::shared_ptr<geometrize::Rectangle> rect{std::make_shared<geometrize::Rectangle>()};
+-    rect->m_x1 = m_x1;
+-    rect->m_y1 = m_y1;
+-    rect->m_x2 = m_x2;
+-    rect->m_y2 = m_y2;
+-    rect->setup = setup;
+-    rect->mutate = mutate;
+-    rect->rasterize = rasterize;
+-    return rect;
+-}
+-
+-geometrize::ShapeTypes Rectangle::getType() const
+-{
+-    return geometrize::ShapeTypes::RECTANGLE;
+-}
+-
+-}
++#include "rectangle.h"
++
++#include <cstdint>
++#include <memory>
++
++#include "shape.h"
++
++namespace geometrize
++{
++
++Rectangle::Rectangle(const float x1, const float y1, const float x2, const float y2) : Shape()
++{
++    m_x1 = x1;
++    m_y1 = y1;
++    m_x2 = x2;
++    m_y2 = y2;
++}
++
++std::shared_ptr<geometrize::Shape> Rectangle::clone() const
++{
++    std::shared_ptr<geometrize::Rectangle> rect{std::make_shared<geometrize::Rectangle>()};
++    rect->m_x1 = m_x1;
++    rect->m_y1 = m_y1;
++    rect->m_x2 = m_x2;
++    rect->m_y2 = m_y2;
++    rect->setup = setup;
++    rect->mutate = mutate;
++    rect->mutateScaled = mutateScaled;
++    rect->rasterize = rasterize;
++    rect->rasterizeInto = [rf = rect->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    return rect;
++}
++
++geometrize::ShapeTypes Rectangle::getType() const
++{
++    return geometrize::ShapeTypes::RECTANGLE;
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/shape/rotatedellipse.cpp src/improved-lib/geometrize/geometrize/shape/rotatedellipse.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/rotatedellipse.cpp	2026-08-27 13:24:27.410687300 +0800
++++ src/improved-lib/geometrize/geometrize/shape/rotatedellipse.cpp	2026-08-29 12:52:10.551494900 +0800
+@@ -1,39 +1,41 @@
+-#include "rotatedellipse.h"
+-
+-#include <cstdint>
+-#include <memory>
+-
+-#include "shape.h"
+-
+-namespace geometrize
+-{
+-
+-RotatedEllipse::RotatedEllipse(const float x, const float y, const float rx, const float ry, const float angle) : Shape()
+-{
+-    m_x = x;
+-    m_y = y;
+-    m_rx = rx;
+-    m_ry = ry;
+-    m_angle = angle;
+-}
+-
+-std::shared_ptr<geometrize::Shape> RotatedEllipse::clone() const
+-{
+-    std::shared_ptr<geometrize::RotatedEllipse> ellipse{std::make_shared<geometrize::RotatedEllipse>()};
+-    ellipse->m_x = m_x;
+-    ellipse->m_y = m_y;
+-    ellipse->m_rx = m_rx;
+-    ellipse->m_ry = m_ry;
+-    ellipse->m_angle = m_angle;
+-    ellipse->setup = setup;
+-    ellipse->mutate = mutate;
+-    ellipse->rasterize = rasterize;
+-    return ellipse;
+-}
+-
+-geometrize::ShapeTypes RotatedEllipse::getType() const
+-{
+-    return geometrize::ShapeTypes::ROTATED_ELLIPSE;
+-}
+-
+-}
++#include "rotatedellipse.h"
++
++#include <cstdint>
++#include <memory>
++
++#include "shape.h"
++
++namespace geometrize
++{
++
++RotatedEllipse::RotatedEllipse(const float x, const float y, const float rx, const float ry, const float angle) : Shape()
++{
++    m_x = x;
++    m_y = y;
++    m_rx = rx;
++    m_ry = ry;
++    m_angle = angle;
++}
++
++std::shared_ptr<geometrize::Shape> RotatedEllipse::clone() const
++{
++    std::shared_ptr<geometrize::RotatedEllipse> ellipse{std::make_shared<geometrize::RotatedEllipse>()};
++    ellipse->m_x = m_x;
++    ellipse->m_y = m_y;
++    ellipse->m_rx = m_rx;
++    ellipse->m_ry = m_ry;
++    ellipse->m_angle = m_angle;
++    ellipse->setup = setup;
++    ellipse->mutate = mutate;
++    ellipse->mutateScaled = mutateScaled;
++    ellipse->rasterize = rasterize;
++    ellipse->rasterizeInto = [rf = ellipse->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    return ellipse;
++}
++
++geometrize::ShapeTypes RotatedEllipse::getType() const
++{
++    return geometrize::ShapeTypes::ROTATED_ELLIPSE;
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/shape/rotatedrectangle.cpp src/improved-lib/geometrize/geometrize/shape/rotatedrectangle.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/rotatedrectangle.cpp	2026-08-27 13:24:27.411687300 +0800
++++ src/improved-lib/geometrize/geometrize/shape/rotatedrectangle.cpp	2026-08-29 12:52:10.554007500 +0800
+@@ -1,39 +1,41 @@
+-#include "rotatedrectangle.h"
+-
+-#include <cstdint>
+-#include <memory>
+-
+-#include "shape.h"
+-
+-namespace geometrize
+-{
+-
+-RotatedRectangle::RotatedRectangle(const float x1, const float y1, const float x2, const float y2, const float angle) : Shape()
+-{
+-    m_x1 = x1;
+-    m_y1 = y1;
+-    m_x2 = x2;
+-    m_y2 = y2;
+-    m_angle = angle;
+-}
+-
+-std::shared_ptr<geometrize::Shape> RotatedRectangle::clone() const
+-{
+-    std::shared_ptr<geometrize::RotatedRectangle> rect{std::make_shared<geometrize::RotatedRectangle>()};
+-    rect->m_x1 = m_x1;
+-    rect->m_y1 = m_y1;
+-    rect->m_x2 = m_x2;
+-    rect->m_y2 = m_y2;
+-    rect->m_angle = m_angle;
+-    rect->setup = setup;
+-    rect->mutate = mutate;
+-    rect->rasterize = rasterize;
+-    return rect;
+-}
+-
+-geometrize::ShapeTypes RotatedRectangle::getType() const
+-{
+-    return geometrize::ShapeTypes::ROTATED_RECTANGLE;
+-}
+-
+-}
++#include "rotatedrectangle.h"
++
++#include <cstdint>
++#include <memory>
++
++#include "shape.h"
++
++namespace geometrize
++{
++
++RotatedRectangle::RotatedRectangle(const float x1, const float y1, const float x2, const float y2, const float angle) : Shape()
++{
++    m_x1 = x1;
++    m_y1 = y1;
++    m_x2 = x2;
++    m_y2 = y2;
++    m_angle = angle;
++}
++
++std::shared_ptr<geometrize::Shape> RotatedRectangle::clone() const
++{
++    std::shared_ptr<geometrize::RotatedRectangle> rect{std::make_shared<geometrize::RotatedRectangle>()};
++    rect->m_x1 = m_x1;
++    rect->m_y1 = m_y1;
++    rect->m_x2 = m_x2;
++    rect->m_y2 = m_y2;
++    rect->m_angle = m_angle;
++    rect->setup = setup;
++    rect->mutate = mutate;
++    rect->mutateScaled = mutateScaled;
++    rect->rasterize = rasterize;
++    rect->rasterizeInto = [rf = rect->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    return rect;
++}
++
++geometrize::ShapeTypes RotatedRectangle::getType() const
++{
++    return geometrize::ShapeTypes::ROTATED_RECTANGLE;
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/shape/shape.h src/improved-lib/geometrize/geometrize/shape/shape.h
+--- src/baseline-lib/geometrize/geometrize/shape/shape.h	2026-08-27 13:24:27.423665200 +0800
++++ src/improved-lib/geometrize/geometrize/shape/shape.h	2026-08-29 12:46:40.405378300 +0800
+@@ -2,6 +2,7 @@
+ 
+ #include <functional>
+ #include <memory>
++#include <stdexcept>
+ #include <vector>
+ 
+ #include "../rasterizer/scanline.h"
+@@ -24,7 +25,13 @@
+ 
+     std::function<void(geometrize::Shape&)> setup;
+     std::function<void(geometrize::Shape&)> mutate;
++    // 可选的带步长变异:stepShift 为 2 的幂次移位数(0=基准步长,1=1/2,2=1/4...)。
++    // 自适应步长轨道专用。未设置时 State::mutate(stepShift) 回退普通 mutate(外部自设形状优雅降级)。
++    std::function<void(geometrize::Shape&, std::int32_t)> mutateScaled;
+     std::function<std::vector<geometrize::Scanline>(const geometrize::Shape&)> rasterize;
++    // 可选的复用版光栅化:结果写入调用方向量(热路径消堆分配)。未设置时走 rasterize。
++    // 保持独立成员而非改 rasterize 签名,脚本绑定与外部调用方语义零扰动。
++    std::function<void(const geometrize::Shape&, std::vector<geometrize::Scanline>&)> rasterizeInto;
+ 
+     /**
+      * @brief clone Clones the shape, a virtual copy constructor.
+@@ -32,7 +39,7 @@
+      */
+     virtual std::shared_ptr<geometrize::Shape> clone() const
+     {
+-        throw "Unimplemented"; // NOTE not pure virtual because it breaks simple upcast in Chaiscript (and can't see how else to do it)
++        throw std::logic_error("Unimplemented"); // NOTE not pure virtual because it breaks simple upcast in Chaiscript (and can't see how else to do it)
+     }
+ 
+     /**
+@@ -41,7 +48,7 @@
+      */
+     virtual geometrize::ShapeTypes getType() const
+     {
+-        throw "Unimplemented";
++        throw std::logic_error("Unimplemented");
+     }
+ };
+ 
+diff -ru src/baseline-lib/geometrize/geometrize/shape/shapefactory.cpp src/improved-lib/geometrize/geometrize/shape/shapefactory.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/shapefactory.cpp	2026-08-27 13:24:27.413752200 +0800
++++ src/improved-lib/geometrize/geometrize/shape/shapefactory.cpp	2026-08-29 12:56:06.486724200 +0800
+@@ -1,145 +1,163 @@
+-#include "shapefactory.h"
+-
+-#include <cassert>
+-#include <cstdint>
+-#include <memory>
+-
+-#include "shape.h"
+-#include "circle.h"
+-#include "ellipse.h"
+-#include "line.h"
+-#include "polyline.h"
+-#include "quadraticbezier.h"
+-#include "rectangle.h"
+-#include "rotatedellipse.h"
+-#include "rotatedrectangle.h"
+-#include "shapetypes.h"
+-#include "triangle.h"
+-#include "shapemutator.h"
+-#include "../commonutil.h"
+-#include "../rasterizer/rasterizer.h"
+-
+-namespace geometrize
+-{
+-
+-std::function<std::shared_ptr<geometrize::Shape>()> createDefaultShapeCreator(const geometrize::ShapeTypes types, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    auto f = [types, xMin, yMin, xMax, yMax]() {
+-        std::shared_ptr<geometrize::Shape> s = geometrize::randomShapeOf(types);
+-
+-        switch(s->getType()) {
+-        case geometrize::ShapeTypes::RECTANGLE: {
+-            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax); };
+-            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax); };
+-            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax); };
+-            break;
+-        }
+-        case geometrize::ShapeTypes::ROTATED_RECTANGLE: {
+-            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax); };
+-            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax); };
+-            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax); };
+-            break;
+-        }
+-        case geometrize::ShapeTypes::TRIANGLE: {
+-            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax); };
+-            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax); };
+-            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Triangle&>(s), xMin, yMin, xMax, yMax); };
+-            break;
+-        }
+-        case geometrize::ShapeTypes::ELLIPSE: {
+-            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax); };
+-            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax); };
+-            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax); };
+-            break;
+-        }
+-        case geometrize::ShapeTypes::ROTATED_ELLIPSE: {
+-            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax); };
+-            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax); };
+-            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax); };
+-            break;
+-        }
+-        case geometrize::ShapeTypes::CIRCLE: {
+-            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax); };
+-            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax); };
+-            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Circle&>(s), xMin, yMin, xMax, yMax); };
+-            break;
+-        }
+-        case geometrize::ShapeTypes::LINE: {
+-            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax); };
+-            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax); };
+-            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Line&>(s), xMin, yMin, xMax, yMax); };
+-            break;
+-        }
+-        case geometrize::ShapeTypes::QUADRATIC_BEZIER: {
+-            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax); };
+-            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax); };
+-            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax); };
+-            break;
+-        }
+-        case geometrize::ShapeTypes::POLYLINE: {
+-            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax); };
+-            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax); };
+-            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Polyline&>(s), xMin, yMin, xMax, yMax); };
+-            break;
+-        }
+-        default:
+-            assert(0 && "Bad shape type");
+-        }
+-
+-        return s;
+-    };
+-
+-    return f;
+-}
+-
+-std::shared_ptr<geometrize::Shape> create(const geometrize::ShapeTypes t)
+-{
+-    switch(t) {
+-        case geometrize::ShapeTypes::POLYLINE:
+-            return std::make_shared<geometrize::Polyline>();
+-        case geometrize::ShapeTypes::QUADRATIC_BEZIER:
+-            return std::make_shared<geometrize::QuadraticBezier>();
+-        case geometrize::ShapeTypes::CIRCLE:
+-            return std::make_shared<geometrize::Circle>();
+-        case geometrize::ShapeTypes::ELLIPSE:
+-            return std::make_shared<geometrize::Ellipse>();
+-        case geometrize::ShapeTypes::ROTATED_ELLIPSE:
+-            return std::make_shared<geometrize::RotatedEllipse>();
+-        case geometrize::ShapeTypes::ROTATED_RECTANGLE:
+-            return std::make_shared<geometrize::RotatedRectangle>();
+-        case geometrize::ShapeTypes::TRIANGLE:
+-            return std::make_shared<geometrize::Triangle>();
+-        case geometrize::ShapeTypes::RECTANGLE:
+-            return std::make_shared<geometrize::Rectangle>();
+-        case geometrize::ShapeTypes::LINE:
+-            return std::make_shared<geometrize::Line>();
+-        default:
+-            assert(0 && "Bad shape type specified");
+-    };
+-
+-    assert(0 && "Unhandled shape type encountered");
+-    return std::make_shared<geometrize::Rectangle>();
+-}
+-
+-std::shared_ptr<geometrize::Shape> randomShape()
+-{
+-    return create(geometrize::allShapes[commonutil::randomRange(0, static_cast<int>(geometrize::allShapes.size()) - 1)]);
+-}
+-
+-std::shared_ptr<geometrize::Shape> randomShapeOf(const ShapeTypes types)
+-{
+-    std::vector<ShapeTypes> typeVector;
+-    for(const ShapeTypes type : geometrize::allShapes) {
+-        if((type & types) == type) {
+-            typeVector.push_back(type);
+-        }
+-    }
+-
+-    if(typeVector.size() == 0) {
+-        return randomShape(); // If there are no types specified, create one randomly
+-    }
+-
+-    return create(typeVector.at(commonutil::randomRange(0, static_cast<std::int32_t>(typeVector.size() - 1))));
+-}
+-
+-}
++#include "shapefactory.h"
++
++#include <cassert>
++#include <cstdint>
++#include <memory>
++
++#include "shape.h"
++#include "circle.h"
++#include "ellipse.h"
++#include "line.h"
++#include "polyline.h"
++#include "quadraticbezier.h"
++#include "rectangle.h"
++#include "rotatedellipse.h"
++#include "rotatedrectangle.h"
++#include "shapetypes.h"
++#include "triangle.h"
++#include "shapemutator.h"
++#include "../commonutil.h"
++#include "../rasterizer/rasterizer.h"
++
++namespace geometrize
++{
++
++std::function<std::shared_ptr<geometrize::Shape>()> createDefaultShapeCreator(const geometrize::ShapeTypes types, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    auto f = [types, xMin, yMin, xMax, yMax]() {
++        std::shared_ptr<geometrize::Shape> s = geometrize::randomShapeOf(types);
++
++        switch(s->getType()) {
++        case geometrize::ShapeTypes::RECTANGLE: {
++            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax); };
++            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax); };
++            s->mutateScaled = [xMin, yMin, xMax, yMax](geometrize::Shape& s, std::int32_t stepShift) { geometrize::mutate(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax, stepShift); };
++            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax); };
++            s->rasterizeInto = [xMin, yMin, xMax, yMax](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = geometrize::rasterize(static_cast<const geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax); };
++            break;
++        }
++        case geometrize::ShapeTypes::ROTATED_RECTANGLE: {
++            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax); };
++            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax); };
++            s->mutateScaled = [xMin, yMin, xMax, yMax](geometrize::Shape& s, std::int32_t stepShift) { geometrize::mutate(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax, stepShift); };
++            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax); };
++            s->rasterizeInto = [xMin, yMin, xMax, yMax](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = geometrize::rasterize(static_cast<const geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax); };
++            break;
++        }
++        case geometrize::ShapeTypes::TRIANGLE: {
++            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax); };
++            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax); };
++            s->mutateScaled = [xMin, yMin, xMax, yMax](geometrize::Shape& s, std::int32_t stepShift) { geometrize::mutate(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax, stepShift); };
++            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Triangle&>(s), xMin, yMin, xMax, yMax); };
++            s->rasterizeInto = [xMin, yMin, xMax, yMax](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = geometrize::rasterize(static_cast<const geometrize::Triangle&>(s), xMin, yMin, xMax, yMax); };
++            break;
++        }
++        case geometrize::ShapeTypes::ELLIPSE: {
++            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax); };
++            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax); };
++            s->mutateScaled = [xMin, yMin, xMax, yMax](geometrize::Shape& s, std::int32_t stepShift) { geometrize::mutate(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax, stepShift); };
++            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax); };
++            s->rasterizeInto = [xMin, yMin, xMax, yMax](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = geometrize::rasterize(static_cast<const geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax); };
++            break;
++        }
++        case geometrize::ShapeTypes::ROTATED_ELLIPSE: {
++            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax); };
++            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax); };
++            s->mutateScaled = [xMin, yMin, xMax, yMax](geometrize::Shape& s, std::int32_t stepShift) { geometrize::mutate(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax, stepShift); };
++            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax); };
++            s->rasterizeInto = [xMin, yMin, xMax, yMax](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = geometrize::rasterize(static_cast<const geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax); };
++            break;
++        }
++        case geometrize::ShapeTypes::CIRCLE: {
++            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax); };
++            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax); };
++            s->mutateScaled = [xMin, yMin, xMax, yMax](geometrize::Shape& s, std::int32_t stepShift) { geometrize::mutate(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax, stepShift); };
++            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Circle&>(s), xMin, yMin, xMax, yMax); };
++            s->rasterizeInto = [xMin, yMin, xMax, yMax](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = geometrize::rasterize(static_cast<const geometrize::Circle&>(s), xMin, yMin, xMax, yMax); };
++            break;
++        }
++        case geometrize::ShapeTypes::LINE: {
++            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax); };
++            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax); };
++            s->mutateScaled = [xMin, yMin, xMax, yMax](geometrize::Shape& s, std::int32_t stepShift) { geometrize::mutate(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax, stepShift); };
++            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Line&>(s), xMin, yMin, xMax, yMax); };
++            s->rasterizeInto = [xMin, yMin, xMax, yMax](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = geometrize::rasterize(static_cast<const geometrize::Line&>(s), xMin, yMin, xMax, yMax); };
++            break;
++        }
++        case geometrize::ShapeTypes::QUADRATIC_BEZIER: {
++            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax); };
++            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax); };
++            s->mutateScaled = [xMin, yMin, xMax, yMax](geometrize::Shape& s, std::int32_t stepShift) { geometrize::mutate(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax, stepShift); };
++            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax); };
++            s->rasterizeInto = [xMin, yMin, xMax, yMax](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = geometrize::rasterize(static_cast<const geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax); };
++            break;
++        }
++        case geometrize::ShapeTypes::POLYLINE: {
++            s->setup = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { return geometrize::setup(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax); };
++            s->mutate = [xMin, yMin, xMax, yMax](geometrize::Shape& s) { geometrize::mutate(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax); };
++            s->mutateScaled = [xMin, yMin, xMax, yMax](geometrize::Shape& s, std::int32_t stepShift) { geometrize::mutate(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax, stepShift); };
++            s->rasterize = [xMin, yMin, xMax, yMax](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Polyline&>(s), xMin, yMin, xMax, yMax); };
++            s->rasterizeInto = [xMin, yMin, xMax, yMax](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = geometrize::rasterize(static_cast<const geometrize::Polyline&>(s), xMin, yMin, xMax, yMax); };
++            break;
++        }
++        default:
++            assert(0 && "Bad shape type");
++        }
++
++        return s;
++    };
++
++    return f;
++}
++
++std::shared_ptr<geometrize::Shape> create(const geometrize::ShapeTypes t)
++{
++    switch(t) {
++        case geometrize::ShapeTypes::POLYLINE:
++            return std::make_shared<geometrize::Polyline>();
++        case geometrize::ShapeTypes::QUADRATIC_BEZIER:
++            return std::make_shared<geometrize::QuadraticBezier>();
++        case geometrize::ShapeTypes::CIRCLE:
++            return std::make_shared<geometrize::Circle>();
++        case geometrize::ShapeTypes::ELLIPSE:
++            return std::make_shared<geometrize::Ellipse>();
++        case geometrize::ShapeTypes::ROTATED_ELLIPSE:
++            return std::make_shared<geometrize::RotatedEllipse>();
++        case geometrize::ShapeTypes::ROTATED_RECTANGLE:
++            return std::make_shared<geometrize::RotatedRectangle>();
++        case geometrize::ShapeTypes::TRIANGLE:
++            return std::make_shared<geometrize::Triangle>();
++        case geometrize::ShapeTypes::RECTANGLE:
++            return std::make_shared<geometrize::Rectangle>();
++        case geometrize::ShapeTypes::LINE:
++            return std::make_shared<geometrize::Line>();
++        default:
++            assert(0 && "Bad shape type specified");
++    };
++
++    assert(0 && "Unhandled shape type encountered");
++    return std::make_shared<geometrize::Rectangle>();
++}
++
++std::shared_ptr<geometrize::Shape> randomShape()
++{
++    return create(geometrize::allShapes[commonutil::randomRange(0, static_cast<int>(geometrize::allShapes.size()) - 1)]);
++}
++
++std::shared_ptr<geometrize::Shape> randomShapeOf(const ShapeTypes types)
++{
++    std::vector<ShapeTypes> typeVector;
++    for(const ShapeTypes type : geometrize::allShapes) {
++        if((type & types) == type) {
++            typeVector.push_back(type);
++        }
++    }
++
++    if(typeVector.size() == 0) {
++        return randomShape(); // If there are no types specified, create one randomly
++    }
++
++    return create(typeVector.at(commonutil::randomRange(0, static_cast<std::int32_t>(typeVector.size() - 1))));
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/shape/shapemutator.cpp src/improved-lib/geometrize/geometrize/shape/shapemutator.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/shapemutator.cpp	2026-08-27 13:24:27.415058500 +0800
++++ src/improved-lib/geometrize/geometrize/shape/shapemutator.cpp	2026-08-29 12:50:44.618611900 +0800
+@@ -1,695 +1,707 @@
+-#include "shapemutator.h"
+-
+-#include <cassert>
+-#include <cstdint>
+-#include <cmath>
+-
+-#include "circle.h"
+-#include "ellipse.h"
+-#include "line.h"
+-#include "polyline.h"
+-#include "quadraticbezier.h"
+-#include "rectangle.h"
+-#include "rotatedellipse.h"
+-#include "rotatedrectangle.h"
+-#include "triangle.h"
+-
+-#include "../commonutil.h"
+-
+-namespace
+-{
+-
+-float wrapMax(const float x, const float maximum)
+-{
+-    return std::fmod(maximum + std::fmod(x, maximum), maximum);
+-}
+-
+-float wrapMinMax(const float x, const float minimum, const float maximum)
+-{
+-    return minimum + wrapMax(x - minimum, maximum - minimum);
+-}
+-
+-}
+-
+-namespace geometrize
+-{
+-
+-void setup(geometrize::Shape& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    switch(s.getType()) {
+-    case geometrize::ShapeTypes::RECTANGLE:
+-        setup(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
+-        setup(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::TRIANGLE:
+-        setup(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::ELLIPSE:
+-        setup(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
+-        setup(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::CIRCLE:
+-        setup(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::LINE:
+-        setup(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::QUADRATIC_BEZIER:
+-        setup(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::POLYLINE:
+-        setup(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    default:
+-        assert(0 && "Bad shape type");
+-    }
+-}
+-
+-void setup(geometrize::Circle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    s.m_x = geometrize::commonutil::randomRange(xMin, xMax - 1);
+-    s.m_y = geometrize::commonutil::randomRange(yMin, yMax - 1);
+-    s.m_r = geometrize::commonutil::randomRange(1, 32);
+-}
+-
+-void setup(geometrize::Ellipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    s.m_x = geometrize::commonutil::randomRange(xMin, xMax - 1);
+-    s.m_y = geometrize::commonutil::randomRange(yMin, yMax - 1);
+-    s.m_rx = geometrize::commonutil::randomRange(1, 32);
+-    s.m_ry = geometrize::commonutil::randomRange(1, 32);
+-}
+-
+-void setup(geometrize::Line& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::pair<std::int32_t, std::int32_t> startingPoint{std::make_pair(geometrize::commonutil::randomRange(xMin, xMax), geometrize::commonutil::randomRange(yMin, yMax - 1))};
+-
+-    s.m_x1 = geometrize::commonutil::clamp(startingPoint.first + geometrize::commonutil::randomRange(-32, 32), xMin, xMax - 1);
+-    s.m_y1 = geometrize::commonutil::clamp(startingPoint.second + geometrize::commonutil::randomRange(-32, 32), yMin, yMax - 1);
+-    s.m_x2 = geometrize::commonutil::clamp(startingPoint.first + geometrize::commonutil::randomRange(-32, 32), xMin, xMax - 1);
+-    s.m_y2 = geometrize::commonutil::clamp(startingPoint.second + geometrize::commonutil::randomRange(-32, 32), yMin, yMax - 1);
+-}
+-
+-void setup(geometrize::Polyline& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::pair<std::int32_t, std::int32_t> startingPoint{std::make_pair(geometrize::commonutil::randomRange(xMin, xMax), geometrize::commonutil::randomRange(yMin, yMax - 1))};
+-    for(std::int32_t i = 0; i < 4; i++) {
+-        const std::pair<std::int32_t, std::int32_t> point{
+-            geometrize::commonutil::clamp(startingPoint.first + geometrize::commonutil::randomRange(-32, 32), xMin, xMax - 1),
+-            geometrize::commonutil::clamp(startingPoint.second + geometrize::commonutil::randomRange(-32, 32), yMin, yMax - 1)
+-        };
+-        s.m_points.push_back(point);
+-    }
+-}
+-
+-void setup(geometrize::QuadraticBezier& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    s.m_x1 = geometrize::commonutil::randomRange(xMin, xMax - 1);
+-    s.m_y1 = geometrize::commonutil::randomRange(yMin, yMax - 1);
+-    s.m_cx = geometrize::commonutil::randomRange(xMin, xMax - 1);
+-    s.m_cy = geometrize::commonutil::randomRange(yMin, yMax - 1);
+-    s.m_x2 = geometrize::commonutil::randomRange(xMin, xMax - 1);
+-    s.m_y2 = geometrize::commonutil::randomRange(yMin, yMax - 1);
+-}
+-
+-void setup(geometrize::Rectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    s.m_x1 = geometrize::commonutil::randomRange(xMin, xMax - 1);
+-    s.m_y1 = geometrize::commonutil::randomRange(yMin, yMax - 1);
+-    s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(1, 32), xMin, xMax - 1);
+-    s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(1, 32), yMin, yMax - 1);
+-}
+-
+-void setup(geometrize::RotatedEllipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    s.m_x = geometrize::commonutil::randomRange(xMin, xMax - 1);
+-    s.m_y = geometrize::commonutil::randomRange(yMin, yMax - 1);
+-    s.m_rx = geometrize::commonutil::randomRange(1, 32);
+-    s.m_ry = geometrize::commonutil::randomRange(1, 32);
+-    s.m_angle = geometrize::commonutil::randomRange(0, 360);
+-}
+-
+-void setup(geometrize::RotatedRectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    s.m_x1 = geometrize::commonutil::randomRange(xMin, xMax - 1);
+-    s.m_y1 = geometrize::commonutil::randomRange(yMin, yMax - 1);
+-    s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(1, 32), xMin, xMax);
+-    s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(1, 32), yMin, yMax);
+-    s.m_angle = geometrize::commonutil::randomRange(0, 360);
+-}
+-
+-void setup(geometrize::Triangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    s.m_x1 = geometrize::commonutil::randomRange(xMin, xMax - 1);
+-    s.m_y1 = geometrize::commonutil::randomRange(yMin, yMax - 1);
+-    s.m_x2 = s.m_x1 + geometrize::commonutil::randomRange(-32, 32);
+-    s.m_y2 = s.m_y1 + geometrize::commonutil::randomRange(-32, 32);
+-    s.m_x3 = s.m_x1 + geometrize::commonutil::randomRange(-32, 32);
+-    s.m_y3 = s.m_y1 + geometrize::commonutil::randomRange(-32, 32);
+-}
+-
+-void mutate(geometrize::Shape& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    switch(s.getType()) {
+-    case geometrize::ShapeTypes::RECTANGLE:
+-        mutate(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
+-        mutate(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::TRIANGLE:
+-        mutate(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::ELLIPSE:
+-        mutate(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
+-        mutate(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::CIRCLE:
+-        mutate(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::LINE:
+-        mutate(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::QUADRATIC_BEZIER:
+-        mutate(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    case geometrize::ShapeTypes::POLYLINE:
+-        mutate(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax);
+-        break;
+-    default:
+-        assert(0 && "Bad shape type");
+-    }
+-}
+-
+-void mutate(geometrize::Circle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::int32_t r{geometrize::commonutil::randomRange(0, 1)};
+-    switch(r) {
+-        case 0:
+-        {
+-            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
+-            break;
+-        }
+-        case 1:
+-        {
+-            s.m_r = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_r) + geometrize::commonutil::randomRange(-16, 16), 1, xMax - 1);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::Ellipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
+-    switch(r) {
+-        case 0:
+-        {
+-            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
+-            break;
+-        }
+-        case 1:
+-        {
+-            s.m_rx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_rx) + geometrize::commonutil::randomRange(-16, 16), 1, xMax - 1);
+-            break;
+-        }
+-        case 2:
+-        {
+-            s.m_ry = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_ry) + geometrize::commonutil::randomRange(-16, 16), 1, yMax - 1);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::Line& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::int32_t r{geometrize::commonutil::randomRange(0, 1)};
+-
+-    switch(r) {
+-        case 0:
+-        {
+-            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
+-            break;
+-        }
+-        case 1:
+-        {
+-            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::Polyline& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::int32_t i{geometrize::commonutil::randomRange(static_cast<std::size_t>(0), s.m_points.size() - 1)};
+-
+-    std::pair<std::int32_t, std::int32_t> point{s.m_points[i]};
+-    point.first = geometrize::commonutil::clamp(point.first + geometrize::commonutil::randomRange(-64, 64), xMin, xMax - 1);
+-    point.second = geometrize::commonutil::clamp(point.second + geometrize::commonutil::randomRange(-64, 64), yMin, yMax - 1);
+-
+-    s.m_points[i] = point;
+-}
+-
+-void mutate(geometrize::QuadraticBezier& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
+-    switch(r) {
+-        case 0:
+-        {
+-            s.m_cx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_cx) + geometrize::commonutil::randomRange(-8, 8), xMin, xMax - 1);
+-            s.m_cy = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_cy) + geometrize::commonutil::randomRange(-8, 8), yMin, yMax - 1);
+-            break;
+-        }
+-        case 1:
+-        {
+-            // NOTE +1 on the minimum values for paranoia reasons as I wrote it that way originally, not sure if it's needed
+-            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-8, 8), xMin + 1, xMax - 1);
+-            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-8, 8), yMin + 1, yMax - 1);
+-            break;
+-        }
+-        case 2:
+-        {
+-            // NOTE +1 on the minimum values for paranoia reasons as I wrote it that way originally, not sure if it's needed
+-            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-8, 8), xMin + 1, xMax - 1);
+-            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-8, 8), yMin + 1, yMax - 1);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::Rectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::int32_t r{geometrize::commonutil::randomRange(0, 1)};
+-    switch(r) {
+-        case 0:
+-        {
+-            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
+-            break;
+-        }
+-        case 1:
+-        {
+-            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::RotatedEllipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::int32_t r{geometrize::commonutil::randomRange(0, 3)};
+-    switch(r) {
+-        case 0:
+-        {
+-            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
+-            break;
+-        }
+-        case 1:
+-        {
+-            s.m_rx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_rx) + geometrize::commonutil::randomRange(-16, 16), 1, xMax - 1);
+-            break;
+-        }
+-        case 2:
+-        {
+-            s.m_ry = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_ry) + geometrize::commonutil::randomRange(-16, 16), 1, yMax - 1);
+-            break;
+-        }
+-        case 3:
+-        {
+-            s.m_angle = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_angle) + geometrize::commonutil::randomRange(-16, 16), 0, 360);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::RotatedRectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
+-    switch(r) {
+-        case 0:
+-        {
+-            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax);
+-            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax);
+-            break;
+-        }
+-        case 1:
+-        {
+-            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax);
+-            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax);
+-            break;
+-        }
+-        case 2:
+-        {
+-            s.m_angle = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_angle) + geometrize::commonutil::randomRange(-4, 4), 0, 360);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::Triangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
+-    switch(r) {
+-        case 0:
+-        {
+-            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-32, 32), xMin, xMax);
+-            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-32, 32), yMin, yMax);
+-            break;
+-        }
+-        case 1:
+-        {
+-            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-32, 32), xMin, xMax);
+-            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-32, 32), yMin, yMax);
+-            break;
+-        }
+-        case 2:
+-        {
+-            s.m_x3 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x3) + geometrize::commonutil::randomRange(-32, 32), xMin, xMax);
+-            s.m_y3 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y3) + geometrize::commonutil::randomRange(-32, 32), yMin, yMax);
+-            break;
+-        }
+-    }
+-}
+-
+-void translate(geometrize::Shape& s, const float x, const float y)
+-{
+-    switch(s.getType()) {
+-    case geometrize::ShapeTypes::RECTANGLE:
+-        translate(static_cast<geometrize::Rectangle&>(s), x, y);
+-        break;
+-    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
+-        translate(static_cast<geometrize::RotatedRectangle&>(s), x, y);
+-        break;
+-    case geometrize::ShapeTypes::TRIANGLE:
+-        translate(static_cast<geometrize::Triangle&>(s), x, y);
+-        break;
+-    case geometrize::ShapeTypes::ELLIPSE:
+-        translate(static_cast<geometrize::Ellipse&>(s), x, y);
+-        break;
+-    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
+-        translate(static_cast<geometrize::RotatedEllipse&>(s), x, y);
+-        break;
+-    case geometrize::ShapeTypes::CIRCLE:
+-        translate(static_cast<geometrize::Circle&>(s), x, y);
+-        break;
+-    case geometrize::ShapeTypes::LINE:
+-        translate(static_cast<geometrize::Line&>(s), x, y);
+-        break;
+-    case geometrize::ShapeTypes::QUADRATIC_BEZIER:
+-        translate(static_cast<geometrize::QuadraticBezier&>(s), x, y);
+-        break;
+-    case geometrize::ShapeTypes::POLYLINE:
+-        translate(static_cast<geometrize::Polyline&>(s), x, y);
+-        break;
+-    default:
+-        assert(0 && "Bad shape type");
+-    }
+-}
+-
+-void translate(geometrize::Circle& s, const float x, const float y)
+-{
+-    s.m_x += x;
+-    s.m_y += y;
+-}
+-
+-void translate(geometrize::Ellipse& s, const float x, const float y)
+-{
+-    s.m_x += x;
+-    s.m_y += y;
+-}
+-
+-void translate(geometrize::Line& s, const float x, const float y)
+-{
+-    s.m_x1 += x;
+-    s.m_y1 += y;
+-    s.m_x2 += x;
+-    s.m_y2 += y;
+-}
+-
+-void translate(geometrize::Polyline& s, const float x, const float y)
+-{
+-    for(auto& point : s.m_points) {
+-        point.first += x;
+-        point.second += y;
+-    }
+-}
+-
+-void translate(geometrize::QuadraticBezier& s, const float x, const float y)
+-{
+-    s.m_cx += x;
+-    s.m_cy += y;
+-    s.m_x1 += x;
+-    s.m_y1 += y;
+-    s.m_x2 += x;
+-    s.m_y2 += y;
+-}
+-
+-void translate(geometrize::Rectangle& s, const float x, const float y)
+-{
+-    s.m_x1 += x;
+-    s.m_y1 += y;
+-    s.m_x2 += x;
+-    s.m_y2 += y;
+-}
+-
+-void translate(geometrize::RotatedEllipse& s, const float x, const float y)
+-{
+-    s.m_x += x;
+-    s.m_y += y;
+-}
+-
+-void translate(geometrize::RotatedRectangle& s, const float x, const float y)
+-{
+-    s.m_x1 += x;
+-    s.m_y1 += y;
+-    s.m_x2 += x;
+-    s.m_y2 += y;
+-}
+-
+-void translate(geometrize::Triangle& s, const float x, const float y)
+-{
+-    s.m_x1 += x;
+-    s.m_y1 += y;
+-    s.m_x2 += x;
+-    s.m_y2 += y;
+-    s.m_x3 += x;
+-    s.m_y3 += y;
+-}
+-
+-void scale(geometrize::Shape& s, const float scaleFactor)
+-{
+-    switch(s.getType()) {
+-    case geometrize::ShapeTypes::RECTANGLE:
+-        scale(static_cast<geometrize::Rectangle&>(s), scaleFactor);
+-        break;
+-    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
+-        scale(static_cast<geometrize::RotatedRectangle&>(s), scaleFactor);
+-        break;
+-    case geometrize::ShapeTypes::TRIANGLE:
+-        scale(static_cast<geometrize::Triangle&>(s), scaleFactor);
+-        break;
+-    case geometrize::ShapeTypes::ELLIPSE:
+-        scale(static_cast<geometrize::Ellipse&>(s), scaleFactor);
+-        break;
+-    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
+-        scale(static_cast<geometrize::RotatedEllipse&>(s), scaleFactor);
+-        break;
+-    case geometrize::ShapeTypes::CIRCLE:
+-        scale(static_cast<geometrize::Circle&>(s), scaleFactor);
+-        break;
+-    case geometrize::ShapeTypes::LINE:
+-        scale(static_cast<geometrize::Line&>(s), scaleFactor);
+-        break;
+-    case geometrize::ShapeTypes::QUADRATIC_BEZIER:
+-        scale(static_cast<geometrize::QuadraticBezier&>(s), scaleFactor);
+-        break;
+-    case geometrize::ShapeTypes::POLYLINE:
+-        scale(static_cast<geometrize::Polyline&>(s), scaleFactor);
+-        break;
+-    default:
+-        assert(0 && "Bad shape type");
+-    }
+-}
+-
+-void scale(geometrize::Circle& s, const float scaleFactor)
+-{
+-    s.m_r *= scaleFactor;
+-}
+-
+-void scale(geometrize::Ellipse& s, const float scaleFactor)
+-{
+-    s.m_rx *= scaleFactor;
+-    s.m_ry *= scaleFactor;
+-}
+-
+-void scale(geometrize::Line& s, const float scaleFactor)
+-{
+-    const float xMid = (s.m_x1 + s.m_x2) / 2;
+-    const float yMid = (s.m_y1 + s.m_y2) / 2;
+-
+-    s.m_x1 = (s.m_x1 - xMid) * scaleFactor + xMid;
+-    s.m_x2 = (s.m_x2 - xMid) * scaleFactor + xMid;
+-
+-    s.m_y1 = (s.m_y1 - yMid) * scaleFactor + yMid;
+-    s.m_y2 = (s.m_y2 - yMid) * scaleFactor + yMid;
+-}
+-
+-void scale(geometrize::Polyline& s, const float scaleFactor)
+-{
+-    std::vector<std::pair<float, float>> points;
+-
+-    for(std::size_t i = 0; i < s.m_points.size(); i+=2) {
+-        if(i == s.m_points.size() - 1 || i == s.m_points.size()) {
+-            continue;
+-        }
+-        const float x1 = s.m_points[i].first;
+-        const float x2 = s.m_points[i + 1].first;
+-        const float y1 = s.m_points[i].second;
+-        const float y2 = s.m_points[i + 1].second;
+-
+-        const float xLen = (x1 + x2) / 2;
+-        const float yLen = (y1 + y2) / 2;
+-
+-        points.push_back({(x1 - xLen) * scaleFactor + xLen, (y1 - yLen) * scaleFactor + yLen});
+-        points.push_back({(x1 - xLen) * scaleFactor + xLen, (y2 - yLen) * scaleFactor + yLen});
+-    }
+-
+-    s.m_points = points;
+-}
+-
+-void scale(geometrize::QuadraticBezier& s, const float scaleFactor)
+-{
+-    assert(0 && "TODO");
+-}
+-
+-void scale(geometrize::Rectangle& s, const float scaleFactor)
+-{
+-    const float xMid = (s.m_x1 + s.m_x2) / 2;
+-    const float yMid = (s.m_y1 + s.m_y2) / 2;
+-
+-    s.m_x1 = (s.m_x1 - xMid) * scaleFactor + xMid;
+-    s.m_y1 = (s.m_y1 - yMid) * scaleFactor + yMid;
+-    s.m_x2 = (s.m_x2 - xMid) * scaleFactor + xMid;
+-    s.m_y2 = (s.m_y2 - yMid) * scaleFactor + yMid;
+-}
+-
+-void scale(geometrize::RotatedEllipse& s, const float scaleFactor)
+-{
+-    s.m_rx *= scaleFactor;
+-    s.m_ry *= scaleFactor;
+-}
+-
+-void scale(geometrize::RotatedRectangle& s, const float scaleFactor)
+-{
+-    const float xMid = (s.m_x1 + s.m_x2) / 2;
+-    const float yMid = (s.m_y1 + s.m_y2) / 2;
+-
+-    s.m_x1 = (s.m_x1 - xMid) * scaleFactor + xMid;
+-    s.m_y1 = (s.m_y1 - yMid) * scaleFactor + yMid;
+-    s.m_x2 = (s.m_x2 - xMid) * scaleFactor + xMid;
+-    s.m_y2 = (s.m_y2 - yMid) * scaleFactor + yMid;
+-}
+-
+-void scale(geometrize::Triangle& s, const float scaleFactor)
+-{
+-    const float xMid = (s.m_x1 + s.m_x2 + s.m_x3) / 3;
+-    const float yMid = (s.m_y1 + s.m_y2 + s.m_y3) / 3;
+-
+-    s.m_x1 = (s.m_x1 - xMid) * scaleFactor + xMid;
+-    s.m_y1 = (s.m_y1 - yMid) * scaleFactor + yMid;
+-    s.m_x2 = (s.m_x2 - xMid) * scaleFactor + xMid;
+-    s.m_y2 = (s.m_y2 - yMid) * scaleFactor + yMid;
+-    s.m_x3 = (s.m_x3 - xMid) * scaleFactor + xMid;
+-    s.m_y3 = (s.m_y3 - yMid) * scaleFactor + yMid;
+-}
+-
+-void rotate(geometrize::Shape& s, const float angle)
+-{
+-    switch(s.getType()) {
+-    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
+-        rotate(static_cast<geometrize::RotatedRectangle&>(s), angle);
+-        break;
+-    case geometrize::ShapeTypes::TRIANGLE:
+-        rotate(static_cast<geometrize::Triangle&>(s), angle);
+-        break;
+-    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
+-        rotate(static_cast<geometrize::RotatedEllipse&>(s), angle);
+-        break;
+-    case geometrize::ShapeTypes::LINE:
+-        rotate(static_cast<geometrize::Line&>(s), angle);
+-        break;
+-    default:
+-        break;
+-    }
+-}
+-
+-void rotate(geometrize::Line& s, const float angle)
+-{
+-    const float xMid = (s.m_x1 + s.m_x2) / 2;
+-    const float yMid = (s.m_y1 + s.m_y2) / 2;
+-
+-    translate(s, -xMid, -yMid);
+-
+-    const float x1 = s.m_x1;
+-    const float x2 = s.m_x2;
+-    const float y1 = s.m_y1;
+-    const float y2 = s.m_y2;
+-    const float cosAngle = std::cos(angle);
+-    const float sinAngle = std::sin(angle);
+-
+-    s.m_x1 = x1 * cosAngle - y1 * sinAngle;
+-    s.m_y1 = x1 * sinAngle + y1 * cosAngle;
+-    s.m_x2 = x2 * cosAngle - y2 * sinAngle;
+-    s.m_y2 = x2 * sinAngle + y2 * cosAngle;
+-
+-    translate(s, xMid, yMid);
+-}
+-
+-void rotate(geometrize::RotatedEllipse& s, const float angle)
+-{
+-    s.m_angle = wrapMinMax(s.m_angle + angle, 0, 360);
+-}
+-
+-void rotate(geometrize::RotatedRectangle& s, const float angle)
+-{
+-    s.m_angle = wrapMinMax(s.m_angle + angle, 0, 360);
+-}
+-
+-void rotate(geometrize::Triangle& s, const float angle)
+-{
+-    const float xMid = (s.m_x1 + s.m_x2 + s.m_x3) / 3;
+-    const float yMid = (s.m_y1 + s.m_y2 + s.m_y3) / 3;
+-
+-    translate(s, -xMid, -yMid);
+-
+-    const float x1 = s.m_x1;
+-    const float x2 = s.m_x2;
+-    const float x3 = s.m_x3;
+-    const float y1 = s.m_y1;
+-    const float y2 = s.m_y2;
+-    const float y3 = s.m_y3;
+-    const float cosAngle = std::cos(angle);
+-    const float sinAngle = std::sin(angle);
+-
+-    s.m_x1 = x1 * cosAngle - y1 * sinAngle;
+-    s.m_y1 = x1 * sinAngle + y1 * cosAngle;
+-    s.m_x2 = x2 * cosAngle - y2 * sinAngle;
+-    s.m_y2 = x2 * sinAngle + y2 * cosAngle;
+-    s.m_x3 = x3 * cosAngle - y3 * sinAngle;
+-    s.m_y3 = x3 * sinAngle + y3 * cosAngle;
+-
+-    translate(s, xMid, yMid);
+-}
+-
+-}
++#include "shapemutator.h"
++
++#include <cassert>
++#include <cstdint>
++#include <cmath>
++
++#include "circle.h"
++#include "ellipse.h"
++#include "line.h"
++#include "polyline.h"
++#include "quadraticbezier.h"
++#include "rectangle.h"
++#include "rotatedellipse.h"
++#include "rotatedrectangle.h"
++#include "triangle.h"
++
++#include "../commonutil.h"
++
++namespace
++{
++
++float wrapMax(const float x, const float maximum)
++{
++    return std::fmod(maximum + std::fmod(x, maximum), maximum);
++}
++
++float wrapMinMax(const float x, const float minimum, const float maximum)
++{
++    return minimum + wrapMax(x - minimum, maximum - minimum);
++}
++
++}
++
++namespace geometrize
++{
++
++void setup(geometrize::Shape& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    switch(s.getType()) {
++    case geometrize::ShapeTypes::RECTANGLE:
++        setup(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax);
++        break;
++    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
++        setup(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax);
++        break;
++    case geometrize::ShapeTypes::TRIANGLE:
++        setup(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax);
++        break;
++    case geometrize::ShapeTypes::ELLIPSE:
++        setup(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax);
++        break;
++    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
++        setup(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax);
++        break;
++    case geometrize::ShapeTypes::CIRCLE:
++        setup(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax);
++        break;
++    case geometrize::ShapeTypes::LINE:
++        setup(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax);
++        break;
++    case geometrize::ShapeTypes::QUADRATIC_BEZIER:
++        setup(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax);
++        break;
++    case geometrize::ShapeTypes::POLYLINE:
++        setup(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax);
++        break;
++    default:
++        assert(0 && "Bad shape type");
++    }
++}
++
++void setup(geometrize::Circle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    s.m_x = geometrize::commonutil::randomRange(xMin, xMax - 1);
++    s.m_y = geometrize::commonutil::randomRange(yMin, yMax - 1);
++    s.m_r = geometrize::commonutil::randomRange(1, 32);
++}
++
++void setup(geometrize::Ellipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    s.m_x = geometrize::commonutil::randomRange(xMin, xMax - 1);
++    s.m_y = geometrize::commonutil::randomRange(yMin, yMax - 1);
++    s.m_rx = geometrize::commonutil::randomRange(1, 32);
++    s.m_ry = geometrize::commonutil::randomRange(1, 32);
++}
++
++void setup(geometrize::Line& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    const std::pair<std::int32_t, std::int32_t> startingPoint{std::make_pair(geometrize::commonutil::randomRange(xMin, xMax), geometrize::commonutil::randomRange(yMin, yMax - 1))};
++
++    s.m_x1 = geometrize::commonutil::clamp(startingPoint.first + geometrize::commonutil::randomRange(-32, 32), xMin, xMax - 1);
++    s.m_y1 = geometrize::commonutil::clamp(startingPoint.second + geometrize::commonutil::randomRange(-32, 32), yMin, yMax - 1);
++    s.m_x2 = geometrize::commonutil::clamp(startingPoint.first + geometrize::commonutil::randomRange(-32, 32), xMin, xMax - 1);
++    s.m_y2 = geometrize::commonutil::clamp(startingPoint.second + geometrize::commonutil::randomRange(-32, 32), yMin, yMax - 1);
++}
++
++void setup(geometrize::Polyline& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    const std::pair<std::int32_t, std::int32_t> startingPoint{std::make_pair(geometrize::commonutil::randomRange(xMin, xMax), geometrize::commonutil::randomRange(yMin, yMax - 1))};
++    for(std::int32_t i = 0; i < 4; i++) {
++        const std::pair<std::int32_t, std::int32_t> point{
++            geometrize::commonutil::clamp(startingPoint.first + geometrize::commonutil::randomRange(-32, 32), xMin, xMax - 1),
++            geometrize::commonutil::clamp(startingPoint.second + geometrize::commonutil::randomRange(-32, 32), yMin, yMax - 1)
++        };
++        s.m_points.push_back(point);
++    }
++}
++
++void setup(geometrize::QuadraticBezier& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    s.m_x1 = geometrize::commonutil::randomRange(xMin, xMax - 1);
++    s.m_y1 = geometrize::commonutil::randomRange(yMin, yMax - 1);
++    s.m_cx = geometrize::commonutil::randomRange(xMin, xMax - 1);
++    s.m_cy = geometrize::commonutil::randomRange(yMin, yMax - 1);
++    s.m_x2 = geometrize::commonutil::randomRange(xMin, xMax - 1);
++    s.m_y2 = geometrize::commonutil::randomRange(yMin, yMax - 1);
++}
++
++void setup(geometrize::Rectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    s.m_x1 = geometrize::commonutil::randomRange(xMin, xMax - 1);
++    s.m_y1 = geometrize::commonutil::randomRange(yMin, yMax - 1);
++    s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(1, 32), xMin, xMax - 1);
++    s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(1, 32), yMin, yMax - 1);
++}
++
++void setup(geometrize::RotatedEllipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    s.m_x = geometrize::commonutil::randomRange(xMin, xMax - 1);
++    s.m_y = geometrize::commonutil::randomRange(yMin, yMax - 1);
++    s.m_rx = geometrize::commonutil::randomRange(1, 32);
++    s.m_ry = geometrize::commonutil::randomRange(1, 32);
++    s.m_angle = geometrize::commonutil::randomRange(0, 360);
++}
++
++void setup(geometrize::RotatedRectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    s.m_x1 = geometrize::commonutil::randomRange(xMin, xMax - 1);
++    s.m_y1 = geometrize::commonutil::randomRange(yMin, yMax - 1);
++    s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(1, 32), xMin, xMax);
++    s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(1, 32), yMin, yMax);
++    s.m_angle = geometrize::commonutil::randomRange(0, 360);
++}
++
++void setup(geometrize::Triangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++{
++    s.m_x1 = geometrize::commonutil::randomRange(xMin, xMax - 1);
++    s.m_y1 = geometrize::commonutil::randomRange(yMin, yMax - 1);
++    s.m_x2 = s.m_x1 + geometrize::commonutil::randomRange(-32, 32);
++    s.m_y2 = s.m_y1 + geometrize::commonutil::randomRange(-32, 32);
++    s.m_x3 = s.m_x1 + geometrize::commonutil::randomRange(-32, 32);
++    s.m_y3 = s.m_y1 + geometrize::commonutil::randomRange(-32, 32);
++}
++
++void mutate(geometrize::Shape& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    switch(s.getType()) {
++    case geometrize::ShapeTypes::RECTANGLE:
++        mutate(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax, stepShift);
++        break;
++    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
++        mutate(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax, stepShift);
++        break;
++    case geometrize::ShapeTypes::TRIANGLE:
++        mutate(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax, stepShift);
++        break;
++    case geometrize::ShapeTypes::ELLIPSE:
++        mutate(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax, stepShift);
++        break;
++    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
++        mutate(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax, stepShift);
++        break;
++    case geometrize::ShapeTypes::CIRCLE:
++        mutate(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax, stepShift);
++        break;
++    case geometrize::ShapeTypes::LINE:
++        mutate(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax, stepShift);
++        break;
++    case geometrize::ShapeTypes::QUADRATIC_BEZIER:
++        mutate(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax, stepShift);
++        break;
++    case geometrize::ShapeTypes::POLYLINE:
++        mutate(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax, stepShift);
++        break;
++    default:
++        assert(0 && "Bad shape type");
++    }
++}
++
++void mutate(geometrize::Circle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    const std::int32_t r{geometrize::commonutil::randomRange(0, 1)};
++    switch(r) {
++        case 0:
++        {
++            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
++            break;
++        }
++        case 1:
++        {
++            s.m_r = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_r) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 1, xMax - 1);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::Ellipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
++    switch(r) {
++        case 0:
++        {
++            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
++            break;
++        }
++        case 1:
++        {
++            s.m_rx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_rx) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 1, xMax - 1);
++            break;
++        }
++        case 2:
++        {
++            s.m_ry = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_ry) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 1, yMax - 1);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::Line& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    const std::int32_t r{geometrize::commonutil::randomRange(0, 1)};
++
++    switch(r) {
++        case 0:
++        {
++            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
++            break;
++        }
++        case 1:
++        {
++            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::Polyline& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    const std::int32_t i{geometrize::commonutil::randomRange(0, static_cast<std::int32_t>(s.m_points.size() - 1))};
++
++    std::pair<std::int32_t, std::int32_t> point{s.m_points[i]};
++    point.first = geometrize::commonutil::clamp(point.first + geometrize::commonutil::randomRange(-64 >> stepShift, 64 >> stepShift), xMin, xMax - 1);
++    point.second = geometrize::commonutil::clamp(point.second + geometrize::commonutil::randomRange(-64 >> stepShift, 64 >> stepShift), yMin, yMax - 1);
++
++    s.m_points[i] = point;
++}
++
++void mutate(geometrize::QuadraticBezier& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
++    switch(r) {
++        case 0:
++        {
++            s.m_cx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_cx) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), xMin, xMax - 1);
++            s.m_cy = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_cy) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), yMin, yMax - 1);
++            break;
++        }
++        case 1:
++        {
++            // NOTE +1 on the minimum values for paranoia reasons as I wrote it that way originally, not sure if it's needed
++            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), xMin + 1, xMax - 1);
++            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), yMin + 1, yMax - 1);
++            break;
++        }
++        case 2:
++        {
++            // NOTE +1 on the minimum values for paranoia reasons as I wrote it that way originally, not sure if it's needed
++            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), xMin + 1, xMax - 1);
++            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), yMin + 1, yMax - 1);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::Rectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    const std::int32_t r{geometrize::commonutil::randomRange(0, 1)};
++    switch(r) {
++        case 0:
++        {
++            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
++            break;
++        }
++        case 1:
++        {
++            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::RotatedEllipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    const std::int32_t r{geometrize::commonutil::randomRange(0, 3)};
++    switch(r) {
++        case 0:
++        {
++            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
++            break;
++        }
++        case 1:
++        {
++            s.m_rx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_rx) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 1, xMax - 1);
++            break;
++        }
++        case 2:
++        {
++            s.m_ry = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_ry) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 1, yMax - 1);
++            break;
++        }
++        case 3:
++        {
++            s.m_angle = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_angle) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 0, 360);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::RotatedRectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
++    switch(r) {
++        case 0:
++        {
++            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax);
++            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax);
++            break;
++        }
++        case 1:
++        {
++            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax);
++            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax);
++            break;
++        }
++        case 2:
++        {
++            s.m_angle = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_angle) + geometrize::commonutil::randomRange(-4 >> stepShift, 4 >> stepShift), 0, 360);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::Triangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
++    switch(r) {
++        case 0:
++        {
++            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), xMin, xMax);
++            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), yMin, yMax);
++            break;
++        }
++        case 1:
++        {
++            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), xMin, xMax);
++            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), yMin, yMax);
++            break;
++        }
++        case 2:
++        {
++            s.m_x3 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x3) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), xMin, xMax);
++            s.m_y3 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y3) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), yMin, yMax);
++            break;
++        }
++    }
++}
++
++void translate(geometrize::Shape& s, const float x, const float y)
++{
++    switch(s.getType()) {
++    case geometrize::ShapeTypes::RECTANGLE:
++        translate(static_cast<geometrize::Rectangle&>(s), x, y);
++        break;
++    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
++        translate(static_cast<geometrize::RotatedRectangle&>(s), x, y);
++        break;
++    case geometrize::ShapeTypes::TRIANGLE:
++        translate(static_cast<geometrize::Triangle&>(s), x, y);
++        break;
++    case geometrize::ShapeTypes::ELLIPSE:
++        translate(static_cast<geometrize::Ellipse&>(s), x, y);
++        break;
++    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
++        translate(static_cast<geometrize::RotatedEllipse&>(s), x, y);
++        break;
++    case geometrize::ShapeTypes::CIRCLE:
++        translate(static_cast<geometrize::Circle&>(s), x, y);
++        break;
++    case geometrize::ShapeTypes::LINE:
++        translate(static_cast<geometrize::Line&>(s), x, y);
++        break;
++    case geometrize::ShapeTypes::QUADRATIC_BEZIER:
++        translate(static_cast<geometrize::QuadraticBezier&>(s), x, y);
++        break;
++    case geometrize::ShapeTypes::POLYLINE:
++        translate(static_cast<geometrize::Polyline&>(s), x, y);
++        break;
++    default:
++        assert(0 && "Bad shape type");
++    }
++}
++
++void translate(geometrize::Circle& s, const float x, const float y)
++{
++    s.m_x += x;
++    s.m_y += y;
++}
++
++void translate(geometrize::Ellipse& s, const float x, const float y)
++{
++    s.m_x += x;
++    s.m_y += y;
++}
++
++void translate(geometrize::Line& s, const float x, const float y)
++{
++    s.m_x1 += x;
++    s.m_y1 += y;
++    s.m_x2 += x;
++    s.m_y2 += y;
++}
++
++void translate(geometrize::Polyline& s, const float x, const float y)
++{
++    for(auto& point : s.m_points) {
++        point.first += x;
++        point.second += y;
++    }
++}
++
++void translate(geometrize::QuadraticBezier& s, const float x, const float y)
++{
++    s.m_cx += x;
++    s.m_cy += y;
++    s.m_x1 += x;
++    s.m_y1 += y;
++    s.m_x2 += x;
++    s.m_y2 += y;
++}
++
++void translate(geometrize::Rectangle& s, const float x, const float y)
++{
++    s.m_x1 += x;
++    s.m_y1 += y;
++    s.m_x2 += x;
++    s.m_y2 += y;
++}
++
++void translate(geometrize::RotatedEllipse& s, const float x, const float y)
++{
++    s.m_x += x;
++    s.m_y += y;
++}
++
++void translate(geometrize::RotatedRectangle& s, const float x, const float y)
++{
++    s.m_x1 += x;
++    s.m_y1 += y;
++    s.m_x2 += x;
++    s.m_y2 += y;
++}
++
++void translate(geometrize::Triangle& s, const float x, const float y)
++{
++    s.m_x1 += x;
++    s.m_y1 += y;
++    s.m_x2 += x;
++    s.m_y2 += y;
++    s.m_x3 += x;
++    s.m_y3 += y;
++}
++
++void scale(geometrize::Shape& s, const float scaleFactor)
++{
++    switch(s.getType()) {
++    case geometrize::ShapeTypes::RECTANGLE:
++        scale(static_cast<geometrize::Rectangle&>(s), scaleFactor);
++        break;
++    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
++        scale(static_cast<geometrize::RotatedRectangle&>(s), scaleFactor);
++        break;
++    case geometrize::ShapeTypes::TRIANGLE:
++        scale(static_cast<geometrize::Triangle&>(s), scaleFactor);
++        break;
++    case geometrize::ShapeTypes::ELLIPSE:
++        scale(static_cast<geometrize::Ellipse&>(s), scaleFactor);
++        break;
++    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
++        scale(static_cast<geometrize::RotatedEllipse&>(s), scaleFactor);
++        break;
++    case geometrize::ShapeTypes::CIRCLE:
++        scale(static_cast<geometrize::Circle&>(s), scaleFactor);
++        break;
++    case geometrize::ShapeTypes::LINE:
++        scale(static_cast<geometrize::Line&>(s), scaleFactor);
++        break;
++    case geometrize::ShapeTypes::QUADRATIC_BEZIER:
++        scale(static_cast<geometrize::QuadraticBezier&>(s), scaleFactor);
++        break;
++    case geometrize::ShapeTypes::POLYLINE:
++        scale(static_cast<geometrize::Polyline&>(s), scaleFactor);
++        break;
++    default:
++        assert(0 && "Bad shape type");
++    }
++}
++
++void scale(geometrize::Circle& s, const float scaleFactor)
++{
++    s.m_r *= scaleFactor;
++}
++
++void scale(geometrize::Ellipse& s, const float scaleFactor)
++{
++    s.m_rx *= scaleFactor;
++    s.m_ry *= scaleFactor;
++}
++
++void scale(geometrize::Line& s, const float scaleFactor)
++{
++    const float xMid = (s.m_x1 + s.m_x2) / 2;
++    const float yMid = (s.m_y1 + s.m_y2) / 2;
++
++    s.m_x1 = (s.m_x1 - xMid) * scaleFactor + xMid;
++    s.m_x2 = (s.m_x2 - xMid) * scaleFactor + xMid;
++
++    s.m_y1 = (s.m_y1 - yMid) * scaleFactor + yMid;
++    s.m_y2 = (s.m_y2 - yMid) * scaleFactor + yMid;
++}
++
++void scale(geometrize::Polyline& s, const float scaleFactor)
++{
++    // 绕质心缩放全部点
++    if(s.m_points.empty()) {
++        return;
++    }
++
++    float xSum = 0;
++    float ySum = 0;
++    for(const auto& point : s.m_points) {
++        xSum += point.first;
++        ySum += point.second;
++    }
++    const float xMid = xSum / s.m_points.size();
++    const float yMid = ySum / s.m_points.size();
++
++    std::vector<std::pair<float, float>> points;
++    points.reserve(s.m_points.size());
++    for(const auto& point : s.m_points) {
++        points.push_back({(point.first - xMid) * scaleFactor + xMid,
++                          (point.second - yMid) * scaleFactor + yMid});
++    }
++
++    s.m_points = points;
++}
++
++void scale(geometrize::QuadraticBezier& s, const float scaleFactor)
++{
++    // 绕质心缩放三个控制点
++    const float xMid = (s.m_x1 + s.m_cx + s.m_x2) / 3.0f;
++    const float yMid = (s.m_y1 + s.m_cy + s.m_y2) / 3.0f;
++
++    s.m_x1 = static_cast<std::int32_t>((s.m_x1 - xMid) * scaleFactor + xMid);
++    s.m_y1 = static_cast<std::int32_t>((s.m_y1 - yMid) * scaleFactor + yMid);
++    s.m_cx = static_cast<std::int32_t>((s.m_cx - xMid) * scaleFactor + xMid);
++    s.m_cy = static_cast<std::int32_t>((s.m_cy - yMid) * scaleFactor + yMid);
++    s.m_x2 = static_cast<std::int32_t>((s.m_x2 - xMid) * scaleFactor + xMid);
++    s.m_y2 = static_cast<std::int32_t>((s.m_y2 - yMid) * scaleFactor + yMid);
++}
++
++void scale(geometrize::Rectangle& s, const float scaleFactor)
++{
++    const float xMid = (s.m_x1 + s.m_x2) / 2;
++    const float yMid = (s.m_y1 + s.m_y2) / 2;
++
++    s.m_x1 = (s.m_x1 - xMid) * scaleFactor + xMid;
++    s.m_y1 = (s.m_y1 - yMid) * scaleFactor + yMid;
++    s.m_x2 = (s.m_x2 - xMid) * scaleFactor + xMid;
++    s.m_y2 = (s.m_y2 - yMid) * scaleFactor + yMid;
++}
++
++void scale(geometrize::RotatedEllipse& s, const float scaleFactor)
++{
++    s.m_rx *= scaleFactor;
++    s.m_ry *= scaleFactor;
++}
++
++void scale(geometrize::RotatedRectangle& s, const float scaleFactor)
++{
++    const float xMid = (s.m_x1 + s.m_x2) / 2;
++    const float yMid = (s.m_y1 + s.m_y2) / 2;
++
++    s.m_x1 = (s.m_x1 - xMid) * scaleFactor + xMid;
++    s.m_y1 = (s.m_y1 - yMid) * scaleFactor + yMid;
++    s.m_x2 = (s.m_x2 - xMid) * scaleFactor + xMid;
++    s.m_y2 = (s.m_y2 - yMid) * scaleFactor + yMid;
++}
++
++void scale(geometrize::Triangle& s, const float scaleFactor)
++{
++    const float xMid = (s.m_x1 + s.m_x2 + s.m_x3) / 3;
++    const float yMid = (s.m_y1 + s.m_y2 + s.m_y3) / 3;
++
++    s.m_x1 = (s.m_x1 - xMid) * scaleFactor + xMid;
++    s.m_y1 = (s.m_y1 - yMid) * scaleFactor + yMid;
++    s.m_x2 = (s.m_x2 - xMid) * scaleFactor + xMid;
++    s.m_y2 = (s.m_y2 - yMid) * scaleFactor + yMid;
++    s.m_x3 = (s.m_x3 - xMid) * scaleFactor + xMid;
++    s.m_y3 = (s.m_y3 - yMid) * scaleFactor + yMid;
++}
++
++void rotate(geometrize::Shape& s, const float angle)
++{
++    switch(s.getType()) {
++    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
++        rotate(static_cast<geometrize::RotatedRectangle&>(s), angle);
++        break;
++    case geometrize::ShapeTypes::TRIANGLE:
++        rotate(static_cast<geometrize::Triangle&>(s), angle);
++        break;
++    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
++        rotate(static_cast<geometrize::RotatedEllipse&>(s), angle);
++        break;
++    case geometrize::ShapeTypes::LINE:
++        rotate(static_cast<geometrize::Line&>(s), angle);
++        break;
++    default:
++        break;
++    }
++}
++
++void rotate(geometrize::Line& s, const float angle)
++{
++    const float xMid = (s.m_x1 + s.m_x2) / 2;
++    const float yMid = (s.m_y1 + s.m_y2) / 2;
++
++    translate(s, -xMid, -yMid);
++
++    const float x1 = s.m_x1;
++    const float x2 = s.m_x2;
++    const float y1 = s.m_y1;
++    const float y2 = s.m_y2;
++    const float cosAngle = std::cos(angle);
++    const float sinAngle = std::sin(angle);
++
++    s.m_x1 = x1 * cosAngle - y1 * sinAngle;
++    s.m_y1 = x1 * sinAngle + y1 * cosAngle;
++    s.m_x2 = x2 * cosAngle - y2 * sinAngle;
++    s.m_y2 = x2 * sinAngle + y2 * cosAngle;
++
++    translate(s, xMid, yMid);
++}
++
++void rotate(geometrize::RotatedEllipse& s, const float angle)
++{
++    s.m_angle = wrapMinMax(s.m_angle + angle, 0, 360);
++}
++
++void rotate(geometrize::RotatedRectangle& s, const float angle)
++{
++    s.m_angle = wrapMinMax(s.m_angle + angle, 0, 360);
++}
++
++void rotate(geometrize::Triangle& s, const float angle)
++{
++    const float xMid = (s.m_x1 + s.m_x2 + s.m_x3) / 3;
++    const float yMid = (s.m_y1 + s.m_y2 + s.m_y3) / 3;
++
++    translate(s, -xMid, -yMid);
++
++    const float x1 = s.m_x1;
++    const float x2 = s.m_x2;
++    const float x3 = s.m_x3;
++    const float y1 = s.m_y1;
++    const float y2 = s.m_y2;
++    const float y3 = s.m_y3;
++    const float cosAngle = std::cos(angle);
++    const float sinAngle = std::sin(angle);
++
++    s.m_x1 = x1 * cosAngle - y1 * sinAngle;
++    s.m_y1 = x1 * sinAngle + y1 * cosAngle;
++    s.m_x2 = x2 * cosAngle - y2 * sinAngle;
++    s.m_y2 = x2 * sinAngle + y2 * cosAngle;
++    s.m_x3 = x3 * cosAngle - y3 * sinAngle;
++    s.m_y3 = x3 * sinAngle + y3 * cosAngle;
++
++    translate(s, xMid, yMid);
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/shape/shapemutator.h src/improved-lib/geometrize/geometrize/shape/shapemutator.h
+--- src/baseline-lib/geometrize/geometrize/shape/shapemutator.h	2026-08-27 13:24:27.424670900 +0800
++++ src/improved-lib/geometrize/geometrize/shape/shapemutator.h	2026-08-29 12:47:05.803024200 +0800
+@@ -31,17 +31,19 @@
+ void setup(geometrize::RotatedRectangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+ void setup(geometrize::Triangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+ 
+-// Default implementations that mutate each type of shape
+-void mutate(geometrize::Shape& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Circle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Ellipse& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Line& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Polyline& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::QuadraticBezier& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Rectangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::RotatedEllipse& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::RotatedRectangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
+-void mutate(geometrize::Triangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax);
++// Default implementations that mutate each type of shape.
++// stepShift 为步长移位数(0=基准,1=1/2,2=1/4...):随机偏移区间按 2^-stepShift 缩小。
++// 默认参数保证现存调用方(Shape::mutate 绑定、测试)零改动,取值分布与原实现逐字等价。
++void mutate(geometrize::Shape& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Circle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Ellipse& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Line& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Polyline& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::QuadraticBezier& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Rectangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::RotatedEllipse& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::RotatedRectangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
++void mutate(geometrize::Triangle& s, std::int32_t xMin, std::int32_t yMin, std::int32_t xMax, std::int32_t yMax, std::int32_t stepShift = 0);
+ 
+ // Default implementations that translate each type of shape
+ void translate(geometrize::Shape& s, float x, float y);
+diff -ru src/baseline-lib/geometrize/geometrize/shape/triangle.cpp src/improved-lib/geometrize/geometrize/shape/triangle.cpp
+--- src/baseline-lib/geometrize/geometrize/shape/triangle.cpp	2026-08-27 13:24:27.425670000 +0800
++++ src/improved-lib/geometrize/geometrize/shape/triangle.cpp	2026-08-29 12:52:10.555500200 +0800
+@@ -1,41 +1,43 @@
+-#include "triangle.h"
+-
+-#include <cstdint>
+-#include <memory>
+-
+-#include "shape.h"
+-
+-namespace geometrize
+-{
+-
+-Triangle::Triangle(const float x1, const float y1, const float x2, const float y2, const float x3, const float y3) : Shape()
+-{
+-    m_x1 = x1;
+-    m_y1 = y1;
+-    m_x2 = x2;
+-    m_y2 = y2;
+-    m_x3 = x3;
+-    m_y3 = y3;
+-}
+-
+-std::shared_ptr<geometrize::Shape> Triangle::clone() const
+-{
+-    std::shared_ptr<geometrize::Triangle> triangle{std::make_shared<geometrize::Triangle>()};
+-    triangle->m_x1 = m_x1;
+-    triangle->m_y1 = m_y1;
+-    triangle->m_x2 = m_x2;
+-    triangle->m_y2 = m_y2;
+-    triangle->m_x3 = m_x3;
+-    triangle->m_y3 = m_y3;
+-    triangle->setup = setup;
+-    triangle->mutate = mutate;
+-    triangle->rasterize = rasterize;
+-    return triangle;
+-}
+-
+-geometrize::ShapeTypes Triangle::getType() const
+-{
+-    return ShapeTypes::TRIANGLE;
+-}
+-
+-}
++#include "triangle.h"
++
++#include <cstdint>
++#include <memory>
++
++#include "shape.h"
++
++namespace geometrize
++{
++
++Triangle::Triangle(const float x1, const float y1, const float x2, const float y2, const float x3, const float y3) : Shape()
++{
++    m_x1 = x1;
++    m_y1 = y1;
++    m_x2 = x2;
++    m_y2 = y2;
++    m_x3 = x3;
++    m_y3 = y3;
++}
++
++std::shared_ptr<geometrize::Shape> Triangle::clone() const
++{
++    std::shared_ptr<geometrize::Triangle> triangle{std::make_shared<geometrize::Triangle>()};
++    triangle->m_x1 = m_x1;
++    triangle->m_y1 = m_y1;
++    triangle->m_x2 = m_x2;
++    triangle->m_y2 = m_y2;
++    triangle->m_x3 = m_x3;
++    triangle->m_y3 = m_y3;
++    triangle->setup = setup;
++    triangle->mutate = mutate;
++    triangle->mutateScaled = mutateScaled;
++    triangle->rasterize = rasterize;
++    triangle->rasterizeInto = [rf = triangle->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    return triangle;
++}
++
++geometrize::ShapeTypes Triangle::getType() const
++{
++    return ShapeTypes::TRIANGLE;
++}
++
++}
+diff -ru src/baseline-lib/geometrize/geometrize/state.cpp src/improved-lib/geometrize/geometrize/state.cpp
+--- src/baseline-lib/geometrize/geometrize/state.cpp	2026-08-27 13:24:27.426669700 +0800
++++ src/improved-lib/geometrize/geometrize/state.cpp	2026-08-29 12:54:19.623280700 +0800
+@@ -38,4 +38,17 @@
+     return oldState;
+ }
+ 
++geometrize::State State::mutate(const std::int32_t stepShift)
++{
++    geometrize::State oldState(*this);
++    // 优雅降级:外部自设形状(测试/脚本)未绑定 mutateScaled 时退回普通变异
++    if(m_shape->mutateScaled) {
++        m_shape->mutateScaled(*m_shape, stepShift);
++    } else {
++        m_shape->mutate(*m_shape);
++    }
++    m_score = -1;
++    return oldState;
++}
++
+ }
+diff -ru src/baseline-lib/geometrize/geometrize/state.h src/improved-lib/geometrize/geometrize/state.h
+--- src/baseline-lib/geometrize/geometrize/state.h	2026-08-27 13:24:27.427668900 +0800
++++ src/improved-lib/geometrize/geometrize/state.h	2026-08-29 12:53:42.623121800 +0800
+@@ -38,6 +38,13 @@
+      */
+     geometrize::State mutate();
+ 
++    /**
++     * @brief mutate 带步长的变异重载(自适应步长轨道专用)。
++     * @param stepShift 步长移位数:0=基准步长,1=1/2,2=1/4...。形状未设置 mutateScaled 时回退普通 mutate。
++     * @return The old state, useful for undoing the mutation or keeping track of previous states.
++     */
++    geometrize::State mutate(std::int32_t stepShift);
++
+     double m_score; ///< The score of the state, a measure of the improvement applying the state to the current bitmap will have.
+     std::uint8_t m_alpha; ///< The alpha of the shape.
+     std::shared_ptr<geometrize::Shape> m_shape; ///< The geometric primitive owned by the state.

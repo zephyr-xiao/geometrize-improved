@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/two_satyrs/manifest.json</file>
+        <file>templates/templates/two_satyrs/settings.json</file>
+        <file>templates/templates/two_satyrs/two_satyrs.jpg</file>
+    </qresource>
+</RCC>

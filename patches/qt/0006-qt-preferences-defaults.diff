@@ -1,0 +1,15 @@
+--- upstream/geometrize-app/geometrize/preferences/globalpreferences.cpp	2026-08-27 13:24:26.051177700 +0800
++++ src/improved-app/geometrize/preferences/globalpreferences.cpp	2026-08-28 09:18:25.429899200 +0800
+@@ -418,8 +418,10 @@
+     bool m_shouldShowImageTaskPixmapViewByDefault{true};
+ 
+     bool m_imageTaskResizeEnabled{true};
+-    std::pair<std::uint32_t, std::uint32_t> m_imageTaskResizeThreshold{256, 256};
+-    std::uint32_t m_imageTaskMaxThreads{4};
++    // 1024 而非上游的 256:核心库优化后 1024 尺寸已可交互式使用,保底缩放只防极端大图
++    std::pair<std::uint32_t, std::uint32_t> m_imageTaskResizeThreshold{1024, 1024};
++    // 8 而非上游的 4:现代常见桌面 CPU 已普遍 8 线程,该值同时充当任务窗口线程上限
++    std::uint32_t m_imageTaskMaxThreads{8};
+ 
+     std::string m_languageIsoCode{"en"};
+     std::string m_scriptIsoCode{"Latn"};

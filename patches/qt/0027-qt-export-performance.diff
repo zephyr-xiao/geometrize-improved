@@ -1,0 +1,1416 @@
+# F3.7 导出性能优化(第十三批,2026-09-01)—— 补丁定位说明
+# baseline 侧 = 纯上游快照,+ 侧 = improved-app 累积态(与 0017-0026 同款口径)。
+# 内容:
+#   A GIF 导出 O(N²)→O(N):旧链路每帧把前 i 个形状序列化 SVG 整帧重放(QSvgRenderer),
+#     百万形状 = 10^11 级绘制指令,永远跑不完(用户 1052276 线实测卡死)。新链路 =
+#     IncrementalFrameRenderer:geometrize::Bitmap 画布逐帧累积新形状光栅化混合
+#     (rasterize + drawLines/drawLinesSegmented,与任务落画同一套函数,分段色存档
+#     正确复用),总成本 O(N)。
+#   B 帧数封顶 1000:百万形状按默认步长会产生 52 万帧(数 GB,播放器扛不住),
+#     超限自动均匀抽稀(不偏头尾,末帧必取)。PNG 帧序列(exportRasterizedSvgs)
+#     同款 O(N²) 一并换增量渲染 + 同款封顶。
+#   C 导出异步化:GIF/PNG 序列从 UI 线程同步执行改为 QtConcurrent 后台 +
+#     QProgressDialog(不可取消,窗口模态)+ 期间禁用窗口,完成自动恢复;
+#     shapes 以 shared_ptr 列表浅拷贝持有,任务销毁不影响导出。
+#   D 通道序修复(GIF 红蓝互换实测):BurstLinker reinterpret_cast RGB{r,g,b} 要求
+#     小端 [r,g,b] 内存;addFrame 的 scaled 中转使 QImage 实际按 ARGB32 布局走
+#     makeImageData 时红蓝读反。修复 = 输入深拷贝钉死 Format_ARGB32 + makeImageData
+#     按 ARGB 内存序([B,G,R,A])读通道——格式与读法显式配对,不再依赖碰巧。
+#   E GIF 控件默认值/上限调整:每帧形状数 1-1000(默认 20)、FPS 1-50(默认 20,
+#     GIF 延迟下限 20ms 格式上限 50)、输出倍率默认 3→1。
+#   F SVG 命名空间修复:exportSVG 的 xmlns 误用 https:// 协议头致浏览器拒绝渲染,
+#     改 http://——按 lib 惯例归 patches/lib/0017-c-svgexporter-namespace.diff。
+# 观感说明:D 之外的帧画面从 SVG 抗锯齿重放变为运行时同源扫描线混合,像素与旧路线
+#   略有差异;GIF 是采样视图,不涉 bit-exact 门禁对象。
+# 验证:双链路编译 0 错误;GUI 冒烟 2189 形状导出弹进度框 UI 不卡;用户实测通过。
+# 应用时保持 -utf-8 与 CRLF。
+--- upstream/geometrize-app/geometrize/exporter/gifexporter.cpp
++++ src/improved-app/geometrize/exporter/gifexporter.cpp
+@@ -1,118 +1,202 @@
+-#include "gifexporter.h"
+-
+-#include <algorithm>
+-#include <cassert>
+-#include <cstdint>
+-#include <functional>
+-#include <thread>
+-
+-#include <QImage>
+-#include <QRgb>
+-#include <QSet>
+-#include <QVector>
+-
+-#include "BurstLinker.h"
+-
+-#include "geometrize/bitmap/bitmap.h"
+-#include "geometrize/core.h"
+-#include "geometrize/rasterizer/rasterizer.h"
+-#include "geometrize/rasterizer/scanline.h"
+-#include "geometrize/shape/shape.h"
+-#include "geometrize/shaperesult.h"
+-
+-#include "image/imageloader.h"
+-#include "imageexporter.h"
+-
+-namespace {
+-
+-std::uint32_t* makeImageData(const QImage& image)
+-{
+-    // This is deleted by the library after the image is added
+-    const std::size_t imageSizePixels = image.width() * image.height();
+-    auto bgrs = new std::uint32_t[imageSizePixels];
+-    const uchar* imageBytes = image.constBits();
+-
+-    int byteIndex = 0;
+-    for(std::size_t pixelIdx = 0; pixelIdx < imageSizePixels; pixelIdx++) {
+-        const std::int32_t r = imageBytes[byteIndex];
+-        const std::int32_t g = imageBytes[byteIndex + 1];
+-        const std::int32_t b = imageBytes[byteIndex + 2];
+-
+-        const std::int32_t bgr = b << 16 | g << 8 | r;
+-        bgrs[pixelIdx] = static_cast<std::uint32_t>(bgr);
+-
+-        byteIndex += 4;
+-    }
+-
+-    return bgrs;
+-}
+-
+-bool addFrame(
+-    const std::vector<geometrize::ShapeResult>& shapes,
+-    const std::uint32_t inputWidth,
+-    const std::uint32_t inputHeight,
+-    const std::uint32_t outputWidth,
+-    const std::uint32_t outputHeight,
+-    const std::uint32_t delayMs,
+-    blk::BurstLinker& gif)
+-{
+-    QImage image = geometrize::exporter::renderSvgShapeDataToImage(shapes, inputWidth, inputHeight, outputWidth, outputHeight);
+-    image = image.convertToFormat(QImage::Format_RGBA8888);
+-
+-    if(image.isNull() || image.width() == 0 || image.height() == 0) {
+-        assert(0 && "Attempted to add invalid image");
+-        return false;
+-    }
+-
+-    gif.connect(makeImageData(image), delayMs, blk::QuantizerType::Octree, blk::DitherType::NO, 0, 0);
+-
+-    return true;
+-}
+-
+-}
+-
+-namespace geometrize
+-{
+-
+-namespace exporter
+-{
+-
+-bool exportGIF(
+-        const std::vector<geometrize::ShapeResult>& data,
+-        std::uint32_t inputWidth,
+-        std::uint32_t inputHeight,
+-        std::uint32_t outputWidth,
+-        std::uint32_t outputHeight,
+-        const std::function<bool(std::size_t)>& frameSkipPredicate,
+-        const std::string& filePath)
+-{
+-    blk::BurstLinker gif;
+-    if(!gif.init(filePath.c_str(), outputWidth, outputHeight, 0, std::max(1U, std::thread::hardware_concurrency()))) {
+-        assert(0 && "Failed to initialize BurstLinker GIF export");
+-        return false;
+-    }
+-
+-    // Could start by adding the final result
+-    //addFrame(data, inputWidth, inputHeight, outputWidth, outputHeight, 400, gif);
+-
+-    for(std::uint32_t i = 0; i < data.size(); i++) {
+-        if(frameSkipPredicate(i)) {
+-            continue;
+-        }
+-
+-        std::uint32_t delayMs = i == 0 ? 0 : std::max(20, static_cast<std::int32_t>(1000 / (i + 1)));
+-        if(i == data.size() - 1U) {
+-            delayMs = 2000; // Extra delay at end of animation
+-        }
+-
+-        const std::vector<geometrize::ShapeResult> shapes(data.begin(), data.begin() + i);
+-        addFrame(shapes, inputWidth, inputHeight, outputWidth, outputHeight, delayMs, gif);
+-    }
+-
+-    gif.release();
+-    return true;
+-}
+-
+-}
+-
+-}
++#include "gifexporter.h"
++
++#include <algorithm>
++#include <cassert>
++#include <cstdint>
++#include <functional>
++#include <thread>
++
++#include <QImage>
++#include <QRgb>
++#include <QSet>
++#include <QVector>
++
++#include "BurstLinker.h"
++
++#include "geometrize/bitmap/bitmap.h"
++#include "geometrize/core.h"
++#include "geometrize/rasterizer/rasterizer.h"
++#include "geometrize/rasterizer/scanline.h"
++#include "geometrize/shape/shape.h"
++#include "geometrize/shaperesult.h"
++
++#include "image/imageloader.h"
++#include "imageexporter.h"
++
++namespace {
++
++std::uint32_t* makeImageData(const QImage& image)
++{
++    // This is deleted by the library after the image is added
++    const std::size_t imageSizePixels = image.width() * image.height();
++    auto bgrs = new std::uint32_t[imageSizePixels];
++    const uchar* imageBytes = image.constBits();
++
++    // 输入钉死为 Format_ARGB32(调用侧保证):小端内存序 [B,G,R,A],
++    // 打包成小端 [r,g,b,0](BurstLinker reinterpret_cast RGB{r,g,b} 所需)。
++    // 按旧链路"假设 RGBA 内存"的读法处理 ARGB 内存会把红蓝互换(GIF 泛蓝实测根因)。
++    int byteIndex = 0;
++    for(std::size_t pixelIdx = 0; pixelIdx < imageSizePixels; pixelIdx++) {
++        const std::int32_t b = imageBytes[byteIndex];
++        const std::int32_t g = imageBytes[byteIndex + 1];
++        const std::int32_t r = imageBytes[byteIndex + 2];
++
++        const std::uint32_t packed = static_cast<std::uint32_t>(b << 16 | g << 8 | r);
++        bgrs[pixelIdx] = packed;
++
++        byteIndex += 4;
++    }
++
++    return bgrs;
++}
++
++/// 把单个形状按其存档颜色画上位图画布:分段色存档非空时逐行取色(与任务落画同一路径),
++/// 否则整形状单色。alpha 预乘混合公式与 drawLines 一致,帧画面与运行时位图同源。
++void drawShapeOnCanvas(geometrize::Bitmap& canvas, const geometrize::ShapeResult& shape)
++{
++    std::vector<geometrize::Scanline> lines{shape.shape->rasterize(*shape.shape)};
++    if(!shape.segments.empty()) {
++        std::vector<geometrize::rgba> colors;
++        colors.reserve(shape.segments.size());
++        for(const geometrize::ScanlineColor& segment : shape.segments) {
++            colors.push_back(segment.color);
++        }
++        geometrize::drawLinesSegmented(canvas, colors, lines);
++    } else {
++        geometrize::drawLines(canvas, shape.color, lines);
++    }
++}
++
++/// 增量帧渲染:画布逐帧累积新形状的光栅化混合。相比"每帧序列化 SVG 整帧重放"的
++/// O(N²) 老路线(百万形状 = 10^11 级绘制指令,不可完成),总成本 O(N)。
++class IncrementalFrameRenderer
++{
++public:
++    IncrementalFrameRenderer(const std::uint32_t width, const std::uint32_t height) :
++        m_canvas{width, height, geometrize::rgba{0, 0, 0, 0}}
++    {
++    }
++
++    /// 把 [first, last) 区间的形状画上画布(区间来自调用侧的帧切片)
++    void drawRange(const geometrize::ShapeResult* first, const geometrize::ShapeResult* const last)
++    {
++        for(; first != last; ++first) {
++            drawShapeOnCanvas(m_canvas, *first);
++        }
++    }
++
++    QImage snapshot() const
++    {
++        return geometrize::image::createImage(m_canvas);
++    }
++
++private:
++    geometrize::Bitmap m_canvas;
++};
++
++bool addFrame(
++    QImage image,
++    const std::uint32_t outputWidth,
++    const std::uint32_t outputHeight,
++    const std::uint32_t delayMs,
++    blk::BurstLinker& gif)
++{
++    // 深拷贝钉死为 Format_ARGB32:makeImageData 按 ARGB 内存序读通道(见其注释);
++    // scaled 放大后同样保持该格式,通道序全程确定
++    image = image.convertToFormat(QImage::Format_ARGB32);
++    if(image.isNull() || image.width() == 0 || image.height() == 0) {
++        assert(0 && "Attempted to add invalid image");
++        return false;
++    }
++    if(static_cast<std::uint32_t>(image.width()) != outputWidth || static_cast<std::uint32_t>(image.height()) != outputHeight) {
++        image = image.scaled(static_cast<int>(outputWidth), static_cast<int>(outputHeight),
++                             Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32);
++    }
++
++    gif.connect(makeImageData(image), delayMs, blk::QuantizerType::Octree, blk::DitherType::NO, 0, 0);
++
++    return true;
++}
++
++}
++
++namespace geometrize
++{
++
++namespace exporter
++{
++
++bool exportGIF(
++        const std::vector<geometrize::ShapeResult>& data,
++        std::uint32_t inputWidth,
++        std::uint32_t inputHeight,
++        std::uint32_t outputWidth,
++        std::uint32_t outputHeight,
++        const std::function<bool(std::size_t)>& frameSkipPredicate,
++        const std::string& filePath,
++        const std::uint32_t frameDelayMs,
++        const std::uint32_t loopCount,
++        const std::uint32_t endPauseMs)
++{
++    if(data.empty()) {
++        return false;
++    }
++
++    // loopCount=0 为 GIF 语义的无限循环,BurstLinker 直接透传
++    blk::BurstLinker gif;
++    if(!gif.init(filePath.c_str(), outputWidth, outputHeight, loopCount, std::max(1U, std::thread::hardware_concurrency()))) {
++        assert(0 && "Failed to initialize BurstLinker GIF export");
++        return false;
++    }
++
++    // 增量帧:画布按帧切片逐段累积混合,帧画面与任务运行时位图同源(同一套光栅化+混合函数)。
++    // 画布透明底:上游 GUI 落画前有背景矩形(index 0)兜底,老路线的 SVG 渲染也是透明底。
++    IncrementalFrameRenderer renderer{inputWidth, inputHeight};
++
++    // 帧数封顶:百万形状按默认步长会产生 50 万+ 帧(数 GB 体积,播放器也扛不住)。
++    // 超限时自动加大取帧间隔,保证帧数不超过上限(均匀采样,不偏头尾)。
++    constexpr std::size_t maxFrames{1000};
++    std::size_t keptFrames = 0;
++    for(std::size_t i = 0; i < data.size(); i++) {
++        if(!frameSkipPredicate(i)) {
++            keptFrames++;
++        }
++    }
++    std::size_t frameStride = 1; // 保留帧之间的采样步进(在 frameSkipPredicate 已筛过的基础上再均匀抽稀)
++    if(keptFrames > maxFrames) {
++        frameStride = (keptFrames + maxFrames - 1) / maxFrames;
++    }
++
++    std::size_t frameBegin = 0;
++    std::size_t keptIndex = 0;
++    for(std::size_t i = 0; i < data.size(); i++) {
++        if(frameSkipPredicate(i)) {
++            continue;
++        }
++        const bool takeFrame = (keptIndex % frameStride == 0) || (i == data.size() - 1U); // 末帧必取
++        keptIndex++;
++
++        // 固定帧率模式:统一延迟(下限 20ms,GIF 播放器对更短延迟的兼容性差);
++        // frameDelayMs=0 保持动态曲线旧行为(帧序号越大延迟越短)
++        std::uint32_t delayMs = (frameDelayMs > 0)
++            ? std::max(20U, frameDelayMs)
++            : (i == 0 ? 0U : std::max(20, static_cast<std::int32_t>(1000 / (i + 1))));
++        if(endPauseMs > 0 && i == data.size() - 1U) {
++            delayMs = endPauseMs; // Extra delay at end of animation
++        }
++
++        if(takeFrame) {
++            // 帧切片 [frameBegin, i+1):本帧把新增形状画上画布后取快照
++            renderer.drawRange(data.data() + frameBegin, data.data() + i + 1);
++            frameBegin = i + 1;
++            addFrame(renderer.snapshot(), outputWidth, outputHeight, delayMs, gif);
++        }
++    }
++
++    gif.release();
++    return true;
++}
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/exporter/imageexporter.cpp
++++ src/improved-app/geometrize/exporter/imageexporter.cpp
+@@ -11,6 +11,9 @@
+ #include "geometrize/bitmap/bitmap.h"
+ #include "geometrize/commonutil.h"
+ #include "geometrize/exporter/svgexporter.h"
++#include "geometrize/rasterizer/rasterizer.h"
++#include "geometrize/rasterizer/scanline.h"
++#include "geometrize/shape/shape.h"
+ #include "geometrize/shaperesult.h"
+ 
+ #include "image/imageloader.h"
+@@ -93,11 +96,40 @@
+         const std::string& baseFilename,
+         const std::string& fileExtension)
+ {
++    if(shapes.empty()) {
++        return false;
++    }
++
++    // 增量帧:画布逐帧累积新形状,每帧存一张 PNG。老路线"每帧序列化 SVG 前缀整帧重放"
++    // 是 O(N²)(百万形状 = 10^11 级绘制指令,不可完成),增量路线总成本 O(N)。
++    // 帧数上限:百万形状会产生百万张 PNG,超出时均匀抽稀到上限。
++    constexpr std::size_t maxFrames{1000};
++    const std::size_t frameStride{(shapes.size() + maxFrames - 1) / maxFrames};
++
++    geometrize::Bitmap canvas{inputWidth, inputHeight, geometrize::rgba{0, 0, 0, 0}};
+     for(std::size_t i = 0; i < shapes.size(); i++) {
+-        const std::string path{targetDir + "/" + baseFilename + "_" + std::to_string(i) + fileExtension};
++        std::vector<geometrize::Scanline> lines{shapes[i].shape->rasterize(*shapes[i].shape)};
++        if(!shapes[i].segments.empty()) {
++            std::vector<geometrize::rgba> colors;
++            colors.reserve(shapes[i].segments.size());
++            for(const geometrize::ScanlineColor& segment : shapes[i].segments) {
++                colors.push_back(segment.color);
++            }
++            geometrize::drawLinesSegmented(canvas, colors, lines);
++        } else {
++            geometrize::drawLines(canvas, shapes[i].color, lines);
++        }
+ 
+-        const std::vector<geometrize::ShapeResult> shapeSubset(shapes.begin(), shapes.begin() + i);
+-        if(!exportRasterizedSvg(shapeSubset, inputWidth, inputHeight, outputWidth, outputHeight, path)) {
++        if((i + 1) % frameStride != 0 && i != shapes.size() - 1U) {
++            continue;
++        }
++        const std::string path{targetDir + "/" + baseFilename + "_" + std::to_string(i) + fileExtension};
++        QImage image{geometrize::image::createImage(canvas)};
++        if(static_cast<std::uint32_t>(image.width()) != outputWidth || static_cast<std::uint32_t>(image.height()) != outputHeight) {
++            image = image.scaled(static_cast<int>(outputWidth), static_cast<int>(outputHeight),
++                                 Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
++        }
++        if(!exportImage(image, path)) {
+             return false;
+         }
+     }
+--- upstream/geometrize-app/geometrize/dialog/imagetaskexportwidget.cpp
++++ src/improved-app/geometrize/dialog/imagetaskexportwidget.cpp
+@@ -1,286 +1,318 @@
+-#include "imagetaskexportwidget.h"
+-#include "ui_imagetaskexportwidget.h"
+-
+-#include <memory>
+-#include <vector>
+-
+-#include <QMessageBox>
+-
+-#include "geometrize/shaperesult.h"
+-#include "geometrize/exporter/shapearrayexporter.h"
+-#include "geometrize/exporter/svgexporter.h"
+-
+-#include "common/uiactions.h"
+-#include "common/util.h"
+-#include "exporter/gifexporter.h"
+-#include "exporter/imageexporter.h"
+-#include "exporter/shapedataexporter.h"
+-#include "exporter/webpageexporter.h"
+-#include "task/imagetask.h"
+-
+-namespace geometrize
+-{
+-
+-namespace dialog
+-{
+-
+-class ImageTaskExportWidget::ImageTaskExportWidgetImpl
+-{
+-public:
+-    ImageTaskExportWidgetImpl(ImageTaskExportWidget* pQ) : m_task{nullptr}, m_shapes{nullptr}, q{pQ}, ui{std::make_unique<Ui::ImageTaskExportWidget>()}
+-    {
+-        ui->setupUi(q);
+-        populateUi();
+-    }
+-    ~ImageTaskExportWidgetImpl() = default;
+-    ImageTaskExportWidgetImpl operator=(const ImageTaskExportWidgetImpl&) = delete;
+-    ImageTaskExportWidgetImpl(const ImageTaskExportWidgetImpl&) = delete;
+-
+-    void setImageTask(const task::ImageTask* task, const std::vector<geometrize::ShapeResult>* shapes)
+-    {
+-        m_task = task;
+-        m_shapes = shapes;
+-    }
+-
+-    void saveSVG() const
+-    {
+-        if(!m_task || !m_shapes) {
+-            showExportMisconfiguredMessage();
+-            return;
+-        }
+-
+-        const QString path{common::ui::openSaveSVGPathPickerDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-
+-        const std::string data{geometrize::exporter::exportSVG(*m_shapes, m_task->getCurrent().getWidth(), m_task->getCurrent().getHeight())};
+-        util::writeStringToFile(data, path.toStdString());
+-    }
+-
+-    void saveRasterizedSVG() const
+-    {
+-        if(!m_task || !m_shapes) {
+-            showExportMisconfiguredMessage();
+-            return;
+-        }
+-
+-        const QString path{common::ui::openSaveRasterizedSVGPathPickerDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
+-        const std::uint32_t width{m_task->getCurrent().getWidth()};
+-        const std::uint32_t height{m_task->getCurrent().getHeight()};
+-        geometrize::exporter::exportRasterizedSvg(
+-                    *m_shapes,
+-                    width,
+-                    height,
+-                    width * scaleFactor,
+-                    height * scaleFactor,
+-                    path.toStdString());
+-    }
+-
+-    void saveRasterizedSVGs() const
+-    {
+-        if(!m_task || !m_shapes) {
+-            showExportMisconfiguredMessage();
+-            return;
+-        }
+-
+-        const QString path{common::ui::openSaveRasterizedSVGsPathPickerDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
+-        const std::uint32_t width{m_task->getCurrent().getWidth()};
+-        const std::uint32_t height{m_task->getCurrent().getHeight()};
+-        geometrize::exporter::exportRasterizedSvgs(
+-                    *m_shapes,
+-                    width,
+-                    height,
+-                    width * scaleFactor,
+-                    height * scaleFactor,
+-                    path.toStdString(),
+-                    "exported_image",
+-                    ".png");
+-    }
+-
+-    void saveGeometryData() const
+-    {
+-        if(!m_shapes) {
+-            showExportMisconfiguredMessage();
+-            return;
+-        }
+-
+-        const QString path{common::ui::openSaveGeometryDataPathPickerDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-
+-        geometrize::exporter::ShapeDataFormat format = exporter::ShapeDataFormat::JSON;
+-        if(path.endsWith("json")) {
+-            format = geometrize::exporter::ShapeDataFormat::JSON;
+-        } else if(path.endsWith("txt")) {
+-            format = geometrize::exporter::ShapeDataFormat::CUSTOM_ARRAY;
+-        }
+-
+-        const std::string data{geometrize::exporter::exportShapeData(*m_shapes, format)};
+-        util::writeStringToFile(data, path.toStdString());
+-    }
+-
+-    void saveGIF() const
+-    {
+-        if(!m_task || !m_shapes) {
+-            showExportMisconfiguredMessage();
+-            return;
+-        }
+-
+-        const QString path{common::ui::openSaveGIFPathPickerDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
+-        const std::uint32_t width{m_task->getCurrent().getWidth()};
+-        const std::uint32_t height{m_task->getCurrent().getHeight()};
+-
+-        auto frameSkipPredicate = [](const std::size_t frameIdx) {
+-            if(frameIdx % 2 == 0) {
+-                return true;
+-            }
+-            return false;
+-        };
+-
+-        geometrize::exporter::exportGIF(
+-            *m_shapes,
+-            width,
+-            height,
+-            width * scaleFactor,
+-            height * scaleFactor,
+-            frameSkipPredicate,
+-            path.toStdString());
+-    }
+-
+-    void saveHTML5WebpageButton() const
+-    {
+-        if(!m_shapes) {
+-            showExportMisconfiguredMessage();
+-            return;
+-        }
+-
+-        const QString path{common::ui::openSaveCanvasPathPickerDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-
+-        const std::string pageSource{geometrize::exporter::exportCanvasWebpage(*m_shapes)};
+-        util::writeStringToFile(pageSource, path.toStdString());
+-    }
+-
+-    void saveWebGLWebpageButton() const
+-    {
+-        if(!m_shapes) {
+-            showExportMisconfiguredMessage();
+-            return;
+-        }
+-
+-        const QString path{common::ui::openSaveWebGLPathPickerDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-
+-        const std::string pageSource{geometrize::exporter::exportWebGLWebpage(*m_shapes)};
+-        util::writeStringToFile(pageSource, path.toStdString());
+-    }
+-
+-    void onLanguageChange()
+-    {
+-        ui->retranslateUi(q);
+-        populateUi();
+-    }
+-
+-private:
+-    void populateUi()
+-    {
+-    }
+-
+-    void showExportMisconfiguredMessage() const
+-    {
+-        QMessageBox::warning(q, tr("Failed to run exporter", "Title of error message shown when an attempt to save/export a file failed"),
+-                             tr("Failed to run exporter. Exporter was misconfigured.", "Error message text shown when an attempt to save/export a file failed"));
+-    }
+-
+-    const geometrize::task::ImageTask* m_task;
+-    const std::vector<geometrize::ShapeResult>* m_shapes;
+-
+-    ImageTaskExportWidget* q;
+-    std::unique_ptr<Ui::ImageTaskExportWidget> ui;
+-};
+-
+-ImageTaskExportWidget::ImageTaskExportWidget(QWidget* parent) :
+-    QWidget{parent},
+-    d{std::make_unique<ImageTaskExportWidget::ImageTaskExportWidgetImpl>(this)}
+-{
+-}
+-
+-ImageTaskExportWidget::~ImageTaskExportWidget()
+-{
+-}
+-
+-void ImageTaskExportWidget::setImageTask(const task::ImageTask* task, const std::vector<geometrize::ShapeResult>* shapes)
+-{
+-    d->setImageTask(task, shapes);
+-}
+-
+-void ImageTaskExportWidget::on_saveImageButton_clicked()
+-{
+-    d->saveRasterizedSVG();
+-}
+-
+-void ImageTaskExportWidget::on_saveImagesButton_clicked()
+-{
+-    d->saveRasterizedSVGs();
+-}
+-
+-void ImageTaskExportWidget::on_saveSVGButton_clicked()
+-{
+-    d->saveSVG();
+-}
+-
+-void ImageTaskExportWidget::on_saveGeometryDataButton_clicked()
+-{
+-    d->saveGeometryData();
+-}
+-
+-void ImageTaskExportWidget::on_saveGIFButton_clicked()
+-{
+-    d->saveGIF();
+-}
+-
+-void ImageTaskExportWidget::on_saveHTML5WebpageButton_clicked()
+-{
+-    d->saveHTML5WebpageButton();
+-}
+-
+-void ImageTaskExportWidget::on_saveWebGLWebpageButton_clicked()
+-{
+-    d->saveWebGLWebpageButton();
+-}
+-
+-void ImageTaskExportWidget::changeEvent(QEvent* event)
+-{
+-    if (event->type() == QEvent::LanguageChange) {
+-        d->onLanguageChange();
+-    }
+-    QWidget::changeEvent(event);
+-}
+-
+-}
+-
+-}
++#include "imagetaskexportwidget.h"
++#include "ui_imagetaskexportwidget.h"
++
++#include <algorithm>
++#include <memory>
++#include <vector>
++
++#include <QMessageBox>
++#include <QPointer>
++#include <QProgressDialog>
++
++#include <QtConcurrent/QtConcurrentRun>
++#include <QFutureWatcher>
++
++#include "geometrize/shaperesult.h"
++#include "geometrize/exporter/shapearrayexporter.h"
++#include "geometrize/exporter/svgexporter.h"
++
++#include "common/uiactions.h"
++#include "common/util.h"
++#include "exporter/gifexporter.h"
++#include "exporter/imageexporter.h"
++#include "exporter/shapedataexporter.h"
++#include "exporter/webpageexporter.h"
++#include "task/imagetask.h"
++
++namespace geometrize
++{
++
++namespace dialog
++{
++
++class ImageTaskExportWidget::ImageTaskExportWidgetImpl
++{
++public:
++    ImageTaskExportWidgetImpl(ImageTaskExportWidget* pQ) : m_task{nullptr}, m_shapes{nullptr}, q{pQ}, ui{std::make_unique<Ui::ImageTaskExportWidget>()}
++    {
++        ui->setupUi(q);
++        populateUi();
++    }
++    ~ImageTaskExportWidgetImpl() = default;
++    ImageTaskExportWidgetImpl operator=(const ImageTaskExportWidgetImpl&) = delete;
++    ImageTaskExportWidgetImpl(const ImageTaskExportWidgetImpl&) = delete;
++
++    void setImageTask(const task::ImageTask* task, const std::vector<geometrize::ShapeResult>* shapes)
++    {
++        m_task = task;
++        m_shapes = shapes;
++    }
++
++    void saveSVG() const
++    {
++        if(!m_task || !m_shapes) {
++            showExportMisconfiguredMessage();
++            return;
++        }
++
++        const QString path{common::ui::openSaveSVGPathPickerDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++
++        const std::string data{geometrize::exporter::exportSVG(*m_shapes, m_task->getCurrent().getWidth(), m_task->getCurrent().getHeight())};
++        util::writeStringToFile(data, path.toStdString());
++    }
++
++    void saveRasterizedSVG() const
++    {
++        if(!m_task || !m_shapes) {
++            showExportMisconfiguredMessage();
++            return;
++        }
++
++        const QString path{common::ui::openSaveRasterizedSVGPathPickerDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++
++        // 按用户倍率在放大画布上重放形状矢量:形状坐标不变,放大由 SVG viewBox→输出尺寸映射完成
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
++        const std::uint32_t width{m_task->getCurrent().getWidth()};
++        const std::uint32_t height{m_task->getCurrent().getHeight()};
++        geometrize::exporter::exportRasterizedSvg(
++                    *m_shapes,
++                    width,
++                    height,
++                    width * scaleFactor,
++                    height * scaleFactor,
++                    path.toStdString());
++    }
++
++    void saveRasterizedSVGs() const
++    {
++        if(!m_task || !m_shapes) {
++            showExportMisconfiguredMessage();
++            return;
++        }
++
++        const QString path{common::ui::openSaveRasterizedSVGsPathPickerDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++
++        // 按用户倍率在放大画布上重放形状矢量,逐步前缀各存一帧(导出器内部已做增量渲染+帧数上限)
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
++        const std::uint32_t width{m_task->getCurrent().getWidth()};
++        const std::uint32_t height{m_task->getCurrent().getHeight()};
++
++        runExportInBackground(tr("Exporting image sequence..."),
++            [shapes = *m_shapes, width, height, scaleFactor, targetDir = path.toStdString()]() {
++                geometrize::exporter::exportRasterizedSvgs(shapes, width, height,
++                    width * scaleFactor, height * scaleFactor,
++                    targetDir, "exported_image", ".png");
++            });
++    }
++
++    void saveGeometryData() const
++    {
++        if(!m_shapes) {
++            showExportMisconfiguredMessage();
++            return;
++        }
++
++        const QString path{common::ui::openSaveGeometryDataPathPickerDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++
++        geometrize::exporter::ShapeDataFormat format = exporter::ShapeDataFormat::JSON;
++        if(path.endsWith("json")) {
++            format = geometrize::exporter::ShapeDataFormat::JSON;
++        } else if(path.endsWith("txt")) {
++            format = geometrize::exporter::ShapeDataFormat::CUSTOM_ARRAY;
++        }
++
++        const std::string data{geometrize::exporter::exportShapeData(*m_shapes, format)};
++        util::writeStringToFile(data, path.toStdString());
++    }
++
++    void saveGIF() const
++    {
++        if(!m_task || !m_shapes) {
++            showExportMisconfiguredMessage();
++            return;
++        }
++
++        const QString path{common::ui::openSaveGIFPathPickerDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++
++        // 参数与控件默认值对齐:每 20 shape 一帧、20FPS(GIF 延迟下限 20ms,上限 50)、x1 输出、无限循环、末帧 2 秒
++        const std::size_t frameStep{static_cast<std::size_t>(std::max(1, ui->frameStepSpinBox->value()))};
++        const std::uint32_t frameDelayMs{static_cast<std::uint32_t>(1000 / std::max(1, ui->frameRateSpinBox->value()))};
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->scaleFactorSpinBox->value()))};
++        const std::uint32_t loopCount{ui->loopGifCheckbox->isChecked() ? 0U : 1U};
++        const std::uint32_t endPauseMs{ui->endPauseCheckbox->isChecked() ? 2000U : 0U};
++
++        const std::uint32_t width{m_task->getCurrent().getWidth()};
++        const std::uint32_t height{m_task->getCurrent().getHeight()};
++
++        auto frameSkipPredicate = [frameStep](const std::size_t frameIdx) {
++            return frameIdx % frameStep != 0; // 保留每第 N 个形状处取帧
++        };
++
++        // 后台执行:导出走 QtConcurrent 线程,UI 弹进度框。shapes 以 shared_ptr 列表浅拷贝
++        // 持有(形状本体共享,不随任务销毁失效)
++        runExportInBackground(tr("Exporting GIF..."),
++            [shapes = *m_shapes, width, height, scaleFactor, frameSkipPredicate, frameDelayMs, loopCount, endPauseMs, filePath = path.toStdString()]() {
++                geometrize::exporter::exportGIF(shapes, width, height,
++                    width * scaleFactor, height * scaleFactor,
++                    frameSkipPredicate, filePath, frameDelayMs, loopCount, endPauseMs);
++            });
++    }
++
++    void saveHTML5WebpageButton() const
++    {
++        if(!m_shapes) {
++            showExportMisconfiguredMessage();
++            return;
++        }
++
++        const QString path{common::ui::openSaveCanvasPathPickerDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++
++        const std::string pageSource{geometrize::exporter::exportCanvasWebpage(*m_shapes)};
++        util::writeStringToFile(pageSource, path.toStdString());
++    }
++
++    void saveWebGLWebpageButton() const
++    {
++        if(!m_shapes) {
++            showExportMisconfiguredMessage();
++            return;
++        }
++
++        const QString path{common::ui::openSaveWebGLPathPickerDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++
++        const std::string pageSource{geometrize::exporter::exportWebGLWebpage(*m_shapes)};
++        util::writeStringToFile(pageSource, path.toStdString());
++    }
++
++    void onLanguageChange()
++    {
++        ui->retranslateUi(q);
++        populateUi();
++    }
++
++private:
++    void populateUi()
++    {
++    }
++
++    void showExportMisconfiguredMessage() const
++    {
++        QMessageBox::warning(q, tr("Failed to run exporter", "Title of error message shown when an attempt to save/export a file failed"),
++                             tr("Failed to run exporter. Exporter was misconfigured.", "Error message text shown when an attempt to save/export a file failed"));
++    }
++
++    /// 把耗时导出挂到 QtConcurrent 线程:期间弹不可取消的进度框并禁用导出按钮,
++    /// 完成后自动恢复。widget 是 WA_DeleteOnClose 链上的一环,watcher 以 q 为 parent、
++    /// 回调以 QPointer 守护,窗口先关也不会拍悬空对象。
++    template<typename Func>
++    void runExportInBackground(const QString& message, Func&& work) const
++    {
++        QPointer<ImageTaskExportWidget> guard{q};
++        auto* dialog = new QProgressDialog(message, QString(), 0, 0, q);
++        dialog->setWindowModality(Qt::WindowModal);
++        dialog->setCancelButton(nullptr);
++        dialog->setMinimumDuration(0);
++        dialog->show();
++
++        auto* watcher = new QFutureWatcher<void>(q);
++        q->connect(watcher, &QFutureWatcher<void>::finished, q, [guard, dialog]() {
++            if(guard.isNull()) {
++                return;
++            }
++            dialog->deleteLater();
++            guard->setEnabled(true);
++        });
++
++        q->setEnabled(false);
++        watcher->setFuture(QtConcurrent::run(std::forward<Func>(work)));
++    }
++
++    const geometrize::task::ImageTask* m_task;
++    const std::vector<geometrize::ShapeResult>* m_shapes;
++
++    ImageTaskExportWidget* q;
++    std::unique_ptr<Ui::ImageTaskExportWidget> ui;
++};
++
++ImageTaskExportWidget::ImageTaskExportWidget(QWidget* parent) :
++    QWidget{parent},
++    d{std::make_unique<ImageTaskExportWidget::ImageTaskExportWidgetImpl>(this)}
++{
++}
++
++ImageTaskExportWidget::~ImageTaskExportWidget()
++{
++}
++
++void ImageTaskExportWidget::setImageTask(const task::ImageTask* task, const std::vector<geometrize::ShapeResult>* shapes)
++{
++    d->setImageTask(task, shapes);
++}
++
++void ImageTaskExportWidget::on_saveImageButton_clicked()
++{
++    d->saveRasterizedSVG();
++}
++
++void ImageTaskExportWidget::on_saveImagesButton_clicked()
++{
++    d->saveRasterizedSVGs();
++}
++
++void ImageTaskExportWidget::on_saveSVGButton_clicked()
++{
++    d->saveSVG();
++}
++
++void ImageTaskExportWidget::on_saveGeometryDataButton_clicked()
++{
++    d->saveGeometryData();
++}
++
++void ImageTaskExportWidget::on_saveGIFButton_clicked()
++{
++    d->saveGIF();
++}
++
++void ImageTaskExportWidget::on_saveHTML5WebpageButton_clicked()
++{
++    d->saveHTML5WebpageButton();
++}
++
++void ImageTaskExportWidget::on_saveWebGLWebpageButton_clicked()
++{
++    d->saveWebGLWebpageButton();
++}
++
++void ImageTaskExportWidget::changeEvent(QEvent* event)
++{
++    if (event->type() == QEvent::LanguageChange) {
++        d->onLanguageChange();
++    }
++    QWidget::changeEvent(event);
++}
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/dialog/imagetaskexportwidget.ui
++++ src/improved-app/geometrize/dialog/imagetaskexportwidget.ui
+@@ -1,140 +1,260 @@
+-<?xml version="1.0" encoding="UTF-8"?>
+-<ui version="4.0">
+- <class>ImageTaskExportWidget</class>
+- <widget class="QWidget" name="ImageTaskExportWidget">
+-  <property name="geometry">
+-   <rect>
+-    <x>0</x>
+-    <y>0</y>
+-    <width>161</width>
+-    <height>459</height>
+-   </rect>
+-  </property>
+-  <property name="sizePolicy">
+-   <sizepolicy hsizetype="MinimumExpanding" vsizetype="MinimumExpanding">
+-    <horstretch>0</horstretch>
+-    <verstretch>0</verstretch>
+-   </sizepolicy>
+-  </property>
+-  <property name="minimumSize">
+-   <size>
+-    <width>0</width>
+-    <height>0</height>
+-   </size>
+-  </property>
+-  <property name="windowTitle">
+-   <string notr="true"/>
+-  </property>
+-  <layout class="QVBoxLayout" name="verticalLayout">
+-   <item>
+-    <widget class="QGroupBox" name="exportImagesGroupBox">
+-     <property name="title">
+-      <string extracomment="Title text above a group of controls related to exporting and saving images">Export Image</string>
+-     </property>
+-     <layout class="QVBoxLayout" name="verticalLayout_2">
+-      <item>
+-       <widget class="QPushButton" name="saveImageButton">
+-        <property name="text">
+-         <string extracomment="Text on a button that opens a dialog that allows the user to save an image file">Save Image</string>
+-        </property>
+-       </widget>
+-      </item>
+-      <item>
+-       <widget class="QPushButton" name="saveImagesButton">
+-        <property name="text">
+-         <string extracomment="Text on a button that opens a dialog that allows a user to save multiple image files">Save Images</string>
+-        </property>
+-       </widget>
+-      </item>
+-     </layout>
+-    </widget>
+-   </item>
+-   <item>
+-    <widget class="QGroupBox" name="exportSVGGroupBox">
+-     <property name="title">
+-      <string extracomment="Title text above a group of controls related to exporting and saving vector-based SVG images">Export SVG</string>
+-     </property>
+-     <layout class="QVBoxLayout" name="verticalLayout_3">
+-      <item>
+-       <widget class="QPushButton" name="saveSVGButton">
+-        <property name="text">
+-         <string extracomment="Text on a button that opens a dialog that allows a user to save a vector-based SVG image file">Save SVG</string>
+-        </property>
+-       </widget>
+-      </item>
+-     </layout>
+-    </widget>
+-   </item>
+-   <item>
+-    <widget class="QGroupBox" name="exportAnimatedGIFGroupbox">
+-     <property name="title">
+-      <string extracomment="Title text above a group of controls related to exporting and saving animated GIF images">Export Animated GIF</string>
+-     </property>
+-     <layout class="QVBoxLayout" name="verticalLayout_4">
+-      <item>
+-       <widget class="QPushButton" name="saveGIFButton">
+-        <property name="text">
+-         <string extracomment="Text on a button that opens a dialog that allows a user to save a GIF animation image file">Save GIF</string>
+-        </property>
+-       </widget>
+-      </item>
+-     </layout>
+-    </widget>
+-   </item>
+-   <item>
+-    <widget class="QGroupBox" name="exportWebpageGroupBox">
+-     <property name="title">
+-      <string extracomment="Title text above a group of controls related to exporting and saving webpages">Export Webpage</string>
+-     </property>
+-     <layout class="QVBoxLayout" name="verticalLayout_5">
+-      <item>
+-       <widget class="QPushButton" name="saveHTML5WebpageButton">
+-        <property name="text">
+-         <string extracomment="Text on a button that opens a dialog that allows a user to save a webpage that uses HTML5 web technology">Save HTML5 Webpage</string>
+-        </property>
+-       </widget>
+-      </item>
+-      <item>
+-       <widget class="QPushButton" name="saveWebGLWebpageButton">
+-        <property name="text">
+-         <string extracomment="Text on a button that opens a dialog that allows a user to save a webpage that uses WebGL technology">Save WebGL Webpage</string>
+-        </property>
+-       </widget>
+-      </item>
+-     </layout>
+-    </widget>
+-   </item>
+-   <item>
+-    <widget class="QGroupBox" name="exportGeometryDataGroupBox">
+-     <property name="title">
+-      <string extracomment="Title text above a group of controls related to exporting and saving geometric shape data">Export Geometry Data</string>
+-     </property>
+-     <layout class="QVBoxLayout" name="verticalLayout_6">
+-      <item>
+-       <widget class="QPushButton" name="saveGeometryDataButton">
+-        <property name="text">
+-         <string extracomment="Text on a button that opens a dialog that allows the user to save geometric shape data directly to a text file">Save Geometry Data</string>
+-        </property>
+-       </widget>
+-      </item>
+-     </layout>
+-    </widget>
+-   </item>
+-   <item>
+-    <spacer name="verticalSpacer">
+-     <property name="orientation">
+-      <enum>Qt::Vertical</enum>
+-     </property>
+-     <property name="sizeHint" stdset="0">
+-      <size>
+-       <width>20</width>
+-       <height>40</height>
+-      </size>
+-     </property>
+-    </spacer>
+-   </item>
+-  </layout>
+- </widget>
+- <resources/>
+- <connections/>
+-</ui>
++<?xml version="1.0" encoding="UTF-8"?>
++<ui version="4.0">
++ <class>ImageTaskExportWidget</class>
++ <widget class="QWidget" name="ImageTaskExportWidget">
++  <property name="geometry">
++   <rect>
++    <x>0</x>
++    <y>0</y>
++    <width>161</width>
++    <height>459</height>
++   </rect>
++  </property>
++  <property name="sizePolicy">
++   <sizepolicy hsizetype="MinimumExpanding" vsizetype="MinimumExpanding">
++    <horstretch>0</horstretch>
++    <verstretch>0</verstretch>
++   </sizepolicy>
++  </property>
++  <property name="minimumSize">
++   <size>
++    <width>0</width>
++    <height>0</height>
++   </size>
++  </property>
++  <property name="windowTitle">
++   <string notr="true"/>
++  </property>
++  <layout class="QVBoxLayout" name="verticalLayout">
++   <item>
++    <widget class="QGroupBox" name="exportImagesGroupBox">
++     <property name="title">
++      <string extracomment="Title text above a group of controls related to exporting and saving images">Export Image</string>
++     </property>
++     <layout class="QVBoxLayout" name="verticalLayout_2">
++      <item>
++       <layout class="QFormLayout" name="imageOptionsFormLayout">
++        <item row="0" column="0">
++         <widget class="QLabel" name="imageScaleLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the output resolution multiplier of the exported image">Output Scale</string>
++          </property>
++         </widget>
++        </item>
++        <item row="0" column="1">
++         <widget class="QSpinBox" name="imageScaleSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>8</number>
++          </property>
++          <property name="value">
++           <number>3</number>
++          </property>
++          <property name="toolTip">
++           <string>Output resolution multiplier. Higher values render smoother shapes but export slower.</string>
++          </property>
++         </widget>
++        </item>
++       </layout>
++      </item>
++      <item>
++       <widget class="QPushButton" name="saveImageButton">
++        <property name="text">
++         <string extracomment="Text on a button that opens a dialog that allows the user to save an image file">Save Image</string>
++        </property>
++       </widget>
++      </item>
++      <item>
++       <widget class="QPushButton" name="saveImagesButton">
++        <property name="text">
++         <string extracomment="Text on a button that opens a dialog that allows a user to save multiple image files">Save Images</string>
++        </property>
++       </widget>
++      </item>
++     </layout>
++    </widget>
++   </item>
++   <item>
++    <widget class="QGroupBox" name="exportSVGGroupBox">
++     <property name="title">
++      <string extracomment="Title text above a group of controls related to exporting and saving vector-based SVG images">Export SVG</string>
++     </property>
++     <layout class="QVBoxLayout" name="verticalLayout_3">
++      <item>
++       <widget class="QPushButton" name="saveSVGButton">
++        <property name="text">
++         <string extracomment="Text on a button that opens a dialog that allows a user to save a vector-based SVG image file">Save SVG</string>
++        </property>
++       </widget>
++      </item>
++     </layout>
++    </widget>
++   </item>
++   <item>
++    <widget class="QGroupBox" name="exportAnimatedGIFGroupbox">
++     <property name="title">
++      <string extracomment="Title text above a group of controls related to exporting and saving animated GIF images">Export Animated GIF</string>
++     </property>
++     <layout class="QVBoxLayout" name="verticalLayout_4">
++      <item>
++       <layout class="QFormLayout" name="gifOptionsFormLayout">
++        <item row="0" column="0">
++         <widget class="QLabel" name="frameStepLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls how many shapes are added between frames of the GIF animation">Shapes Per Frame</string>
++          </property>
++         </widget>
++        </item>
++        <item row="0" column="1">
++         <widget class="QSpinBox" name="frameStepSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>1000</number>
++          </property>
++          <property name="value">
++           <number>20</number>
++          </property>
++          <property name="toolTip">
++           <string>Take one animation frame for every N shapes. Higher values make smaller, faster animations.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="0">
++         <widget class="QLabel" name="frameRateLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the playback speed of the GIF animation">Frame Rate (FPS)</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="1">
++         <widget class="QSpinBox" name="frameRateSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>50</number>
++          </property>
++          <property name="value">
++           <number>20</number>
++          </property>
++          <property name="toolTip">
++           <string>Playback speed of the animation in frames per second. The GIF format floors frame delays at 20ms, so 50 is the practical maximum.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="2" column="0">
++         <widget class="QLabel" name="scaleFactorLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the output resolution multiplier of the GIF animation">Output Scale</string>
++          </property>
++         </widget>
++        </item>
++        <item row="2" column="1">
++         <widget class="QSpinBox" name="scaleFactorSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>8</number>
++          </property>
++          <property name="value">
++           <number>1</number>
++          </property>
++          <property name="toolTip">
++           <string>Output resolution multiplier. Higher values render smoother shapes but export slower.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="3" column="0" colspan="2">
++         <widget class="QCheckBox" name="loopGifCheckbox">
++          <property name="text">
++           <string extracomment="Checkbox that controls whether the GIF animation loops forever">Loop Forever</string>
++          </property>
++          <property name="checked">
++           <bool>true</bool>
++          </property>
++         </widget>
++        </item>
++        <item row="4" column="0" colspan="2">
++         <widget class="QCheckBox" name="endPauseCheckbox">
++          <property name="text">
++           <string extracomment="Checkbox that controls whether the last frame of the GIF animation pauses for two seconds">Pause at End</string>
++          </property>
++          <property name="checked">
++           <bool>true</bool>
++          </property>
++         </widget>
++        </item>
++       </layout>
++      </item>
++      <item>
++       <widget class="QPushButton" name="saveGIFButton">
++        <property name="text">
++         <string extracomment="Text on a button that opens a dialog that allows a user to save a GIF animation image file">Save GIF</string>
++        </property>
++       </widget>
++      </item>
++     </layout>
++    </widget>
++   </item>
++   <item>
++    <widget class="QGroupBox" name="exportWebpageGroupBox">
++     <property name="title">
++      <string extracomment="Title text above a group of controls related to exporting and saving webpages">Export Webpage</string>
++     </property>
++     <layout class="QVBoxLayout" name="verticalLayout_5">
++      <item>
++       <widget class="QPushButton" name="saveHTML5WebpageButton">
++        <property name="text">
++         <string extracomment="Text on a button that opens a dialog that allows a user to save a webpage that uses HTML5 web technology">Save HTML5 Webpage</string>
++        </property>
++       </widget>
++      </item>
++      <item>
++       <widget class="QPushButton" name="saveWebGLWebpageButton">
++        <property name="text">
++         <string extracomment="Text on a button that opens a dialog that allows a user to save a webpage that uses WebGL technology">Save WebGL Webpage</string>
++        </property>
++       </widget>
++      </item>
++     </layout>
++    </widget>
++   </item>
++   <item>
++    <widget class="QGroupBox" name="exportGeometryDataGroupBox">
++     <property name="title">
++      <string extracomment="Title text above a group of controls related to exporting and saving geometric shape data">Export Geometry Data</string>
++     </property>
++     <layout class="QVBoxLayout" name="verticalLayout_6">
++      <item>
++       <widget class="QPushButton" name="saveGeometryDataButton">
++        <property name="text">
++         <string extracomment="Text on a button that opens a dialog that allows the user to save geometric shape data directly to a text file">Save Geometry Data</string>
++        </property>
++       </widget>
++      </item>
++     </layout>
++    </widget>
++   </item>
++   <item>
++    <spacer name="verticalSpacer">
++     <property name="orientation">
++      <enum>Qt::Vertical</enum>
++     </property>
++     <property name="sizeHint" stdset="0">
++      <size>
++       <width>20</width>
++       <height>40</height>
++      </size>
++     </property>
++    </spacer>
++   </item>
++  </layout>
++ </widget>
++ <resources/>
++ <connections/>
++</ui>
+

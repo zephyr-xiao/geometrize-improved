@@ -1,0 +1,474 @@
+--- src/baseline-lib/geometrize/geometrize/shape/shapemutator.cpp
++++ src/improved-lib/geometrize/geometrize/shape/shapemutator.cpp
+@@ -152,231 +152,231 @@
+     s.m_y3 = s.m_y1 + geometrize::commonutil::randomRange(-32, 32);
+ }
+ 
+-void mutate(geometrize::Shape& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++void mutate(geometrize::Shape& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
+ {
+     switch(s.getType()) {
+     case geometrize::ShapeTypes::RECTANGLE:
+-        mutate(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax);
++        mutate(static_cast<geometrize::Rectangle&>(s), xMin, yMin, xMax, yMax, stepShift);
+         break;
+     case geometrize::ShapeTypes::ROTATED_RECTANGLE:
+-        mutate(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax);
++        mutate(static_cast<geometrize::RotatedRectangle&>(s), xMin, yMin, xMax, yMax, stepShift);
+         break;
+     case geometrize::ShapeTypes::TRIANGLE:
+-        mutate(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax);
++        mutate(static_cast<geometrize::Triangle&>(s), xMin, yMin, xMax, yMax, stepShift);
+         break;
+     case geometrize::ShapeTypes::ELLIPSE:
+-        mutate(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax);
++        mutate(static_cast<geometrize::Ellipse&>(s), xMin, yMin, xMax, yMax, stepShift);
+         break;
+     case geometrize::ShapeTypes::ROTATED_ELLIPSE:
+-        mutate(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax);
++        mutate(static_cast<geometrize::RotatedEllipse&>(s), xMin, yMin, xMax, yMax, stepShift);
+         break;
+     case geometrize::ShapeTypes::CIRCLE:
+-        mutate(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax);
++        mutate(static_cast<geometrize::Circle&>(s), xMin, yMin, xMax, yMax, stepShift);
+         break;
+     case geometrize::ShapeTypes::LINE:
+-        mutate(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax);
++        mutate(static_cast<geometrize::Line&>(s), xMin, yMin, xMax, yMax, stepShift);
+         break;
+     case geometrize::ShapeTypes::QUADRATIC_BEZIER:
+-        mutate(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax);
++        mutate(static_cast<geometrize::QuadraticBezier&>(s), xMin, yMin, xMax, yMax, stepShift);
+         break;
+     case geometrize::ShapeTypes::POLYLINE:
+-        mutate(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax);
++        mutate(static_cast<geometrize::Polyline&>(s), xMin, yMin, xMax, yMax, stepShift);
+         break;
+     default:
+         assert(0 && "Bad shape type");
+     }
+ }
+ 
+-void mutate(geometrize::Circle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++void mutate(geometrize::Circle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
+ {
+     const std::int32_t r{geometrize::commonutil::randomRange(0, 1)};
+     switch(r) {
+         case 0:
+         {
+-            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
++            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
+             break;
+         }
+         case 1:
+         {
+-            s.m_r = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_r) + geometrize::commonutil::randomRange(-16, 16), 1, xMax - 1);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::Ellipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++            s.m_r = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_r) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 1, xMax - 1);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::Ellipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
+ {
+     const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
+     switch(r) {
+         case 0:
+         {
+-            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
++            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
+             break;
+         }
+         case 1:
+         {
+-            s.m_rx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_rx) + geometrize::commonutil::randomRange(-16, 16), 1, xMax - 1);
++            s.m_rx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_rx) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 1, xMax - 1);
+             break;
+         }
+         case 2:
+         {
+-            s.m_ry = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_ry) + geometrize::commonutil::randomRange(-16, 16), 1, yMax - 1);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::Line& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++            s.m_ry = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_ry) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 1, yMax - 1);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::Line& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
+ {
+     const std::int32_t r{geometrize::commonutil::randomRange(0, 1)};
+ 
+     switch(r) {
+         case 0:
+         {
+-            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
++            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
+             break;
+         }
+         case 1:
+         {
+-            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::Polyline& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+-{
+-    const std::int32_t i{geometrize::commonutil::randomRange(static_cast<std::size_t>(0), s.m_points.size() - 1)};
++            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::Polyline& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
++{
++    const std::int32_t i{geometrize::commonutil::randomRange(0, static_cast<std::int32_t>(s.m_points.size() - 1))};
+ 
+     std::pair<std::int32_t, std::int32_t> point{s.m_points[i]};
+-    point.first = geometrize::commonutil::clamp(point.first + geometrize::commonutil::randomRange(-64, 64), xMin, xMax - 1);
+-    point.second = geometrize::commonutil::clamp(point.second + geometrize::commonutil::randomRange(-64, 64), yMin, yMax - 1);
++    point.first = geometrize::commonutil::clamp(point.first + geometrize::commonutil::randomRange(-64 >> stepShift, 64 >> stepShift), xMin, xMax - 1);
++    point.second = geometrize::commonutil::clamp(point.second + geometrize::commonutil::randomRange(-64 >> stepShift, 64 >> stepShift), yMin, yMax - 1);
+ 
+     s.m_points[i] = point;
+ }
+ 
+-void mutate(geometrize::QuadraticBezier& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++void mutate(geometrize::QuadraticBezier& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
+ {
+     const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
+     switch(r) {
+         case 0:
+         {
+-            s.m_cx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_cx) + geometrize::commonutil::randomRange(-8, 8), xMin, xMax - 1);
+-            s.m_cy = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_cy) + geometrize::commonutil::randomRange(-8, 8), yMin, yMax - 1);
++            s.m_cx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_cx) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), xMin, xMax - 1);
++            s.m_cy = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_cy) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), yMin, yMax - 1);
+             break;
+         }
+         case 1:
+         {
+             // NOTE +1 on the minimum values for paranoia reasons as I wrote it that way originally, not sure if it's needed
+-            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-8, 8), xMin + 1, xMax - 1);
+-            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-8, 8), yMin + 1, yMax - 1);
++            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), xMin + 1, xMax - 1);
++            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), yMin + 1, yMax - 1);
+             break;
+         }
+         case 2:
+         {
+             // NOTE +1 on the minimum values for paranoia reasons as I wrote it that way originally, not sure if it's needed
+-            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-8, 8), xMin + 1, xMax - 1);
+-            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-8, 8), yMin + 1, yMax - 1);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::Rectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), xMin + 1, xMax - 1);
++            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-8 >> stepShift, 8 >> stepShift), yMin + 1, yMax - 1);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::Rectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
+ {
+     const std::int32_t r{geometrize::commonutil::randomRange(0, 1)};
+     switch(r) {
+         case 0:
+         {
+-            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
++            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
+             break;
+         }
+         case 1:
+         {
+-            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::RotatedEllipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::RotatedEllipse& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
+ {
+     const std::int32_t r{geometrize::commonutil::randomRange(0, 3)};
+     switch(r) {
+         case 0:
+         {
+-            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax - 1);
+-            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax - 1);
++            s.m_x = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax - 1);
++            s.m_y = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax - 1);
+             break;
+         }
+         case 1:
+         {
+-            s.m_rx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_rx) + geometrize::commonutil::randomRange(-16, 16), 1, xMax - 1);
++            s.m_rx = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_rx) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 1, xMax - 1);
+             break;
+         }
+         case 2:
+         {
+-            s.m_ry = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_ry) + geometrize::commonutil::randomRange(-16, 16), 1, yMax - 1);
++            s.m_ry = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_ry) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 1, yMax - 1);
+             break;
+         }
+         case 3:
+         {
+-            s.m_angle = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_angle) + geometrize::commonutil::randomRange(-16, 16), 0, 360);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::RotatedRectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++            s.m_angle = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_angle) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), 0, 360);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::RotatedRectangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
+ {
+     const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
+     switch(r) {
+         case 0:
+         {
+-            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax);
+-            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax);
++            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax);
++            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax);
+             break;
+         }
+         case 1:
+         {
+-            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16, 16), xMin, xMax);
+-            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16, 16), yMin, yMax);
++            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), xMin, xMax);
++            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-16 >> stepShift, 16 >> stepShift), yMin, yMax);
+             break;
+         }
+         case 2:
+         {
+-            s.m_angle = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_angle) + geometrize::commonutil::randomRange(-4, 4), 0, 360);
+-            break;
+-        }
+-    }
+-}
+-
+-void mutate(geometrize::Triangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
++            s.m_angle = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_angle) + geometrize::commonutil::randomRange(-4 >> stepShift, 4 >> stepShift), 0, 360);
++            break;
++        }
++    }
++}
++
++void mutate(geometrize::Triangle& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax, const std::int32_t stepShift)
+ {
+     const std::int32_t r{geometrize::commonutil::randomRange(0, 2)};
+     switch(r) {
+         case 0:
+         {
+-            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-32, 32), xMin, xMax);
+-            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-32, 32), yMin, yMax);
++            s.m_x1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x1) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), xMin, xMax);
++            s.m_y1 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y1) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), yMin, yMax);
+             break;
+         }
+         case 1:
+         {
+-            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-32, 32), xMin, xMax);
+-            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-32, 32), yMin, yMax);
++            s.m_x2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x2) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), xMin, xMax);
++            s.m_y2 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y2) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), yMin, yMax);
+             break;
+         }
+         case 2:
+         {
+-            s.m_x3 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x3) + geometrize::commonutil::randomRange(-32, 32), xMin, xMax);
+-            s.m_y3 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y3) + geometrize::commonutil::randomRange(-32, 32), yMin, yMax);
++            s.m_x3 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_x3) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), xMin, xMax);
++            s.m_y3 = geometrize::commonutil::clamp(static_cast<std::int32_t>(s.m_y3) + geometrize::commonutil::randomRange(-32 >> stepShift, 32 >> stepShift), yMin, yMax);
+             break;
+         }
+     }
+@@ -487,6 +487,85 @@
+     s.m_y3 += y;
+ }
+ 
++void shiftShapeCenter(geometrize::Shape& s, const float centerX, const float centerY)
++{
++    float px{0.0F};
++    float py{0.0F};
++    bool shift{true};
++
++    switch(s.getType()) {
++    case geometrize::ShapeTypes::CIRCLE:
++        px = static_cast<const geometrize::Circle&>(s).m_x;
++        py = static_cast<const geometrize::Circle&>(s).m_y;
++        break;
++    case geometrize::ShapeTypes::ELLIPSE:
++        px = static_cast<const geometrize::Ellipse&>(s).m_x;
++        py = static_cast<const geometrize::Ellipse&>(s).m_y;
++        break;
++    case geometrize::ShapeTypes::ROTATED_ELLIPSE:
++        px = static_cast<const geometrize::RotatedEllipse&>(s).m_x;
++        py = static_cast<const geometrize::RotatedEllipse&>(s).m_y;
++        break;
++    case geometrize::ShapeTypes::RECTANGLE:
++    {
++        const geometrize::Rectangle& r{static_cast<const geometrize::Rectangle&>(s)};
++        px = (r.m_x1 + r.m_x2) / 2.0F;
++        py = (r.m_y1 + r.m_y2) / 2.0F;
++        break;
++    }
++    case geometrize::ShapeTypes::ROTATED_RECTANGLE:
++    {
++        const geometrize::RotatedRectangle& r{static_cast<const geometrize::RotatedRectangle&>(s)};
++        px = (r.m_x1 + r.m_x2) / 2.0F;
++        py = (r.m_y1 + r.m_y2) / 2.0F;
++        break;
++    }
++    case geometrize::ShapeTypes::TRIANGLE:
++    {
++        const geometrize::Triangle& t{static_cast<const geometrize::Triangle&>(s)};
++        px = (t.m_x1 + t.m_x2 + t.m_x3) / 3.0F;
++        py = (t.m_y1 + t.m_y2 + t.m_y3) / 3.0F;
++        break;
++    }
++    case geometrize::ShapeTypes::LINE:
++    {
++        const geometrize::Line& l{static_cast<const geometrize::Line&>(s)};
++        px = (l.m_x1 + l.m_x2) / 2.0F;
++        py = (l.m_y1 + l.m_y2) / 2.0F;
++        break;
++    }
++    case geometrize::ShapeTypes::QUADRATIC_BEZIER:
++    {
++        const geometrize::QuadraticBezier& b{static_cast<const geometrize::QuadraticBezier&>(s)};
++        px = (b.m_x1 + b.m_cx + b.m_x2) / 3.0F;
++        py = (b.m_y1 + b.m_cy + b.m_y2) / 3.0F;
++        break;
++    }
++    case geometrize::ShapeTypes::POLYLINE:
++    {
++        const geometrize::Polyline& p{static_cast<const geometrize::Polyline&>(s)};
++        if(p.m_points.empty()) {
++            shift = false;
++            break;
++        }
++        for(const auto& point : p.m_points) {
++            px += point.first;
++            py += point.second;
++        }
++        px /= static_cast<float>(p.m_points.size());
++        py /= static_cast<float>(p.m_points.size());
++        break;
++    }
++    default:
++        shift = false;
++        break;
++    }
++
++    if(shift) {
++        translate(s, centerX - px, centerY - py);
++    }
++}
++
+ void scale(geometrize::Shape& s, const float scaleFactor)
+ {
+     switch(s.getType()) {
+@@ -547,22 +626,25 @@
+ 
+ void scale(geometrize::Polyline& s, const float scaleFactor)
+ {
++    // 绕质心缩放全部点
++    if(s.m_points.empty()) {
++        return;
++    }
++
++    float xSum = 0;
++    float ySum = 0;
++    for(const auto& point : s.m_points) {
++        xSum += point.first;
++        ySum += point.second;
++    }
++    const float xMid = xSum / s.m_points.size();
++    const float yMid = ySum / s.m_points.size();
++
+     std::vector<std::pair<float, float>> points;
+-
+-    for(std::size_t i = 0; i < s.m_points.size(); i+=2) {
+-        if(i == s.m_points.size() - 1 || i == s.m_points.size()) {
+-            continue;
+-        }
+-        const float x1 = s.m_points[i].first;
+-        const float x2 = s.m_points[i + 1].first;
+-        const float y1 = s.m_points[i].second;
+-        const float y2 = s.m_points[i + 1].second;
+-
+-        const float xLen = (x1 + x2) / 2;
+-        const float yLen = (y1 + y2) / 2;
+-
+-        points.push_back({(x1 - xLen) * scaleFactor + xLen, (y1 - yLen) * scaleFactor + yLen});
+-        points.push_back({(x1 - xLen) * scaleFactor + xLen, (y2 - yLen) * scaleFactor + yLen});
++    points.reserve(s.m_points.size());
++    for(const auto& point : s.m_points) {
++        points.push_back({(point.first - xMid) * scaleFactor + xMid,
++                          (point.second - yMid) * scaleFactor + yMid});
+     }
+ 
+     s.m_points = points;
+@@ -570,7 +652,16 @@
+ 
+ void scale(geometrize::QuadraticBezier& s, const float scaleFactor)
+ {
+-    assert(0 && "TODO");
++    // 绕质心缩放三个控制点
++    const float xMid = (s.m_x1 + s.m_cx + s.m_x2) / 3.0f;
++    const float yMid = (s.m_y1 + s.m_cy + s.m_y2) / 3.0f;
++
++    s.m_x1 = static_cast<std::int32_t>((s.m_x1 - xMid) * scaleFactor + xMid);
++    s.m_y1 = static_cast<std::int32_t>((s.m_y1 - yMid) * scaleFactor + yMid);
++    s.m_cx = static_cast<std::int32_t>((s.m_cx - xMid) * scaleFactor + xMid);
++    s.m_cy = static_cast<std::int32_t>((s.m_cy - yMid) * scaleFactor + yMid);
++    s.m_x2 = static_cast<std::int32_t>((s.m_x2 - xMid) * scaleFactor + xMid);
++    s.m_y2 = static_cast<std::int32_t>((s.m_y2 - yMid) * scaleFactor + yMid);
+ }
+ 
+ void scale(geometrize::Rectangle& s, const float scaleFactor)

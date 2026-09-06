@@ -1,0 +1,4759 @@
+# P1.5 启动优化(第九批,2026-08-31)—— 补丁定位说明
+# 与 0017-0023 同款口径:baseline 侧 = 纯上游快照,+ 侧 = improved-app 累积态。
+# 内容:A 分批自调度铺开(16*i ms 定时器 -> 批 16 singleShot(0) 链,铺满 2.7s->0.5s)
+#   B 搜索补全信号链修复(上游 signal_templateLoaded 从未转发,补全恒空;签名加 templateName)
+#   C getFirstFileWithAnyExtension 单趟扫描(util 新函数,老函数保留;按钮两热路径换用)
+#   D ChaiScript 引擎懒建(templategrid 移出首帧关键路径,TemplateButton 构造改 provider)
+#   E 启动打点 logging::logStartupTiming(文件输出 %APPDATA%/startup_timing.log)
+# 已知限制:TemplateButton 析构 waitForFinished 在"启动后半秒内立刻关窗"的病态场景仍阻塞;
+#   绝不能用 QThreadPool::clear() 兜底(queued runnable 清掉后 future 永不完成 -> 死等)。
+# 检阅本批增量请与 0023 交付态对照。应用时保持 -utf-8 与 CRLF。
+--- upstream/geometrize-app/geometrize/logging/logging.h	2026-08-27 13:24:26.044166400 +0800
++++ src/improved-app/geometrize/logging/logging.h	2026-08-31 07:41:14.982061800 +0800
+@@ -1,17 +1,29 @@
+-#pragma once
+-
+-namespace geometrize
+-{
+-
+-namespace logging
+-{
+-
+-/**
+- * @brief setupLogging Installs a log message handler. Logging in Geometrize uses the Qt QLoggingCategory logging framework
+- * See: https://doc.qt.io/qt/qtglobal.html#qInstallMessageHandler
+- */
+-void setupLogging();
+-
+-}
+-
+-}
++#pragma once
++
++#include <string>
++
++namespace geometrize
++{
++
++namespace logging
++{
++
++/**
++ * @brief setupLogging Installs a log message handler. Logging in Geometrize uses the Qt QLoggingCategory logging framework
++ * See: https://doc.qt.io/qt/qtglobal.html#qInstallMessageHandler
++ */
++void setupLogging();
++
++/**
++ * @brief logStartupTiming Appends a labeled timing line to the startup timing log.
++ * Used to measure launch-path latency: the timer starts at the first call and every
++ * subsequent call records ms since then. Output goes to a file (not stderr/qInfo)
++ * because release builds are GUI-subsystem and the message handler routes to script
++ * console widgets that do not exist yet during early startup.
++ * @param label A short stable identifier for the measurement point.
++ */
++void logStartupTiming(const std::string& label);
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/logging/logging.cpp	2026-08-27 13:24:26.045171900 +0800
++++ src/improved-app/geometrize/logging/logging.cpp	2026-08-31 07:43:11.806193200 +0800
+@@ -1,37 +1,78 @@
+-#include "logging/logging.h"
+-
+-#include <string>
+-
+-#include <QByteArray>
+-#include <QtGlobal>
+-#include <QLoggingCategory>
+-#include <QMessageLogContext>
+-#include <QString>
+-
+-#include "common/util.h"
+-
+-namespace
+-{
+-
+-void messageHandler(QtMsgType, const QMessageLogContext&, const QString& msg)
+-{
+-    const QByteArray localMsg = msg.toLocal8Bit();
+-    geometrize::util::printToAllScriptConsoleWidgets("Log message: " + localMsg.toStdString());
+-}
+-
+-}
+-
+-namespace geometrize
+-{
+-
+-namespace logging
+-{
+-
+-void setupLogging()
+-{
+-    qInstallMessageHandler(&messageHandler);
+-}
+-
+-}
+-
+-}
++#include "logging/logging.h"
++
++#include <chrono>
++#include <fstream>
++#include <string>
++
++#include <QByteArray>
++#include <QDateTime>
++#include <QDir>
++#include <QElapsedTimer>
++#include <QFileInfo>
++#include <QStandardPaths>
++#include <QtGlobal>
++#include <QLoggingCategory>
++#include <QMessageLogContext>
++#include <QString>
++
++#include "common/util.h"
++
++namespace
++{
++
++void messageHandler(QtMsgType, const QMessageLogContext&, const QString& msg)
++{
++    const QByteArray localMsg = msg.toLocal8Bit();
++    geometrize::util::printToAllScriptConsoleWidgets("Log message: " + localMsg.toStdString());
++}
++
++}
++
++// 启动打点的起算点:首次调用时初始化(main 入口附近),后续打点均为相对毫秒
++QElapsedTimer& startupTimer()
++{
++    static QElapsedTimer timer;
++    static bool started = false;
++    if(!started) {
++        timer.start();
++        started = true;
++    }
++    return timer;
++}
++
++std::string startupTimingLogPath()
++{
++    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation).toStdString() + "/startup_timing.log";
++}
++
++namespace geometrize
++{
++
++namespace logging
++{
++
++void setupLogging()
++{
++    qInstallMessageHandler(&messageHandler);
++}
++
++void logStartupTiming(const std::string& label)
++{
++    QElapsedTimer& timer = startupTimer();
++    if(!timer.isValid()) {
++        return;
++    }
++    const std::string filePath{startupTimingLogPath()};
++    const QFileInfo info(QString::fromStdString(filePath));
++    const QDir dir(info.absoluteDir());
++    if(!dir.exists() && !dir.mkpath(dir.absolutePath())) {
++        return;
++    }
++    std::ofstream output(filePath, std::ios::app);
++    output << QDateTime::currentDateTime().toString(Qt::ISODate).toStdString()
++           << "," << label << "," << timer.elapsed() << "\n";
++}
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/main.cpp	2026-08-27 13:24:26.046178000 +0800
++++ src/improved-app/geometrize/main.cpp	2026-08-31 07:39:52.024139600 +0800
+@@ -1,150 +1,158 @@
+-#include "dialog/launchwindow.h"
+-
+-#include <cassert>
+-#include <functional>
+-#include <string>
+-
+-#include <QApplication>
+-#include <QEvent>
+-#include <QIcon>
+-#include <QLocale>
+-#include <QObject>
+-#include <QString>
+-#include <QStringList>
+-#include <QtGlobal>
+-
+-#include "tabletproximityeventfilter.h"
+-#include "cli/commandlineparser.h"
+-#include "common/uiactions.h"
+-#include "dialog/appsplashscreen.h"
+-#include "dialog/launchwindow.h"
+-#include "dialog/welcomewindow.h"
+-#include "localization/localization.h"
+-#include "logging/logging.h"
+-#include "preferences/globalpreferences.h"
+-#include "test/functionaltestrunner.h"
+-#include "version/versioninfo.h"
+-
+-#if defined DATASLINGER_INCLUDED
+-#include "dataslinger/imageslinger.h"
+-#endif
+-
+-namespace {
+-
+-void setApplicationSettingsFields()
+-{
+-    // Do not modify these
+-    const QString ORGANIZATION_NAME{"Sam Twidale"}; // The development organization's name.
+-    const QString ORGANIZATION_DOMAIN{"samcodes.co.uk"}; // The development organization's website domain.
+-    const QString APPLICATION_NAME{"Geometrize"}; // The application name.
+-    QCoreApplication::setOrganizationName(ORGANIZATION_NAME);
+-    QCoreApplication::setOrganizationDomain(ORGANIZATION_DOMAIN);
+-    QCoreApplication::setApplicationName(APPLICATION_NAME);
+-
+-    QCoreApplication::setApplicationVersion(geometrize::version::getApplicationVersionString()); // This can change
+-}
+-
+-void incrementAppLaunchCount()
+-{
+-    auto& prefs = geometrize::preferences::getGlobalPreferences();
+-    prefs.incrementApplicationLaunchCount();
+-}
+-
+-void setLocale(const QStringList& arguments)
+-{
+-    const QLocale locale = [&arguments]() {
+-        const std::string overrideCode{geometrize::cli::getOverrideLocaleCode(arguments)};
+-        if(!overrideCode.empty()) {
+-            return QLocale(QString::fromStdString(overrideCode));
+-        }
+-
+-        const auto& prefs = geometrize::preferences::getGlobalPreferences();
+-
+-        // If this is first launch, we override the preferences with the system's preferred UI language
+-        // Assume launch count was already incremented from an initial value of 0 earlier
+-        if(prefs.getApplicationLaunchCount() == 1) {
+-            const QStringList uiLanguages{QLocale().uiLanguages()};
+-
+-            assert(!uiLanguages.isEmpty() && "No supported UI languages found, will fallback to default settings");
+-            if(!uiLanguages.isEmpty()) {
+-                geometrize::setGlobalPreferencesForLocale(QLocale(uiLanguages.front()));
+-            }
+-        }
+-
+-        // Get locale using name built from current preferences
+-        return geometrize::getGlobalPreferencesLocale();
+-    }();
+-
+-    QLocale::setDefault(locale);
+-    geometrize::setTranslatorsForLocale(locale.bcp47Name().replace("-", "_"));
+-}
+-
+-int runAppConsoleMode(QApplication& app)
+-{
+-    return geometrize::cli::runApp(app);
+-}
+-
+-int runAppGuiModeDesktop(QApplication& app)
+-{
+-    geometrize::dialog::sharedSplashInstance().setState(geometrize::dialog::SplashState::STARTING);
+-    geometrize::dialog::sharedSplashInstance().setState(geometrize::dialog::SplashState::LOADING_LAUNCHER_WINDOW);
+-
+-    const auto& prefs = geometrize::preferences::getGlobalPreferences();
+-	if (prefs.shouldShowWelcomeScreenOnLaunch()) {
+-        geometrize::dialog::sharedSplashInstance().setState(geometrize::dialog::SplashState::FINISHED);
+-        geometrize::common::ui::openWelcomePage(); // Opens launch window when closed
+-    } else {
+-        geometrize::common::ui::openLaunchWindow();
+-        geometrize::dialog::sharedSplashInstance().setState(geometrize::dialog::SplashState::FINISHED);
+-    }
+-
+-    // Set up the self tests (these will take over the application and run in the background)
+-    if(geometrize::cli::shouldRunInSelfTestMode(app.arguments())) {
+-        geometrize::test::setTestScriptDirectories(geometrize::cli::getSelfTestModeScriptDirectories(app.arguments()));
+-        geometrize::test::runSelfTests();
+-    }
+-
+-    return app.exec();
+-}
+-
+-std::function<int(QApplication&)> resolveLaunchFunction(const QStringList& arguments)
+-{
+-    if(geometrize::cli::shouldRunInConsoleMode(arguments)) {
+-        return ::runAppConsoleMode;
+-    }
+-
+-    return ::runAppGuiModeDesktop;
+-}
+-
+-}
+-
+-int main(int argc, char* argv[])
+-{
+-    geometrize::logging::setupLogging();
+-
+-    setApplicationSettingsFields();
+-    incrementAppLaunchCount();
+-
+-    QApplication app(argc, argv);
+-
+-    // Intercept proximity tablet pen events
+-    app.installEventFilter(&geometrize::getSharedTabletProximityEventFilterInstance());
+-
+-#if defined(Q_OS_LINUX) || defined(Q_OS_MAC)
+-    // Some Linux/Macs taskbars/DEs use the application window icon to set the taskbar icon
+-    // So we explicitly set the window icon here
+-    app.setWindowIcon(QIcon(":/logos/logo_small.png"));
+-#endif
+-
+-    const QStringList arguments{app.arguments()};
+-    setLocale(arguments);
+-
+-#if defined DATASLINGER_INCLUDED
+-    geometrize::setupImageSlinger();
+-    geometrize::setupImageReceiver();
+-    geometrize::setupSvgShapeSlinger();
+-#endif
+-
+-    const auto run = resolveLaunchFunction(arguments);
+-    return run(app);
+-}
++#include "dialog/launchwindow.h"
++
++#include <cassert>
++#include <cstdio>
++#include <functional>
++#include <string>
++
++#include <QApplication>
++#include <QEvent>
++#include <QIcon>
++#include <QLocale>
++#include <QObject>
++#include <QString>
++#include <QStringList>
++#include <QTimer>
++#include <QtGlobal>
++
++#include "tabletproximityeventfilter.h"
++#include "cli/commandlineparser.h"
++#include "common/uiactions.h"
++#include "dialog/appsplashscreen.h"
++#include "dialog/launchwindow.h"
++#include "dialog/welcomewindow.h"
++#include "localization/localization.h"
++#include "logging/logging.h"
++#include "preferences/globalpreferences.h"
++#include "test/functionaltestrunner.h"
++#include "version/versioninfo.h"
++
++#if defined DATASLINGER_INCLUDED
++#include "dataslinger/imageslinger.h"
++#endif
++
++namespace {
++
++void setApplicationSettingsFields()
++{
++    // Do not modify these
++    const QString ORGANIZATION_NAME{"Sam Twidale"}; // The development organization's name.
++    const QString ORGANIZATION_DOMAIN{"samcodes.co.uk"}; // The development organization's website domain.
++    const QString APPLICATION_NAME{"Geometrize"}; // The application name.
++    QCoreApplication::setOrganizationName(ORGANIZATION_NAME);
++    QCoreApplication::setOrganizationDomain(ORGANIZATION_DOMAIN);
++    QCoreApplication::setApplicationName(APPLICATION_NAME);
++
++    QCoreApplication::setApplicationVersion(geometrize::version::getApplicationVersionString()); // This can change
++}
++
++void incrementAppLaunchCount()
++{
++    auto& prefs = geometrize::preferences::getGlobalPreferences();
++    prefs.incrementApplicationLaunchCount();
++}
++
++void setLocale(const QStringList& arguments)
++{
++    const QLocale locale = [&arguments]() {
++        const std::string overrideCode{geometrize::cli::getOverrideLocaleCode(arguments)};
++        if(!overrideCode.empty()) {
++            return QLocale(QString::fromStdString(overrideCode));
++        }
++
++        const auto& prefs = geometrize::preferences::getGlobalPreferences();
++
++        // If this is first launch, we override the preferences with the system's preferred UI language
++        // Assume launch count was already incremented from an initial value of 0 earlier
++        if(prefs.getApplicationLaunchCount() == 1) {
++            const QStringList uiLanguages{QLocale().uiLanguages()};
++
++            assert(!uiLanguages.isEmpty() && "No supported UI languages found, will fallback to default settings");
++            if(!uiLanguages.isEmpty()) {
++                geometrize::setGlobalPreferencesForLocale(QLocale(uiLanguages.front()));
++            }
++        }
++
++        // Get locale using name built from current preferences
++        return geometrize::getGlobalPreferencesLocale();
++    }();
++
++    QLocale::setDefault(locale);
++    geometrize::setTranslatorsForLocale(locale.bcp47Name().replace("-", "_"));
++}
++
++int runAppConsoleMode(QApplication& app)
++{
++    return geometrize::cli::runApp(app);
++}
++
++int runAppGuiModeDesktop(QApplication& app)
++{
++    geometrize::dialog::sharedSplashInstance().setState(geometrize::dialog::SplashState::STARTING);
++    geometrize::dialog::sharedSplashInstance().setState(geometrize::dialog::SplashState::LOADING_LAUNCHER_WINDOW);
++
++    const auto& prefs = geometrize::preferences::getGlobalPreferences();
++	if (prefs.shouldShowWelcomeScreenOnLaunch()) {
++        geometrize::dialog::sharedSplashInstance().setState(geometrize::dialog::SplashState::FINISHED);
++        geometrize::common::ui::openWelcomePage(); // Opens launch window when closed
++    } else {
++        geometrize::common::ui::openLaunchWindow();
++        geometrize::dialog::sharedSplashInstance().setState(geometrize::dialog::SplashState::FINISHED);
++    }
++    geometrize::logging::logStartupTiming("launchwindow_constructed");
++    QTimer::singleShot(0, app.instance(), []() {
++        geometrize::logging::logStartupTiming("event_loop_first_turn");
++    });
++
++    // Set up the self tests (these will take over the application and run in the background)
++    if(geometrize::cli::shouldRunInSelfTestMode(app.arguments())) {
++        geometrize::test::setTestScriptDirectories(geometrize::cli::getSelfTestModeScriptDirectories(app.arguments()));
++        geometrize::test::runSelfTests();
++    }
++
++    return app.exec();
++}
++
++std::function<int(QApplication&)> resolveLaunchFunction(const QStringList& arguments)
++{
++    if(geometrize::cli::shouldRunInConsoleMode(arguments)) {
++        return ::runAppConsoleMode;
++    }
++
++    return ::runAppGuiModeDesktop;
++}
++
++}
++
++int main(int argc, char* argv[])
++{
++    geometrize::logging::setupLogging();
++    geometrize::logging::logStartupTiming("main_start");
++
++    setApplicationSettingsFields();
++    incrementAppLaunchCount();
++
++    QApplication app(argc, argv);
++
++    // Intercept proximity tablet pen events
++    app.installEventFilter(&geometrize::getSharedTabletProximityEventFilterInstance());
++
++#if defined(Q_OS_LINUX) || defined(Q_OS_MAC)
++    // Some Linux/Macs taskbars/DEs use the application window icon to set the taskbar icon
++    // So we explicitly set the window icon here
++    app.setWindowIcon(QIcon(":/logos/logo_small.png"));
++#endif
++
++    const QStringList arguments{app.arguments()};
++    setLocale(arguments);
++    geometrize::logging::logStartupTiming("after_app_and_prefs");
++
++#if defined DATASLINGER_INCLUDED
++    geometrize::setupImageSlinger();
++    geometrize::setupImageReceiver();
++    geometrize::setupSvgShapeSlinger();
++#endif
++
++    const auto run = resolveLaunchFunction(arguments);
++    return run(app);
++}
+--- upstream/geometrize-app/geometrize/dialog/templategrid.h	2026-08-27 13:24:25.965833600 +0800
++++ src/improved-app/geometrize/dialog/templategrid.h	2026-08-31 08:20:43.098472200 +0800
+@@ -1,51 +1,51 @@
+-#pragma once
+-
+-#include <memory>
+-
+-#include <QString>
+-#include <QWidget>
+-
+-class QEvent;
+-
+-namespace geometrize
+-{
+-
+-namespace dialog
+-{
+-
+-/**
+- * @brief The TemplateGrid class models the UI for a dynamic grid of project templates.
+- */
+-class TemplateGrid : public QWidget
+-{
+-    Q_OBJECT
+-
+-public:
+-    explicit TemplateGrid(QWidget* parent = nullptr);
+-    virtual ~TemplateGrid();
+-
+-    /**
+-     * @brief loadTemplates Loads all of the available templates, creating buttons for each one in the grid.
+-     */
+-    void loadTemplates();
+-
+-    /**
+-     * @brief setItemFilter Filters the visible items in the template item grid.
+-     * @param filter The filter string.
+-     */
+-    void setItemFilter(const QString& filter);
+-
+-protected:
+-    void changeEvent(QEvent*) override;
+-
+-signals:
+-    void signal_templateLoaded(QString, bool);
+-
+-private:
+-    class TemplateGridImpl;
+-    std::unique_ptr<TemplateGridImpl> d;
+-};
+-
+-}
+-
+-}
++#pragma once
++
++#include <memory>
++
++#include <QString>
++#include <QWidget>
++
++class QEvent;
++
++namespace geometrize
++{
++
++namespace dialog
++{
++
++/**
++ * @brief The TemplateGrid class models the UI for a dynamic grid of project templates.
++ */
++class TemplateGrid : public QWidget
++{
++    Q_OBJECT
++
++public:
++    explicit TemplateGrid(QWidget* parent = nullptr);
++    virtual ~TemplateGrid();
++
++    /**
++     * @brief loadTemplates Loads all of the available templates, creating buttons for each one in the grid.
++     */
++    void loadTemplates();
++
++    /**
++     * @brief setItemFilter Filters the visible items in the template item grid.
++     * @param filter The filter string.
++     */
++    void setItemFilter(const QString& filter);
++
++protected:
++    void changeEvent(QEvent*) override;
++
++signals:
++    void signal_templateLoaded(QString, bool, QString);
++
++private:
++    class TemplateGridImpl;
++    std::unique_ptr<TemplateGridImpl> d;
++};
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/dialog/templategrid.cpp	2026-08-27 13:24:25.921427800 +0800
++++ src/improved-app/geometrize/dialog/templategrid.cpp	2026-08-31 08:20:43.100468600 +0800
+@@ -1,140 +1,169 @@
+-#include "templategrid.h"
+-
+-#include <algorithm>
+-
+-#include <QEvent>
+-#include <QString>
+-#include <QTimer>
+-
+-#include "chaiscript/chaiscript.hpp"
+-
+-#include "common/searchpaths.h"
+-#include "common/util.h"
+-#include "dialog/templatebutton.h"
+-#include "layout/flowlayout.h"
+-#include "script/chaiscriptcreator.h"
+-
+-namespace geometrize
+-{
+-
+-namespace dialog
+-{
+-
+-class TemplateGrid::TemplateGridImpl
+-{
+-public:
+-    TemplateGridImpl(TemplateGrid* pQ) : q{pQ}, m_layout{new layout::FlowLayout(24, 24, 24)}, m_templateLoader{geometrize::script::createDefaultEngine()}
+-    {
+-        q->setLayout(m_layout);
+-        populateUi();
+-    }
+-
+-    void loadTemplates()
+-    {
+-        // Build the list of templates to load
+-        std::vector<std::string> templateFolders;
+-
+-        const std::vector<std::string> paths{geometrize::searchpaths::getTemplateSearchPaths()};
+-        for(const std::string& path : paths) {
+-            const std::vector<std::string> folders{util::getSubdirectoriesForDirectory(path)};
+-            templateFolders.insert(templateFolders.end(), folders.begin(), folders.end());
+-        }
+-
+-        // Put the folders in a sensible order so it doesn't vary based on filesystem implementation/state
+-        std::sort(templateFolders.begin(), templateFolders.end());
+-
+-        // Add a template item every few ms
+-        for(std::size_t i = 0; i < templateFolders.size(); i++) {
+-            std::string folder = templateFolders[i];
+-            QTimer::singleShot(16 * i, Qt::PreciseTimer, q, [this, folder]() {
+-                addTemplateItem(QString::fromStdString(folder));
+-            });
+-        }
+-    }
+-
+-    void setItemFilter(const QString& filter)
+-    {
+-        if(filter.isEmpty()) {
+-            for(TemplateButton* const button : m_buttons) {
+-                button->show();
+-            }
+-            return;
+-        }
+-
+-        for(TemplateButton* const button : m_buttons) {
+-            const QString name{QString::fromStdString(button->getTemplateManifest().getName())};
+-            const std::vector<std::string> tags{button->getTemplateManifest().getTags()};
+-
+-            if(name.contains(filter, Qt::CaseInsensitive)) {
+-                button->show();
+-            } else {
+-                button->hide();
+-            }
+-
+-            for(const std::string& tag : tags) {
+-                const QString qTag{QString::fromStdString(tag)};
+-                if(qTag.contains(filter, Qt::CaseInsensitive)) {
+-                    button->show();
+-                }
+-            }
+-        }
+-    }
+-
+-    TemplateGridImpl operator=(const TemplateGridImpl&) = delete;
+-    TemplateGridImpl(const TemplateGridImpl&) = delete;
+-    ~TemplateGridImpl() = default;
+-
+-    void onLanguageChange()
+-    {
+-        populateUi();
+-    }
+-
+-private:
+-    void populateUi()
+-    {
+-    }
+-
+-    void addTemplateItem(const QString& templateFolder)
+-    {
+-        TemplateButton* item{new TemplateButton(m_templateLoader.get(), templateFolder)};
+-        m_layout->addWidget(item);
+-        m_buttons.push_back(item);
+-    }
+-
+-    TemplateGrid* q;
+-    layout::FlowLayout* m_layout;
+-    std::unique_ptr<chaiscript::ChaiScript> m_templateLoader;
+-    std::vector<TemplateButton*> m_buttons;
+-};
+-
+-TemplateGrid::TemplateGrid(QWidget* parent) :
+-    QWidget(parent),
+-    d{std::make_unique<TemplateGrid::TemplateGridImpl>(this)}
+-{
+-}
+-
+-TemplateGrid::~TemplateGrid()
+-{
+-}
+-
+-void TemplateGrid::loadTemplates()
+-{
+-    d->loadTemplates();
+-}
+-
+-void TemplateGrid::setItemFilter(const QString& filter)
+-{
+-    d->setItemFilter(filter);
+-}
+-
+-void TemplateGrid::changeEvent(QEvent* event)
+-{
+-    if (event->type() == QEvent::LanguageChange) {
+-        d->onLanguageChange();
+-    }
+-    QWidget::changeEvent(event);
+-}
+-
+-}
+-
+-}
++#include "templategrid.h"
++
++#include <algorithm>
++
++#include <QEvent>
++#include <QString>
++#include <QTimer>
++
++#include "chaiscript/chaiscript.hpp"
++
++#include "common/searchpaths.h"
++#include "common/util.h"
++#include "dialog/templatebutton.h"
++#include "layout/flowlayout.h"
++#include "logging/logging.h"
++#include "script/chaiscriptcreator.h"
++
++namespace geometrize
++{
++
++namespace dialog
++{
++
++class TemplateGrid::TemplateGridImpl
++{
++public:
++    TemplateGridImpl(TemplateGrid* pQ) : q{pQ}, m_layout{new layout::FlowLayout(24, 24, 24)}
++    {
++        q->setLayout(m_layout);
++        populateUi();
++    }
++
++    /// 模板脚本引擎懒建:点击模板才需要(openTemplate),移出首帧前的关键路径
++    chaiscript::ChaiScript& templateLoader()
++    {
++        if(!m_templateLoader) {
++            m_templateLoader = geometrize::script::createDefaultEngine();
++        }
++        return *m_templateLoader;
++    }
++
++    void loadTemplates()
++    {
++        // Build the list of templates to load
++        std::vector<std::string> templateFolders;
++
++        const std::vector<std::string> paths{geometrize::searchpaths::getTemplateSearchPaths()};
++        for(const std::string& path : paths) {
++            const std::vector<std::string> folders{util::getSubdirectoriesForDirectory(path)};
++            templateFolders.insert(templateFolders.end(), folders.begin(), folders.end());
++        }
++
++        // Put the folders in a sensible order so it doesn't vary based on filesystem implementation/state
++        std::sort(templateFolders.begin(), templateFolders.end());
++
++        // 分批自调度:每批建一组按钮后让事件循环喘一口气(批间可穿插 paint/输入事件),
++        // 相比逐个 16ms 定时器把铺满时间从 O(n×16ms) 压到 O(批数×单批耗时),
++        // 相比一次性全建避免单次长任务卡住主线程。批大小取"单批主线程成本低于一帧"的量级。
++        m_pendingFolders = std::move(templateFolders);
++        m_stageOffset = 0;
++        QTimer::singleShot(0, Qt::PreciseTimer, q, [this]() { stageNextBatch(); });
++    }
++
++    void stageNextBatch()
++    {
++        constexpr std::size_t batchSize = 16;
++        const std::size_t end{(std::min)(m_stageOffset + batchSize, m_pendingFolders.size())};
++        for(std::size_t i = m_stageOffset; i < end; i++) {
++            addTemplateItem(QString::fromStdString(m_pendingFolders[i]));
++        }
++        m_stageOffset = end;
++        if(end < m_pendingFolders.size()) {
++            QTimer::singleShot(0, Qt::PreciseTimer, q, [this]() { stageNextBatch(); });
++        } else {
++            m_pendingFolders.clear();
++            logging::logStartupTiming("templates_staged");
++        }
++    }
++
++    void setItemFilter(const QString& filter)
++    {
++        if(filter.isEmpty()) {
++            for(TemplateButton* const button : m_buttons) {
++                button->show();
++            }
++            return;
++        }
++
++        for(TemplateButton* const button : m_buttons) {
++            const QString name{QString::fromStdString(button->getTemplateManifest().getName())};
++            const std::vector<std::string> tags{button->getTemplateManifest().getTags()};
++
++            if(name.contains(filter, Qt::CaseInsensitive)) {
++                button->show();
++            } else {
++                button->hide();
++            }
++
++            for(const std::string& tag : tags) {
++                const QString qTag{QString::fromStdString(tag)};
++                if(qTag.contains(filter, Qt::CaseInsensitive)) {
++                    button->show();
++                }
++            }
++        }
++    }
++
++    TemplateGridImpl operator=(const TemplateGridImpl&) = delete;
++    TemplateGridImpl(const TemplateGridImpl&) = delete;
++    ~TemplateGridImpl() = default;
++
++    void onLanguageChange()
++    {
++        populateUi();
++    }
++
++private:
++    void populateUi()
++    {
++    }
++
++    void addTemplateItem(const QString& templateFolder)
++    {
++        TemplateButton* item{new TemplateButton([this]() -> chaiscript::ChaiScript& { return templateLoader(); }, templateFolder)};
++        // 转发按钮的加载完成信号(带 manifest 名字):修复上游信号链断裂导致的搜索补全恒空
++        q->connect(item, &TemplateButton::signal_templateLoaded, q, &TemplateGrid::signal_templateLoaded);
++        m_layout->addWidget(item);
++        m_buttons.push_back(item);
++    }
++
++    TemplateGrid* q;
++    layout::FlowLayout* m_layout;
++    std::unique_ptr<chaiscript::ChaiScript> m_templateLoader;
++    std::vector<TemplateButton*> m_buttons;
++    std::vector<std::string> m_pendingFolders; // 分批铺开的待建队列(loadTemplates 填充,stageNextBatch 消费)
++    std::size_t m_stageOffset{0};
++};
++
++TemplateGrid::TemplateGrid(QWidget* parent) :
++    QWidget(parent),
++    d{std::make_unique<TemplateGrid::TemplateGridImpl>(this)}
++{
++}
++
++TemplateGrid::~TemplateGrid()
++{
++}
++
++void TemplateGrid::loadTemplates()
++{
++    d->loadTemplates();
++}
++
++void TemplateGrid::setItemFilter(const QString& filter)
++{
++    d->setItemFilter(filter);
++}
++
++void TemplateGrid::changeEvent(QEvent* event)
++{
++    if (event->type() == QEvent::LanguageChange) {
++        d->onLanguageChange();
++    }
++    QWidget::changeEvent(event);
++}
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/dialog/templatebutton.h	2026-08-27 13:24:25.919427900 +0800
++++ src/improved-app/geometrize/dialog/templatebutton.h	2026-08-31 08:20:43.096461700 +0800
+@@ -1,61 +1,62 @@
+-#pragma once
+-
+-#include <memory>
+-
+-#include <QDragLeaveEvent>
+-#include <QMouseEvent>
+-#include <QPushButton>
+-#include <QString>
+-
+-#include "manifest/templatemanifest.h"
+-
+-class QEvent;
+-
+-namespace chaiscript
+-{
+-class ChaiScript;
+-}
+-
+-namespace geometrize
+-{
+-
+-namespace dialog
+-{
+-
+-/**
+- * @brief The TemplateButton class is a button that opens a task template when clicked.
+- */
+-class TemplateButton : public QPushButton
+-{
+-    Q_OBJECT
+-
+-public:
+-    explicit TemplateButton(chaiscript::ChaiScript* const templateLoader, const QString& templateFolder);
+-    virtual ~TemplateButton();
+-
+-    /**
+-     * @brief getTemplateManifest Get the manifest data of the template this item corresponds to.
+-     * @return The template manifest data this item corresponds to.
+-     */
+-    TemplateManifest getTemplateManifest() const;
+-
+-signals:
+-    void signal_templateLoaded(QString, bool);
+-
+-protected:
+-    void changeEvent(QEvent*) override;
+-    void mousePressEvent(QMouseEvent* event) override;
+-    void mouseReleaseEvent(QMouseEvent* event) override;
+-    void mouseMoveEvent(QMouseEvent* event) override;
+-    void dragLeaveEvent(QDragLeaveEvent* event) override;
+-
+-private:
+-    virtual void contextMenuEvent(QContextMenuEvent* e) override;
+-
+-    class TemplateButtonImpl;
+-    std::unique_ptr<TemplateButtonImpl> d;
+-};
+-
+-}
+-
+-}
++#pragma once
++
++#include <functional>
++#include <memory>
++
++#include <QDragLeaveEvent>
++#include <QMouseEvent>
++#include <QPushButton>
++#include <QString>
++
++#include "manifest/templatemanifest.h"
++
++class QEvent;
++
++namespace chaiscript
++{
++class ChaiScript;
++}
++
++namespace geometrize
++{
++
++namespace dialog
++{
++
++/**
++ * @brief The TemplateButton class is a button that opens a task template when clicked.
++ */
++class TemplateButton : public QPushButton
++{
++    Q_OBJECT
++
++public:
++    explicit TemplateButton(const std::function<chaiscript::ChaiScript&()>& templateLoaderProvider, const QString& templateFolder);
++    virtual ~TemplateButton();
++
++    /**
++     * @brief getTemplateManifest Get the manifest data of the template this item corresponds to.
++     * @return The template manifest data this item corresponds to.
++     */
++    TemplateManifest getTemplateManifest() const;
++
++signals:
++    void signal_templateLoaded(QString, bool, QString);
++
++protected:
++    void changeEvent(QEvent*) override;
++    void mousePressEvent(QMouseEvent* event) override;
++    void mouseReleaseEvent(QMouseEvent* event) override;
++    void mouseMoveEvent(QMouseEvent* event) override;
++    void dragLeaveEvent(QDragLeaveEvent* event) override;
++
++private:
++    virtual void contextMenuEvent(QContextMenuEvent* e) override;
++
++    class TemplateButtonImpl;
++    std::unique_ptr<TemplateButtonImpl> d;
++};
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/dialog/templatebutton.cpp	2026-08-27 13:24:25.918429200 +0800
++++ src/improved-app/geometrize/dialog/templatebutton.cpp	2026-08-31 08:20:43.097467900 +0800
+@@ -1,260 +1,260 @@
+-#include "templatebutton.h"
+-#include "ui_templatebutton.h"
+-
+-#include <QContextMenuEvent>
+-#include <QDrag>
+-#include <QDragLeaveEvent>
+-#include <QEvent>
+-#include <QFuture>
+-#include <QFutureWatcher>
+-#include <QImage>
+-#include <QMimeData>
+-#include <QMenu>
+-#include <QPainter>
+-#include <QPixmap>
+-#include <QPoint>
+-#include <QString>
+-#include <QtConcurrent/QtConcurrentRun>
+-#include <QUrl>
+-
+-#include "chaiscript/chaiscript.hpp"
+-
+-#include "common/formatsupport.h"
+-#include "common/util.h"
+-#include "manifest/templatemanifest.h"
+-#include "task/taskutil.h"
+-
+-namespace geometrize
+-{
+-
+-namespace dialog
+-{
+-
+-class TemplateButton::TemplateButtonImpl
+-{
+-public:
+-    TemplateButtonImpl(TemplateButton* pQ, chaiscript::ChaiScript* const templateLoader, const QString& templateFolder) :
+-        ui(std::make_unique<Ui::TemplateButton>()),
+-        q{pQ},
+-        m_templateLoader{templateLoader},
+-        m_templateFolder{templateFolder},
+-        m_manifest{} // Loaded asynchronously later
+-    {
+-        ui->setupUi(q);
+-        populateUi();
+-
+-        q->connect(q, &TemplateButton::clicked, [this]() {
+-            openTemplate();
+-        });
+-
+-        q->connect(&m_templateLoaderWatcher, &QFutureWatcher<QImage>::finished, [this]() {
+-            const QImage thumbnail{m_templateLoaderWatcher.future().result()};
+-
+-            ui->imageLabel->setPixmap(QPixmap::fromImage(thumbnail));
+-
+-            setButtonToolTipText();
+-
+-            emit q->signal_templateLoaded(m_templateFolder, true);
+-        });
+-
+-        m_templateFuture = QtConcurrent::run([this]() {
+-            return setupTemplate();
+-        });
+-        m_templateLoaderWatcher.setFuture(m_templateFuture);
+-    }
+-
+-    ~TemplateButtonImpl()
+-    {
+-        m_templateFuture.waitForFinished(); // Wait for template to finish loading
+-    }
+-
+-    TemplateButtonImpl operator=(const TemplateButtonImpl&) = delete;
+-    TemplateButtonImpl(const TemplateButtonImpl&) = delete;
+-
+-    void handleMousePressEvent(QMouseEvent* event)
+-    {
+-        const QString imageFilepath{QString::fromStdString(util::getFirstFileWithExtensions(m_templateFolder.toStdString(), format::getReadableImageFileExtensions(false)))};
+-        QImage thumbnail(imageFilepath);
+-        if(thumbnail.isNull()) {
+-            return; // Failed to load an image
+-        }
+-        const QSize size{180, 180};
+-        thumbnail = thumbnail.scaled(size, Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
+-
+-        QMimeData* mimeData = new QMimeData;
+-        mimeData->setUrls({ QUrl::fromUserInput(imageFilepath) });
+-        mimeData->setText(tr("Drag and drop template contents"));
+-
+-        m_currentDragAction = new QDrag(q);
+-        m_currentDragAction->setMimeData(mimeData);
+-        m_currentDragAction->setPixmap(QPixmap::fromImage(thumbnail));
+-        m_currentDragAction->setHotSpot(QPoint(m_currentDragAction->pixmap().width() / 2, m_currentDragAction->pixmap().height()));
+-    }
+-
+-    void handleMouseReleaseEvent(QMouseEvent* event)
+-    {
+-        if(m_currentDragAction) {
+-            QDrag::cancel();
+-            m_currentDragAction->deleteLater();
+-            m_currentDragAction = nullptr;
+-        }
+-    }
+-
+-    void handleMouseMoveEvent(QMouseEvent* event)
+-    {
+-        if(event->buttons() != Qt::LeftButton) {
+-            return;
+-        }
+-
+-        // Start the drag action after moving the mouse
+-        if(m_currentDragAction) {
+-            m_currentDragAction->exec(Qt::CopyAction | Qt::MoveAction, Qt::CopyAction);
+-            m_currentDragAction = nullptr;
+-        }
+-    }
+-
+-    void handleDragLeaveEvent(QDragLeaveEvent*)
+-    {
+-
+-    }
+-
+-    QImage setupTemplate()
+-    {
+-        // Note assuming this is threadsafe
+-        m_manifest = util::getTemplateManifest(m_templateFolder.toStdString());
+-
+-        // Note assuming this is threadsafe
+-        const QString imageFilepath{QString::fromStdString(util::getFirstFileWithExtensions(m_templateFolder.toStdString(), format::getReadableImageFileExtensions(false)))};
+-
+-        const QImage thumbnail(imageFilepath);
+-        if(!thumbnail.isNull()) {
+-            const QSize size{180, 180};
+-            return thumbnail.scaled(size, Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
+-        }
+-        return thumbnail;
+-    }
+-
+-    void openTemplate()
+-    {
+-        geometrize::util::openTemplate(*m_templateLoader, m_templateFolder.toStdString());
+-    }
+-
+-    void revealTemplateInExplorer()
+-    {
+-        geometrize::util::openInDefaultApplication(m_templateFolder.toStdString());
+-    }
+-
+-    void showContextMenu(QContextMenuEvent* e)
+-    {
+-        QMenu itemContextMenu;
+-
+-        QAction openAction(tr("Open", "Text on a menu item the user presses to open a file/image"));
+-        itemContextMenu.addAction(&openAction);
+-        connect(&openAction, &QAction::triggered, [this]() {
+-            openTemplate();
+-        });
+-
+-        if(!m_templateFolder.startsWith(":")) { // Only if it's not an embedded resource
+-            QAction openInDefaultViewer(tr("Reveal in file explorer", "Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer"));
+-            itemContextMenu.addAction(&openInDefaultViewer);
+-            connect(&openInDefaultViewer, &QAction::triggered, [this]() {
+-                revealTemplateInExplorer();
+-            });
+-        }
+-
+-        itemContextMenu.exec(e->globalPos());
+-    }
+-
+-    TemplateManifest getTemplateManifest() const
+-    {
+-        return m_manifest;
+-    }
+-
+-    void onLanguageChange()
+-    {
+-        ui->retranslateUi(q);
+-        populateUi();
+-    }
+-
+-private:
+-    void populateUi()
+-    {
+-        setButtonToolTipText();
+-    }
+-
+-    void setButtonToolTipText()
+-    {
+-        const QString name{tr("Name: %1", "Text on a label containing the name of an item, usually an image e.g. Name: The Mona Lisa").arg(QString::fromStdString(m_manifest.getName()))};
+-        const QString license{tr("License: %2", "Text on a label containing the legal license a piece of media is under, usually an image e.g. License: Public Domain").arg(QString::fromStdString(m_manifest.getLicense()))};
+-        q->setToolTip(name + "<br>" + license);
+-    }
+-
+-    std::unique_ptr<Ui::TemplateButton> ui;
+-    QDrag* m_currentDragAction{ nullptr };
+-    TemplateButton* q;
+-    chaiscript::ChaiScript* const m_templateLoader;
+-    const QString m_templateFolder;
+-    TemplateManifest m_manifest;
+-    QFutureWatcher<QImage> m_templateLoaderWatcher;
+-    QFuture<QImage> m_templateFuture;
+-};
+-
+-TemplateButton::TemplateButton(chaiscript::ChaiScript* const templateLoader, const QString& templateFolder) :
+-    QPushButton(nullptr),
+-    d{std::make_unique<TemplateButton::TemplateButtonImpl>(this, templateLoader, templateFolder)}
+-{
+-}
+-
+-TemplateButton::~TemplateButton()
+-{
+-}
+-
+-void TemplateButton::contextMenuEvent(QContextMenuEvent* e)
+-{
+-    d->showContextMenu(e);
+-}
+-
+-TemplateManifest TemplateButton::getTemplateManifest() const
+-{
+-    return d->getTemplateManifest();
+-}
+-
+-void TemplateButton::changeEvent(QEvent* event)
+-{
+-    if (event->type() == QEvent::LanguageChange) {
+-        d->onLanguageChange();
+-    }
+-    QPushButton::changeEvent(event);
+-}
+-
+-void TemplateButton::mousePressEvent(QMouseEvent* event)
+-{
+-    QPushButton::mousePressEvent(event);
+-
+-    d->handleMousePressEvent(event);
+-}
+-
+-void TemplateButton::mouseReleaseEvent(QMouseEvent* event)
+-{
+-    QPushButton::mouseReleaseEvent(event);
+-
+-    d->handleMouseReleaseEvent(event);
+-}
+-
+-void TemplateButton::mouseMoveEvent(QMouseEvent* event)
+-{
+-    QPushButton::mouseMoveEvent(event);
+-
+-    d->handleMouseMoveEvent(event);
+-}
+-
+-void TemplateButton::dragLeaveEvent(QDragLeaveEvent* event)
+-{
+-    QPushButton::dragLeaveEvent(event);
+-
+-    d->handleDragLeaveEvent(event);
+-}
+-
+-}
+-
+-}
++#include "templatebutton.h"
++#include "ui_templatebutton.h"
++
++#include <QContextMenuEvent>
++#include <QDrag>
++#include <QDragLeaveEvent>
++#include <QEvent>
++#include <QFuture>
++#include <QFutureWatcher>
++#include <QImage>
++#include <QMimeData>
++#include <QMenu>
++#include <QPainter>
++#include <QPixmap>
++#include <QPoint>
++#include <QString>
++#include <QtConcurrent/QtConcurrentRun>
++#include <QUrl>
++
++#include "chaiscript/chaiscript.hpp"
++
++#include "common/formatsupport.h"
++#include "common/util.h"
++#include "manifest/templatemanifest.h"
++#include "task/taskutil.h"
++
++namespace geometrize
++{
++
++namespace dialog
++{
++
++class TemplateButton::TemplateButtonImpl
++{
++public:
++    TemplateButtonImpl(TemplateButton* pQ, const std::function<chaiscript::ChaiScript&()>& templateLoaderProvider, const QString& templateFolder) :
++        ui(std::make_unique<Ui::TemplateButton>()),
++        q{pQ},
++        m_templateLoaderProvider{templateLoaderProvider},
++        m_templateFolder{templateFolder},
++        m_manifest{} // Loaded asynchronously later
++    {
++        ui->setupUi(q);
++        populateUi();
++
++        q->connect(q, &TemplateButton::clicked, [this]() {
++            openTemplate();
++        });
++
++        q->connect(&m_templateLoaderWatcher, &QFutureWatcher<QImage>::finished, [this]() {
++            const QImage thumbnail{m_templateLoaderWatcher.future().result()};
++
++            ui->imageLabel->setPixmap(QPixmap::fromImage(thumbnail));
++
++            setButtonToolTipText();
++
++            emit q->signal_templateLoaded(m_templateFolder, true, QString::fromStdString(m_manifest.getName()));
++        });
++
++        m_templateFuture = QtConcurrent::run([this]() {
++            return setupTemplate();
++        });
++        m_templateLoaderWatcher.setFuture(m_templateFuture);
++    }
++
++    ~TemplateButtonImpl()
++    {
++        m_templateFuture.waitForFinished(); // Wait for template to finish loading
++    }
++
++    TemplateButtonImpl operator=(const TemplateButtonImpl&) = delete;
++    TemplateButtonImpl(const TemplateButtonImpl&) = delete;
++
++    void handleMousePressEvent(QMouseEvent* event)
++    {
++        const QString imageFilepath{QString::fromStdString(util::getFirstFileWithAnyExtension(m_templateFolder.toStdString(), format::getReadableImageFileExtensions(false)))};
++        QImage thumbnail(imageFilepath);
++        if(thumbnail.isNull()) {
++            return; // Failed to load an image
++        }
++        const QSize size{180, 180};
++        thumbnail = thumbnail.scaled(size, Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
++
++        QMimeData* mimeData = new QMimeData;
++        mimeData->setUrls({ QUrl::fromUserInput(imageFilepath) });
++        mimeData->setText(tr("Drag and drop template contents"));
++
++        m_currentDragAction = new QDrag(q);
++        m_currentDragAction->setMimeData(mimeData);
++        m_currentDragAction->setPixmap(QPixmap::fromImage(thumbnail));
++        m_currentDragAction->setHotSpot(QPoint(m_currentDragAction->pixmap().width() / 2, m_currentDragAction->pixmap().height()));
++    }
++
++    void handleMouseReleaseEvent(QMouseEvent* event)
++    {
++        if(m_currentDragAction) {
++            QDrag::cancel();
++            m_currentDragAction->deleteLater();
++            m_currentDragAction = nullptr;
++        }
++    }
++
++    void handleMouseMoveEvent(QMouseEvent* event)
++    {
++        if(event->buttons() != Qt::LeftButton) {
++            return;
++        }
++
++        // Start the drag action after moving the mouse
++        if(m_currentDragAction) {
++            m_currentDragAction->exec(Qt::CopyAction | Qt::MoveAction, Qt::CopyAction);
++            m_currentDragAction = nullptr;
++        }
++    }
++
++    void handleDragLeaveEvent(QDragLeaveEvent*)
++    {
++
++    }
++
++    QImage setupTemplate()
++    {
++        // Note assuming this is threadsafe
++        m_manifest = util::getTemplateManifest(m_templateFolder.toStdString());
++
++        // Note assuming this is threadsafe
++        const QString imageFilepath{QString::fromStdString(util::getFirstFileWithAnyExtension(m_templateFolder.toStdString(), format::getReadableImageFileExtensions(false)))};
++
++        const QImage thumbnail(imageFilepath);
++        if(!thumbnail.isNull()) {
++            const QSize size{180, 180};
++            return thumbnail.scaled(size, Qt::KeepAspectRatioByExpanding, Qt::FastTransformation);
++        }
++        return thumbnail;
++    }
++
++    void openTemplate()
++    {
++        geometrize::util::openTemplate(m_templateLoaderProvider(), m_templateFolder.toStdString());
++    }
++
++    void revealTemplateInExplorer()
++    {
++        geometrize::util::openInDefaultApplication(m_templateFolder.toStdString());
++    }
++
++    void showContextMenu(QContextMenuEvent* e)
++    {
++        QMenu itemContextMenu;
++
++        QAction openAction(tr("Open", "Text on a menu item the user presses to open a file/image"));
++        itemContextMenu.addAction(&openAction);
++        connect(&openAction, &QAction::triggered, [this]() {
++            openTemplate();
++        });
++
++        if(!m_templateFolder.startsWith(":")) { // Only if it's not an embedded resource
++            QAction openInDefaultViewer(tr("Reveal in file explorer", "Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer"));
++            itemContextMenu.addAction(&openInDefaultViewer);
++            connect(&openInDefaultViewer, &QAction::triggered, [this]() {
++                revealTemplateInExplorer();
++            });
++        }
++
++        itemContextMenu.exec(e->globalPos());
++    }
++
++    TemplateManifest getTemplateManifest() const
++    {
++        return m_manifest;
++    }
++
++    void onLanguageChange()
++    {
++        ui->retranslateUi(q);
++        populateUi();
++    }
++
++private:
++    void populateUi()
++    {
++        setButtonToolTipText();
++    }
++
++    void setButtonToolTipText()
++    {
++        const QString name{tr("Name: %1", "Text on a label containing the name of an item, usually an image e.g. Name: The Mona Lisa").arg(QString::fromStdString(m_manifest.getName()))};
++        const QString license{tr("License: %2", "Text on a label containing the legal license a piece of media is under, usually an image e.g. License: Public Domain").arg(QString::fromStdString(m_manifest.getLicense()))};
++        q->setToolTip(name + "<br>" + license);
++    }
++
++    std::unique_ptr<Ui::TemplateButton> ui;
++    QDrag* m_currentDragAction{ nullptr };
++    TemplateButton* q;
++    const std::function<chaiscript::ChaiScript&()>& m_templateLoaderProvider;
++    const QString m_templateFolder;
++    TemplateManifest m_manifest;
++    QFutureWatcher<QImage> m_templateLoaderWatcher;
++    QFuture<QImage> m_templateFuture;
++};
++
++TemplateButton::TemplateButton(const std::function<chaiscript::ChaiScript&()>& templateLoaderProvider, const QString& templateFolder) :
++    QPushButton(nullptr),
++    d{std::make_unique<TemplateButton::TemplateButtonImpl>(this, templateLoaderProvider, templateFolder)}
++{
++}
++
++TemplateButton::~TemplateButton()
++{
++}
++
++void TemplateButton::contextMenuEvent(QContextMenuEvent* e)
++{
++    d->showContextMenu(e);
++}
++
++TemplateManifest TemplateButton::getTemplateManifest() const
++{
++    return d->getTemplateManifest();
++}
++
++void TemplateButton::changeEvent(QEvent* event)
++{
++    if (event->type() == QEvent::LanguageChange) {
++        d->onLanguageChange();
++    }
++    QPushButton::changeEvent(event);
++}
++
++void TemplateButton::mousePressEvent(QMouseEvent* event)
++{
++    QPushButton::mousePressEvent(event);
++
++    d->handleMousePressEvent(event);
++}
++
++void TemplateButton::mouseReleaseEvent(QMouseEvent* event)
++{
++    QPushButton::mouseReleaseEvent(event);
++
++    d->handleMouseReleaseEvent(event);
++}
++
++void TemplateButton::mouseMoveEvent(QMouseEvent* event)
++{
++    QPushButton::mouseMoveEvent(event);
++
++    d->handleMouseMoveEvent(event);
++}
++
++void TemplateButton::dragLeaveEvent(QDragLeaveEvent* event)
++{
++    QPushButton::dragLeaveEvent(event);
++
++    d->handleDragLeaveEvent(event);
++}
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/dialog/launchwindow.cpp	2026-08-27 13:24:25.891982400 +0800
++++ src/improved-app/geometrize/dialog/launchwindow.cpp	2026-08-31 08:20:43.102468500 +0800
+@@ -1,434 +1,524 @@
+-#include "launchwindow.h"
+-#include "ui_launchwindow.h"
+-
+-#include <QCloseEvent>
+-#include <QEvent>
+-#include <QFileInfo>
+-
+-#include "chaiscript/chaiscript.hpp"
+-
+-#include "common/constants.h"
+-#include "common/formatsupport.h"
+-#include "common/uiactions.h"
+-#include "common/util.h"
+-#include "image/imageloader.h"
+-#include "localization/strings.h"
+-#include "preferences/globalpreferences.h"
+-#include "recents/recentitems.h"
+-#include "script/chaiscriptcreator.h"
+-#include "script/scriptrunner.h"
+-#include "serialization/serializationutil.h"
+-#include "task/imagetask.h"
+-#include "task/taskutil.h"
+-#include "version/versioninfo.h"
+-
+-namespace geometrize
+-{
+-
+-namespace dialog
+-{
+-
+-class LaunchWindow::LaunchWindowImpl
+-{
+-public:
+-    LaunchWindowImpl(LaunchWindow* pQ) : ui{std::make_unique<Ui::LaunchWindow>()}, q{pQ}, m_engine{script::createLaunchWindowEngine()}
+-    {
+-        q->setAttribute(Qt::WA_DeleteOnClose);
+-        ui->setupUi(q);
+-        populateUi();
+-
+-        // Hide the run script button by default (it's not useful to casual users at the moment, the task queue is better)
+-        ui->runScriptButton->setHidden(true);
+-
+-        // Set up recent items list
+-        if(preferences::getGlobalPreferences().shouldPopulateRecentItemsOnLaunch()) {
+-            ui->recentsList->setRecentItems(&geometrize::getRecentItems());
+-        }
+-
+-        // Set up console widget
+-        ui->consoleWidget->setEngine(m_engine.get());
+-
+-        loadConsoleHistory();
+-
+-        if(preferences::getGlobalPreferences().shouldShowLaunchConsoleByDefault()) {
+-            setConsoleVisibility(true);
+-        } else {
+-            setConsoleVisibility(false);
+-        }
+-
+-        connect(ui->actionScript_Console, &QAction::toggled, [this](const bool checked) {
+-            setConsoleVisibility(checked);
+-        });
+-
+-        // Set up templates search and grid
+-        connect(ui->templateGrid, &dialog::TemplateGrid::signal_templateLoaded, [this](const QString& templateFolder, const bool /*success*/) {
+-            ui->templatesSearchEdit->addToCompletionList(QString::fromStdString(util::getTemplateManifest(templateFolder.toStdString()).getName()));
+-        });
+-        connect(ui->templatesSearchEdit, &dialog::CompletionBox::textChanged, [this](const QString& text) {
+-            ui->templateGrid->setItemFilter(text);
+-        });
+-
+-        if(preferences::getGlobalPreferences().shouldPopulateTemplatesOnLaunch()) {
+-            ui->templateGrid->loadTemplates();
+-        }
+-
+-        // Set up the logo
+-        setupLogo();
+-    }
+-    LaunchWindowImpl operator=(const LaunchWindowImpl&) = delete;
+-    LaunchWindowImpl(const LaunchWindowImpl&) = delete;
+-    ~LaunchWindowImpl() = default;
+-
+-    static std::vector<LaunchWindow*> getTopLevelLaunchWindows()
+-    {
+-        std::vector<LaunchWindow*> windows;
+-
+-        QWidgetList topLevelWidgets{QApplication::topLevelWidgets()};
+-        for(QWidget* w : topLevelWidgets) {
+-            if(LaunchWindow* lw = dynamic_cast<LaunchWindow*>(w)) {
+-                windows.push_back(lw);
+-            }
+-        }
+-
+-        return windows;
+-    }
+-
+-    void handleCommand(const geometrize::script::Command& command)
+-    {
+-        const QString s = QString::fromStdString(command.getCommand());
+-        if(s == "search_sample_images") {
+-            ui->templatesSearchEdit->setText(QString::fromStdString(command.getStringArg("search_term")));
+-        }
+-
+-        // File menu options
+-        if(s == "show_file_menu") {
+-            ui->menuFile->exec(q->mapToGlobal(ui->menuBar->pos()));
+-        }
+-        if(s == "file_menu_clear_recent_items") {
+-            q->on_actionClear_Recents_triggered();
+-        }
+-        if(s == "file_menu_open_global_preferences") {
+-            q->on_actionGlobal_Preferences_triggered();
+-        }
+-        if(s == "file_menu_load_global_preferences") {
+-            q->on_actionLoad_Global_Preferences_triggered();
+-        }
+-        if(s == "file_menu_save_global_preferences") {
+-            q->on_actionSave_Global_Preferences_triggered();
+-        }
+-        if(s == "file_menu_exit") {
+-            q->on_actionExit_triggered();
+-        }
+-
+-        if(s == "show_view_menu") {
+-            ui->menuView->exec(q->mapToGlobal(ui->menuBar->pos()));
+-        }
+-        if(s == "view_menu_toggle_script_console") {
+-            ui->actionScript_Console->toggle();
+-        }
+-        if(s == "view_menu_show_script_console") {
+-            ui->actionScript_Console->setChecked(true);
+-        }
+-        if(s == "view_menu_hide_script_console") {
+-            ui->actionScript_Console->setChecked(false);
+-        }
+-
+-        if(s == "show_help_menu") {
+-            ui->menuHelp->popup(q->mapToGlobal(ui->menuBar->pos()));
+-        }
+-        if(s == "help_menu_show_tutorials") {
+-            ui->actionTutorials->trigger();
+-        }
+-        if(s == "help_menu_show_support") {
+-            ui->actionSupport->trigger();
+-        }
+-        if(s == "help_menu_show_about") {
+-            ui->actionAbout->trigger();
+-        }
+-
+-        if(s == "click_open_image") {
+-            ui->openImageButton->click();
+-        }
+-        if(s == "click_open_link") {
+-            ui->openLinkButton->click();
+-        }
+-        if(s == "click_open_task_queue") {
+-            ui->openTaskQueueButton->click();
+-        }
+-    }
+-
+-    std::string getCommandHandlerName() const
+-    {
+-        return q->objectName().toStdString();
+-    }
+-
+-    void setCommandHandlerName(const std::string& name)
+-    {
+-        q->setObjectName(QString::fromStdString(name));
+-    }
+-
+-    void setConsoleVisibility(const bool visible)
+-    {
+-        if(ui->actionScript_Console->isChecked() != visible) {
+-            ui->actionScript_Console->setChecked(visible);
+-        }
+-        ui->consoleWidget->setVisible(visible);
+-    }
+-
+-    void loadConsoleHistory()
+-    {
+-        std::vector<std::string> history{util::readStringVector(util::getAppDataLocation().append("/").append(geometrize::dialog::ScriptConsole::launchConsoleHistoryFilename))};
+-        ui->consoleWidget->setHistory(history);
+-    }
+-
+-    void saveConsoleHistory()
+-    {
+-        const std::vector<std::string> history{ui->consoleWidget->getHistory()};
+-        util::writeStringVector(history, util::getAppDataLocation().append("/").append(geometrize::dialog::ScriptConsole::launchConsoleHistoryFilename));
+-    }
+-
+-    void loadGlobalSettingsTemplate()
+-    {
+-        const QString path{common::ui::openLoadGlobalSettingsDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-        geometrize::preferences::getGlobalPreferences().load(path.toStdString());
+-    }
+-
+-    void saveGlobalSettingsTemplate() const
+-    {
+-        const QString path{common::ui::openSaveGlobalSettingsDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-        geometrize::preferences::getGlobalPreferences().save(path.toStdString());
+-    }
+-
+-    void onLanguageChange()
+-    {
+-        ui->retranslateUi(q);
+-        populateUi();
+-    }
+-
+-private:
+-    void populateUi()
+-    {
+-        const QString windowTitle{geometrize::strings::Strings::getApplicationName()
+-                    .append(" ")
+-                    .append(geometrize::version::getApplicationVersionString())};
+-
+-        q->setWindowTitle(windowTitle);
+-
+-        const QString moreResourcesLabel{tr("Get more online", "Text on a button the user presses to open a page containing more resources for using the app, such as extra images, information and help")};
+-        ui->moreResourcesLink->setText(R"(<a href=")" + constants::MORE_RESOURCES_URL + R"(" style="text-decoration:none;">)" + moreResourcesLabel + R"(</a>)");
+-
+-        const QString tutorialsLabel{tr("Video tutorials", "Text on a button the user presses to open a page containing video tutorials explaining how to use the app")};
+-        ui->tutorialsLink->setText(R"(<a href=")" + constants::VIDEO_TUTORIAL_URL + R"(" style="text-decoration:none;">)" + tutorialsLabel + R"(</a>)");
+-
+-        updateLogoTaskProgress();
+-    }
+-
+-    void updateLogoTaskProgress()
+-    {
+-        if(!geometrize::preferences::getGlobalPreferences().shouldGeometrizeAppLogoOnLaunch()) {
+-            ui->logoLabel->setToolTip("");
+-            return;
+-        }
+-
+-        const QString logoToolTip{tr("%1/%2 shapes", "Text showing the number of shapes that have been created to replicate an image so far e.g. 230/300 shapes")
+-                    .arg(QLocale().toString(static_cast<qlonglong>(m_logoTaskSteps))).arg(QLocale().toString(static_cast<qlonglong>(m_maxLogoTaskSteps)))};
+-        ui->logoLabel->setToolTip(logoToolTip);
+-    }
+-
+-    void setupLogo()
+-    {
+-        const QString logoPath{":/logos/logo_small.png"};
+-
+-        if(!geometrize::preferences::getGlobalPreferences().shouldGeometrizeAppLogoOnLaunch()) {
+-            ui->logoLabel->setPixmap(logoPath);
+-        } else {
+-            QImage image(logoPath);
+-            image = image.convertToFormat(QImage::Format_RGBA8888); // Note doing this to guarantee format is RGBA8888
+-
+-            geometrize::Bitmap logoBitmap{image::createBitmap(image)};
+-            geometrize::Bitmap initialBitmap{logoBitmap.getWidth(), logoBitmap.getHeight(), geometrize::rgba{0, 0, 0, 0}};
+-            m_logoTask = std::make_unique<task::ImageTask>(logoBitmap, initialBitmap, Qt::QueuedConnection);
+-            m_logoTask->getPreferences().setShapeTypes(geometrize::ShapeTypes::RECTANGLE);
+-            m_logoTask->getPreferences().setShapeAlpha(255U);
+-
+-            ui->logoLabel->setPixmap(image::createPixmap(m_logoTask->getCurrent()));
+-
+-            connect(m_logoTask.get(), &task::ImageTask::signal_modelDidStep, [this](std::vector<geometrize::ShapeResult> /*results*/) {
+-                const QPixmap pixmap{image::createPixmap(m_logoTask->getCurrent())};
+-                ui->logoLabel->setPixmap(pixmap);
+-
+-                updateLogoTaskProgress();
+-
+-                m_logoTaskSteps++;
+-                if(m_logoTaskSteps <= m_maxLogoTaskSteps) {
+-                    m_logoTask->stepModel();
+-                }
+-            });
+-            m_logoTask->stepModel();
+-        }
+-    }
+-
+-    std::unique_ptr<Ui::LaunchWindow> ui;
+-    LaunchWindow* q;
+-    std::unique_ptr<chaiscript::ChaiScript> m_engine;
+-
+-    std::unique_ptr<task::ImageTask> m_logoTask;
+-    const std::size_t m_maxLogoTaskSteps{300ULL};
+-    std::size_t m_logoTaskSteps{0};
+-};
+-
+-LaunchWindow::LaunchWindow() :
+-    QMainWindow(nullptr),
+-    d{std::make_unique<LaunchWindow::LaunchWindowImpl>(this)}
+-{
+-}
+-
+-LaunchWindow::~LaunchWindow()
+-{
+-}
+-
+-std::vector<LaunchWindow*> LaunchWindow::getTopLevelLaunchWindows()
+-{
+-    return LaunchWindowImpl::getTopLevelLaunchWindows();
+-}
+-
+-void LaunchWindow::handleCommand(const geometrize::script::Command& command)
+-{
+-    d->handleCommand(command);
+-}
+-
+-std::string LaunchWindow::getCommandHandlerName() const
+-{
+-    return d->getCommandHandlerName();
+-}
+-
+-void LaunchWindow::setCommandHandlerName(const std::string& name)
+-{
+-    d->setCommandHandlerName(name);
+-}
+-
+-void LaunchWindow::dragEnterEvent(QDragEnterEvent* event)
+-{
+-    event->acceptProposedAction();
+-}
+-
+-void LaunchWindow::dropEvent(QDropEvent* event)
+-{
+-    const QList<QUrl> urls{geometrize::format::getUrls(event->mimeData())};
+-    QStringList scripts;
+-    QStringList tasks;
+-    for(const QUrl& url : urls) {
+-        const QString urlString{url.toString()};
+-
+-        if(urlString.endsWith(".chai") && url.isLocalFile()) {
+-            scripts.push_back(url.toLocalFile());
+-        } else {
+-            tasks.push_back(urlString);
+-        }
+-    }
+-
+-    if(!scripts.empty()) {
+-        for(const QString& scriptPath : scripts) {
+-            geometrize::script::runScript(util::readFileAsString(scriptPath.toStdString()));
+-        }
+-    }
+-
+-    if(!tasks.empty()) {
+-        util::openTasks(tasks, true);
+-    }
+-}
+-
+-void LaunchWindow::closeEvent(QCloseEvent* /*event*/)
+-{
+-    d->saveConsoleHistory();
+-}
+-
+-void LaunchWindow::on_actionGlobal_Preferences_triggered()
+-{
+-    common::ui::openGlobalPreferences(this);
+-}
+-
+-void LaunchWindow::on_actionLoad_Global_Preferences_triggered()
+-{
+-    d->loadGlobalSettingsTemplate();
+-}
+-
+-void LaunchWindow::on_actionSave_Global_Preferences_triggered()
+-{
+-    d->saveGlobalSettingsTemplate();
+-}
+-
+-void LaunchWindow::on_actionClear_Recents_triggered()
+-{
+-    geometrize::getRecentItems().clear();
+-}
+-
+-void LaunchWindow::on_actionExit_triggered()
+-{
+-    close();
+-}
+-
+-void LaunchWindow::on_openImageButton_clicked()
+-{
+-    const QString imagePath{common::ui::openImagePathPickerDialog(this)};
+-    QFileInfo imageFileInfo(imagePath);
+-    if(imagePath.isEmpty() || (imageFileInfo.isSymLink() && !QFileInfo(imageFileInfo.symLinkTarget()).exists())) {
+-        return;
+-    }
+-
+-    geometrize::util::openTasks({ imagePath }, true);
+-}
+-
+-void LaunchWindow::on_openLinkButton_clicked()
+-{
+-    const QUrl url{common::ui::openGetUrlDialog(this)};
+-    if(url.isEmpty() || !url.isValid()) {
+-        return;
+-    }
+-
+-    geometrize::util::openTasks({ url.toString() }, true);
+-}
+-
+-void LaunchWindow::on_runScriptButton_clicked()
+-{
+-    const std::string result{common::ui::openGetScriptDialog(this).toStdString()};
+-    geometrize::script::runScript(util::readFileAsString(result));
+-}
+-
+-void LaunchWindow::on_openTaskQueueButton_clicked()
+-{
+-    common::ui::openTaskQueueWindow();
+-}
+-
+-void LaunchWindow::on_actionTutorials_triggered()
+-{
+-    common::ui::openOnlineTutorials();
+-}
+-
+-void LaunchWindow::on_actionSupport_triggered()
+-{
+-    common::ui::openTechnicalSupport();
+-}
+-
+-void LaunchWindow::on_actionAbout_triggered()
+-{
+-    common::ui::openAboutPage(this);
+-}
+-
+-void LaunchWindow::changeEvent(QEvent* event)
+-{
+-    if (event->type() == QEvent::LanguageChange) {
+-        d->onLanguageChange();
+-    }
+-    QMainWindow::changeEvent(event);
+-}
+-
+-}
+-
+-}
++#include <cstdio>
++#include <vector>
++#include "launchwindow.h"
++#include "ui_launchwindow.h"
++
++#include <QCloseEvent>
++#include <QComboBox>
++#include <QEvent>
++#include <QFileInfo>
++
++#include "chaiscript/chaiscript.hpp"
++
++#include "common/constants.h"
++#include "common/formatsupport.h"
++#include "common/uiactions.h"
++#include "common/util.h"
++#include "image/imageloader.h"
++#include "localization/strings.h"
++#include "preferences/globalpreferences.h"
++#include "recents/recentitems.h"
++#include "script/chaiscriptcreator.h"
++#include "script/scriptrunner.h"
++#include "serialization/serializationutil.h"
++#include "task/imagetask.h"
++#include "task/taskutil.h"
++#include "version/versioninfo.h"
++
++namespace geometrize
++{
++
++namespace dialog
++{
++
++class LaunchWindow::LaunchWindowImpl
++{
++public:
++    LaunchWindowImpl(LaunchWindow* pQ) : ui{std::make_unique<Ui::LaunchWindow>()}, q{pQ}, m_engine{script::createLaunchWindowEngine()}
++    {
++        q->setAttribute(Qt::WA_DeleteOnClose);
++        ui->setupUi(q);
++        populateUi();
++        setupProcessingResolutionCombo();
++
++        // Hide the run script button by default (it's not useful to casual users at the moment, the task queue is better)
++        ui->runScriptButton->setHidden(true);
++
++        // Set up recent items list
++        if(preferences::getGlobalPreferences().shouldPopulateRecentItemsOnLaunch()) {
++            ui->recentsList->setRecentItems(&geometrize::getRecentItems());
++        }
++
++        // Set up console widget
++        ui->consoleWidget->setEngine(m_engine.get());
++
++        loadConsoleHistory();
++
++        if(preferences::getGlobalPreferences().shouldShowLaunchConsoleByDefault()) {
++            setConsoleVisibility(true);
++        } else {
++            setConsoleVisibility(false);
++        }
++
++        connect(ui->actionScript_Console, &QAction::toggled, [this](const bool checked) {
++            setConsoleVisibility(checked);
++        });
++
++        // Set up templates search and grid
++        connect(ui->templateGrid, &dialog::TemplateGrid::signal_templateLoaded, [this](const QString& /*templateFolder*/, const bool /*success*/, const QString& templateName) {
++            // 名字由信号直接带出(网格转发按钮侧已解析的 manifest),不再重新解析
++            if(!templateName.isEmpty()) {
++                ui->templatesSearchEdit->addToCompletionList(templateName);
++            }
++        });
++        connect(ui->templatesSearchEdit, &dialog::CompletionBox::textChanged, [this](const QString& text) {
++            ui->templateGrid->setItemFilter(text);
++        });
++
++        if(preferences::getGlobalPreferences().shouldPopulateTemplatesOnLaunch()) {
++            ui->templateGrid->loadTemplates();
++        }
++
++        // Set up the logo
++        setupLogo();
++    }
++    LaunchWindowImpl operator=(const LaunchWindowImpl&) = delete;
++    LaunchWindowImpl(const LaunchWindowImpl&) = delete;
++    ~LaunchWindowImpl() = default;
++
++    static std::vector<LaunchWindow*> getTopLevelLaunchWindows()
++    {
++        std::vector<LaunchWindow*> windows;
++
++        QWidgetList topLevelWidgets{QApplication::topLevelWidgets()};
++        for(QWidget* w : topLevelWidgets) {
++            if(LaunchWindow* lw = dynamic_cast<LaunchWindow*>(w)) {
++                windows.push_back(lw);
++            }
++        }
++
++        return windows;
++    }
++
++    void handleCommand(const geometrize::script::Command& command)
++    {
++        const QString s = QString::fromStdString(command.getCommand());
++        if(s == "search_sample_images") {
++            ui->templatesSearchEdit->setText(QString::fromStdString(command.getStringArg("search_term")));
++        }
++
++        // File menu options
++        if(s == "show_file_menu") {
++            ui->menuFile->exec(q->mapToGlobal(ui->menuBar->pos()));
++        }
++        if(s == "file_menu_clear_recent_items") {
++            q->on_actionClear_Recents_triggered();
++        }
++        if(s == "file_menu_open_global_preferences") {
++            q->on_actionGlobal_Preferences_triggered();
++        }
++        if(s == "file_menu_load_global_preferences") {
++            q->on_actionLoad_Global_Preferences_triggered();
++        }
++        if(s == "file_menu_save_global_preferences") {
++            q->on_actionSave_Global_Preferences_triggered();
++        }
++        if(s == "file_menu_exit") {
++            q->on_actionExit_triggered();
++        }
++
++        if(s == "show_view_menu") {
++            ui->menuView->exec(q->mapToGlobal(ui->menuBar->pos()));
++        }
++        if(s == "view_menu_toggle_script_console") {
++            ui->actionScript_Console->toggle();
++        }
++        if(s == "view_menu_show_script_console") {
++            ui->actionScript_Console->setChecked(true);
++        }
++        if(s == "view_menu_hide_script_console") {
++            ui->actionScript_Console->setChecked(false);
++        }
++
++        if(s == "show_help_menu") {
++            ui->menuHelp->popup(q->mapToGlobal(ui->menuBar->pos()));
++        }
++        if(s == "help_menu_show_tutorials") {
++            ui->actionTutorials->trigger();
++        }
++        if(s == "help_menu_show_support") {
++            ui->actionSupport->trigger();
++        }
++        if(s == "help_menu_show_about") {
++            ui->actionAbout->trigger();
++        }
++
++        if(s == "click_open_image") {
++            ui->openImageButton->click();
++        }
++        if(s == "click_open_link") {
++            ui->openLinkButton->click();
++        }
++        if(s == "click_open_task_queue") {
++            ui->openTaskQueueButton->click();
++        }
++    }
++
++    std::string getCommandHandlerName() const
++    {
++        return q->objectName().toStdString();
++    }
++
++    void setCommandHandlerName(const std::string& name)
++    {
++        q->setObjectName(QString::fromStdString(name));
++    }
++
++    void setConsoleVisibility(const bool visible)
++    {
++        if(ui->actionScript_Console->isChecked() != visible) {
++            ui->actionScript_Console->setChecked(visible);
++        }
++        ui->consoleWidget->setVisible(visible);
++    }
++
++    void loadConsoleHistory()
++    {
++        std::vector<std::string> history{util::readStringVector(util::getAppDataLocation().append("/").append(geometrize::dialog::ScriptConsole::launchConsoleHistoryFilename))};
++        ui->consoleWidget->setHistory(history);
++    }
++
++    void saveConsoleHistory()
++    {
++        const std::vector<std::string> history{ui->consoleWidget->getHistory()};
++        util::writeStringVector(history, util::getAppDataLocation().append("/").append(geometrize::dialog::ScriptConsole::launchConsoleHistoryFilename));
++    }
++
++    void loadGlobalSettingsTemplate()
++    {
++        const QString path{common::ui::openLoadGlobalSettingsDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++        geometrize::preferences::getGlobalPreferences().load(path.toStdString());
++    }
++
++    void saveGlobalSettingsTemplate() const
++    {
++        const QString path{common::ui::openSaveGlobalSettingsDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++        geometrize::preferences::getGlobalPreferences().save(path.toStdString());
++    }
++
++    void onLanguageChange()
++    {
++        ui->retranslateUi(q);
++        populateUi();
++        repopulateProcessingResolutionCombo(); // retranslateUi 重置了下拉项,重填并按偏好恢复选中态
++    }
++
++private:
++    void populateUi()
++    {
++        const QString windowTitle{geometrize::strings::Strings::getApplicationName()
++                    .append(" ")
++                    .append(geometrize::version::getApplicationVersionString())};
++
++        q->setWindowTitle(windowTitle);
++
++        const QString moreResourcesLabel{tr("Get more online", "Text on a button the user presses to open a page containing more resources for using the app, such as extra images, information and help")};
++        ui->moreResourcesLink->setText(R"(<a href=")" + constants::MORE_RESOURCES_URL + R"(" style="text-decoration:none;">)" + moreResourcesLabel + R"(</a>)");
++
++        const QString tutorialsLabel{tr("Video tutorials", "Text on a button the user presses to open a page containing video tutorials explaining how to use the app")};
++        ui->tutorialsLink->setText(R"(<a href=")" + constants::VIDEO_TUTORIAL_URL + R"(" style="text-decoration:none;">)" + tutorialsLabel + R"(</a>)");
++
++        updateLogoTaskProgress();
++    }
++
++    void updateLogoTaskProgress()
++    {
++        if(!geometrize::preferences::getGlobalPreferences().shouldGeometrizeAppLogoOnLaunch()) {
++            ui->logoLabel->setToolTip("");
++            return;
++        }
++
++        const QString logoToolTip{tr("%1/%2 shapes", "Text showing the number of shapes that have been created to replicate an image so far e.g. 230/300 shapes")
++                    .arg(QLocale().toString(static_cast<qlonglong>(m_logoTaskSteps))).arg(QLocale().toString(static_cast<qlonglong>(m_maxLogoTaskSteps)))};
++        ui->logoLabel->setToolTip(logoToolTip);
++    }
++
++    // 处理分辨率下拉:直写全局偏好的 resize 开关与阈值。所有打开入口(按钮/拖拽/最近列表/
++    // URL/模板/批量脚本)汇合到 convertImageToBitmapWithDownscaling,改全局偏好即全部生效,
++    // 与全局偏好对话框是同一数据的两个视图,天然同步,无需另开偏好字段。
++    void setupProcessingResolutionCombo()
++    {
++        connect(ui->processingResolutionComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), [this](const int index) {
++            onProcessingResolutionChanged(index);
++        });
++
++        repopulateProcessingResolutionCombo();
++    }
++
++    // 填充下拉项并按当前全局偏好回填选中项;阈值不在预设内(如用户在偏好对话框自定义过)时落到"自定义"
++    void repopulateProcessingResolutionCombo()
++    {
++        QComboBox* combo = ui->processingResolutionComboBox;
++        combo->blockSignals(true); // 回填期间不触发 changed 槽,避免启动/切语言时无意义写盘
++        combo->clear();
++
++        // 预设档位表:单一事实来源,索引即 data,避免 fill 与 change 两处硬编码索引漂移
++        struct ResolutionPreset {
++            int limit;
++            const char* label;
++            const char* tooltip; // 空串 = 无提示
++        };
++        static const std::vector<ResolutionPreset> presets{
++            {256,  "256 × 256",  ""},
++            {512,  "512 × 512",  ""},
++            {1024, "1024 × 1024", ""},
++            {2048, "2048 × 2048", ""},
++            {4096, "4096 × 4096", "Suitable for high-resolution sources, but each step is significantly slower and memory usage is higher"},
++        };
++
++        for(const ResolutionPreset& preset : presets) {
++            combo->addItem(tr(preset.label));
++        }
++        combo->setItemData(static_cast<int>(presets.size()) - 1, tr(presets.back().tooltip), Qt::ToolTipRole);
++        const int unlimitedIndex = static_cast<int>(presets.size());
++        combo->addItem(tr("Unlimited"));
++        combo->setItemData(unlimitedIndex, tr("Process images at their original size"), Qt::ToolTipRole);
++        combo->addItem(tr("Custom"));
++
++        const geometrize::preferences::GlobalPreferences& prefs{geometrize::preferences::getGlobalPreferences()};
++        int index = unlimitedIndex + 1; // Custom
++        if(!prefs.isImageTaskImageResizeEnabled()) {
++            index = unlimitedIndex;
++        } else {
++            const auto threshold{prefs.getImageTaskResizeThreshold()};
++            for(std::size_t i = 0; i < presets.size(); i++) {
++                if(threshold.first == presets[i].limit && threshold.second == presets[i].limit) {
++                    index = static_cast<int>(i);
++                    break;
++                }
++            }
++        }
++        combo->setCurrentIndex(index);
++        combo->blockSignals(false);
++    }
++
++    void onProcessingResolutionChanged(const int index)
++    {
++        geometrize::preferences::GlobalPreferences& prefs{geometrize::preferences::getGlobalPreferences()};
++
++        // Unlimited/Custom 之外的索引即预设档位表下标(0=256 … 4=4096),与填充逻辑共用同一张表
++        static const int presetLimits[]{256, 512, 1024, 2048, 4096};
++        constexpr int presetCount{5};
++        const int unlimitedIndex = presetCount;
++
++        if(index >= 0 && index < presetCount) {
++            prefs.setImageTaskImageResizeEnabled(true);
++            prefs.setImageTaskResizeThreshold(presetLimits[index], presetLimits[index]);
++        } else if(index == unlimitedIndex) {
++            prefs.setImageTaskImageResizeEnabled(false);
++        } else {
++            return; // "自定义"是展示项,选中时不改偏好
++        }
++
++        // 全局偏好 JSON 只在应用退出时的单例 dtor 兜底保存,这里立即落盘,
++        // 防止崩溃/强杀时下拉选择丢失(与全局偏好对话框关闭即存的行为一致)
++        prefs.save(geometrize::preferences::getGlobalPreferencesConfigPath());
++    }
++
++    void setupLogo()
++    {
++        const QString logoPath{":/logos/logo_small.png"};
++
++        if(!geometrize::preferences::getGlobalPreferences().shouldGeometrizeAppLogoOnLaunch()) {
++            ui->logoLabel->setPixmap(logoPath);
++        } else {
++            QImage image(logoPath);
++            image = image.convertToFormat(QImage::Format_RGBA8888); // Note doing this to guarantee format is RGBA8888
++
++            geometrize::Bitmap logoBitmap{image::createBitmap(image)};
++            geometrize::Bitmap initialBitmap{logoBitmap.getWidth(), logoBitmap.getHeight(), geometrize::rgba{0, 0, 0, 0}};
++            m_logoTask = std::make_unique<task::ImageTask>(logoBitmap, initialBitmap, Qt::QueuedConnection);
++            m_logoTask->getPreferences().setShapeTypes(geometrize::ShapeTypes::RECTANGLE);
++            m_logoTask->getPreferences().setShapeAlpha(255U);
++
++            ui->logoLabel->setPixmap(image::createPixmap(m_logoTask->getCurrent()));
++
++            connect(m_logoTask.get(), &task::ImageTask::signal_modelDidStep, [this](std::vector<geometrize::ShapeResult> /*results*/) {
++                const QPixmap pixmap{image::createPixmap(m_logoTask->getCurrent())};
++                ui->logoLabel->setPixmap(pixmap);
++
++                updateLogoTaskProgress();
++
++                m_logoTaskSteps++;
++                if(m_logoTaskSteps <= m_maxLogoTaskSteps) {
++                    m_logoTask->stepModel();
++                }
++            });
++            m_logoTask->stepModel();
++        }
++    }
++
++    std::unique_ptr<Ui::LaunchWindow> ui;
++    LaunchWindow* q;
++    std::unique_ptr<chaiscript::ChaiScript> m_engine;
++
++    std::unique_ptr<task::ImageTask> m_logoTask;
++    const std::size_t m_maxLogoTaskSteps{300ULL};
++    std::size_t m_logoTaskSteps{0};
++};
++
++LaunchWindow::LaunchWindow() :
++    QMainWindow(nullptr),
++    d{std::make_unique<LaunchWindow::LaunchWindowImpl>(this)}
++{
++}
++
++LaunchWindow::~LaunchWindow()
++{
++}
++
++std::vector<LaunchWindow*> LaunchWindow::getTopLevelLaunchWindows()
++{
++    return LaunchWindowImpl::getTopLevelLaunchWindows();
++}
++
++void LaunchWindow::handleCommand(const geometrize::script::Command& command)
++{
++    d->handleCommand(command);
++}
++
++std::string LaunchWindow::getCommandHandlerName() const
++{
++    return d->getCommandHandlerName();
++}
++
++void LaunchWindow::setCommandHandlerName(const std::string& name)
++{
++    d->setCommandHandlerName(name);
++}
++
++void LaunchWindow::dragEnterEvent(QDragEnterEvent* event)
++{
++    event->acceptProposedAction();
++}
++
++void LaunchWindow::dropEvent(QDropEvent* event)
++{
++    const QList<QUrl> urls{geometrize::format::getUrls(event->mimeData())};
++    QStringList scripts;
++    QStringList tasks;
++    for(const QUrl& url : urls) {
++        const QString urlString{url.toString()};
++
++        if(urlString.endsWith(".chai") && url.isLocalFile()) {
++            scripts.push_back(url.toLocalFile());
++        } else {
++            tasks.push_back(urlString);
++        }
++    }
++
++    if(!scripts.empty()) {
++        for(const QString& scriptPath : scripts) {
++            geometrize::script::runScript(util::readFileAsString(scriptPath.toStdString()));
++        }
++    }
++
++    if(!tasks.empty()) {
++        util::openTasks(tasks, true);
++    }
++}
++
++void LaunchWindow::closeEvent(QCloseEvent* /*event*/)
++{
++    d->saveConsoleHistory();
++}
++
++void LaunchWindow::on_actionGlobal_Preferences_triggered()
++{
++    common::ui::openGlobalPreferences(this);
++}
++
++void LaunchWindow::on_actionLoad_Global_Preferences_triggered()
++{
++    d->loadGlobalSettingsTemplate();
++}
++
++void LaunchWindow::on_actionSave_Global_Preferences_triggered()
++{
++    d->saveGlobalSettingsTemplate();
++}
++
++void LaunchWindow::on_actionClear_Recents_triggered()
++{
++    geometrize::getRecentItems().clear();
++}
++
++void LaunchWindow::on_actionExit_triggered()
++{
++    close();
++}
++
++void LaunchWindow::on_openImageButton_clicked()
++{
++    const QString imagePath{common::ui::openImagePathPickerDialog(this)};
++    QFileInfo imageFileInfo(imagePath);
++    if(imagePath.isEmpty() || (imageFileInfo.isSymLink() && !QFileInfo(imageFileInfo.symLinkTarget()).exists())) {
++        return;
++    }
++
++    geometrize::util::openTasks({ imagePath }, true);
++}
++
++void LaunchWindow::on_openLinkButton_clicked()
++{
++    const QUrl url{common::ui::openGetUrlDialog(this)};
++    if(url.isEmpty() || !url.isValid()) {
++        return;
++    }
++
++    geometrize::util::openTasks({ url.toString() }, true);
++}
++
++void LaunchWindow::on_runScriptButton_clicked()
++{
++    const std::string result{common::ui::openGetScriptDialog(this).toStdString()};
++    geometrize::script::runScript(util::readFileAsString(result));
++}
++
++void LaunchWindow::on_openTaskQueueButton_clicked()
++{
++    common::ui::openTaskQueueWindow();
++}
++
++void LaunchWindow::on_actionTutorials_triggered()
++{
++    common::ui::openOnlineTutorials();
++}
++
++void LaunchWindow::on_actionSupport_triggered()
++{
++    common::ui::openTechnicalSupport();
++}
++
++void LaunchWindow::on_actionAbout_triggered()
++{
++    common::ui::openAboutPage(this);
++}
++
++void LaunchWindow::changeEvent(QEvent* event)
++{
++    if (event->type() == QEvent::LanguageChange) {
++        d->onLanguageChange();
++    }
++    QMainWindow::changeEvent(event);
++}
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/common/util.h	2026-08-27 13:24:25.852592500 +0800
++++ src/improved-app/geometrize/common/util.h	2026-08-31 08:06:41.699321300 +0800
+@@ -1,504 +1,514 @@
+-#pragma once
+-
+-#include <cassert>
+-#include <string>
+-#include <sstream>
+-#include <vector>
+-
+-class QWidget;
+-
+-namespace geometrize
+-{
+-
+-namespace script
+-{
+-
+-class Command;
+-class CommandHandler;
+-
+-}
+-
+-}
+-
+-namespace geometrize
+-{
+-
+-namespace util
+-{
+-
+-/**
+- * @brief printToConsole A convenience function for printing a string to the command-line console.
+- * @param str The string to print to the console.
+- */
+-void printToConsole(const std::string& str);
+-
+-/**
+- * @brief printToAllScriptConsoleWidgets A convenience function for printing a string to all the GUI console widgets in the application
+- * @param str The string to print to the script console widgets.
+- */
+-void printToAllScriptConsoleWidgets(const std::string& str);
+-
+-/**
+- * @brief messageBox A convenience function for displaying a message box containing a message.
+- * @param str The string to display in the message box.
+- */
+-void messageBox(const std::string& str);
+-
+-/**
+- * @brief debugBreak Forces the debugger to break/halt the application when this is called.
+- */
+-void debugBreak();
+-
+-/**
+- * @brief processApplicationEvents Processes all pending application events for the calling thread.
+- */
+-void processApplicationEvents();
+-
+-/**
+- * @brief fileExists Checks if a file exists, returns true if it does.
+- * @param filePath The file path.
+- * @return True if the file exists, false if it does not.
+- */
+-bool fileExists(const std::string& filePath);
+-
+-/**
+- * @brief directoryExists Checks if a directory exists, returns true if it does.
+- * @param dirPath The directory path.
+- * @return True if the directory exists, false if it does not.
+- */
+-bool directoryExists(const std::string& dirPath);
+-
+-/**
+- * @brief directoriesExist Checks if the given directories exist, returns true if all do.
+- * @param dirPaths The directory paths.
+- * @return True if all the directories exist, false if any do not.
+- */
+-bool directoriesExist(const std::vector<std::string>& dirPaths);
+-
+-/**
+- * @brief directoryContainsFile Checks if the directory contains the given file, returns true if it does.
+- * @return True if the directory contains the given file, false otherwise.
+- */
+-bool directoryContainsFile(const std::string& dirPath, const std::string& fileName);
+-
+-/**
+- * @brief createDirectory Creates the directory at the given path, recursively creating subdirectories if needed
+- * @return True if the directory was created (or already existed), else false
+- */
+-bool createDirectory(const std::string& dirPath);
+-
+-/**
+- * @brief readFileAsString Reads a file, returning a string containing the contents.
+- * @param filePath The path to the file.
+- * @return The contents of the file, as a string.
+- */
+-std::string readFileAsString(const std::string& filePath);
+-
+-/**
+- * @brief getFilePathsForDirectory Gets the absolute file paths to the files in the given directory.
+- * @param dirPath The directory to search.
+- * @return A vector of files.
+- */
+-std::vector<std::string> getFilePathsForDirectory(const std::string& dirPath);
+-
+-/**
+- * @brief getSubdirectoriesForDirectory Gets the absolute paths for direct subdirectories of the given directory.
+- * @param dirPath The directory to search.
+- * @return A vector of directory paths.
+- */
+-std::vector<std::string> getSubdirectoriesForDirectory(const std::string& dirPath);
+-
+-/**
+- * @brief getFilesWithExtension Gets the absolute file paths to the files with the given extension in the given directory.
+- * @param dirPath The directory to search.
+- * @param extension The file extension to match.
+- * @return The file paths to the files encountered, empty vector if there are no matching files. The order of the file paths is implementation-dependent.
+- */
+-std::vector<std::string> getFilesWithExtension(const std::string& dirPath, const std::string& extension);
+-
+-/**
+- * @brief getFirstFileWithExtension Gets the absolute file path to the first file with the given extension in the given directory.
+- * @param dirPath The directory to search.
+- * @param extension The file extension to match.
+- * @return The file path to the first matching file encountered, empty string if there are no matching files. The 'first' file is implementation-dependent.
+- */
+-std::string getFirstFileWithExtension(const std::string& dirPath, const std::string& extension);
+-
+-/**
+- * @brief getFirstFileWithExtensions Gets the absolute file path to the first file with one of the given extensions in the given directory.
+- * @param dirPath The directory to search.
+- * @param extensions The file extension to match.
+- * @return The file path to the first matching file encountered, empty string if there are no matching files. The 'first' file is implementation-dependent.
+- */
+-std::string getFirstFileWithExtensions(const std::string& dirPath, const std::vector<std::string>& extensions);
+-
+-/**
+- * @brief getScriptsForPath Gets the absolute file paths to the script files (*.chai) for the given directory, using recursive search.
+- * @param dirPath The directory to search.
+- * @return The absolute file paths to the script files for the given directory.
+- */
+-std::vector<std::string> getScriptsForPath(const std::string& path);
+-
+-/**
+- * @brief getScriptsForPaths Gets the absolute file paths to the script files (*.chai) for the given directories, using recursive search.
+- * @param dirPaths The directories to search.
+- * @return The absolute file paths to the script files for the given directories.
+- */
+-std::vector<std::string> getScriptsForPaths(const std::vector<std::string>& dirPaths);
+-
+-/**
+- * @brief getDirectoryForFilePath Gets the directory path from the given local file path.
+- * @param filePath The filepath to chop.
+- * @return The directory path i.e. the file path with the file name and any trailing slashes removed.
+- */
+-std::string getDirectoryForFilePath(const std::string& filePath);
+-
+-/**
+- * @brief getFileNameForFilePath Gets the filename from the given local file path.
+- * @param filePath The filepath to chop.
+- * @return The filename i.e. the file name from the end of the filepath
+- */
+-std::string getFileNameForFilePath(const std::string& filePath);
+-
+-/**
+- * @brief openInDefaultApplication Opens the given path in the default application.
+- * @param path The path to the resource to open.
+- * @return True if the directory, file, URL (or whatever) should open, else false.
+- */
+-bool openInDefaultApplication(const std::string& path);
+-
+-/**
+- * @brief revealInDefaultApplication Reveals the given path in the parent folder (or path with the filename trimmed).
+- * @param path The path to the resource to view.
+- * @return True if the file, folder, URL (or whatever) should be revealed, else false.
+- */
+-bool revealInDefaultApplication(const std::string& path);
+-
+-/**
+- * @brief clearGlobalClipboard Clears the global system clipboard contents.
+- */
+-void clearGlobalClipboard();
+-
+-/**
+- * @brief getGlobalClipboardText Gets the global system clipboard text.
+- * @return The global system clipboard text, or an empty string if the clipboard does not contain any text.
+- */
+-std::string getGlobalClipboardText();
+-
+-/**
+- * @brief setClipboardText Sets the global system clipboard text.
+- * @param text The text to set as the clipboard text.
+- */
+-void setGlobalClipboardText(const std::string& text);
+-
+-/**
+- * @brief stringBeginsWith Checks if a string begins with the given prefix.
+- * @param str The string to check.
+- * @param prefix The prefix to check for.
+- * @return True if the string begins with the given prefix, false otherwise.
+- */
+-bool stringBeginsWith(const std::string& str, const std::string& prefix);
+-
+-/**
+- * @brief stringEndsWith Checks if a string ends with the given suffix.
+- * @param str The string to check.
+- * @param suffix The suffix ending to check for.
+- * @return True if the string ends with the given suffix, false otherwise.
+- */
+-bool stringEndsWith(const std::string& str, const std::string& suffix);
+-
+-/**
+- * @brief getApplicationDirectory Get directory that the application is in.
+- * @return Get application directory.
+- */
+-std::string getApplicationDirectoryLocation();
+-
+-/**
+- * @brief getAppDataLocation Returns a directory location where persistent application data can be stored.
+- * @return Directory location where persistent application data can be stored.
+- */
+-std::string getAppDataLocation();
+-
+-/**
+- * @brief getHomeDirectoryLocation Returns a path to where the user's home directory is.
+- * @return Location of the user's home directory.
+- */
+-std::string getHomeDirectoryLocation();
+-
+-/**
+- * @brief getDesktopDirectoryLocation Returns a path to where the user's desktop is.
+- * @return Location of the user's desktop directory.
+- */
+-std::string getDesktopDirectoryLocation();
+-
+-/**
+- * @brief writeStringToFile Writes the string to the file path, attempting to overwrite any existing file at the path.
+- * @param str The string to write to file.
+- * @param path The file path to write to.
+- * @return True if the string was successfully written to the file, else false.
+- */
+-bool writeStringToFile(const std::string& str, const std::string& path);
+-
+-/**
+- * @brief percentEncode Returns a percent-encoded copy of the input string.
+- * @param str The input string, to be percent-encoded.
+- * @return The percent-encoded input string.
+- */
+-std::string percentEncode(const std::string& str);
+-
+-/**
+- * @brief randomInRange Returns a random integer in the range [lower, upper], inclusive. Note that this uses thread-local RNGs under the hood.
+- * This must not be called on the same thread as the Geometrize shape mutation code - otherwise the shape generation may not be deterministic.
+- * @param lower The minimum value.
+- * @param upper The maximum value.
+- * @return An integer in the range [lower, upper] inclusive.
+- */
+-int randomInRange(int lower, int upper);
+-
+-/**
+- * @brief clamp Clamps a value within a range.
+- * @param value The value to clamp.
+- * @param lower The lower bound of the range.
+- * @param upper The upper bound of the range.
+- * @return The clamped value.
+- */
+-template<typename T>
+-T clamp(T value, T lower, T upper)
+-{
+-    assert(lower <= upper);
+-    if (value < lower) {
+-        value = lower;
+-    }
+-    if (value > upper) {
+-        value = upper;
+-    }
+-    return value;
+-}
+-
+-template<typename T>
+-void split(const std::string& s, const char delimiter, T result)
+-{
+-    std::stringstream ss;
+-    ss.str(s);
+-    std::string item;
+-    while (std::getline(ss, item, delimiter)) {
+-        *(result++) = item;
+-    }
+-}
+-
+-/**
+- * @brief split Splits a given string into a vector of tokens using the given delimiter.
+- * @param s The string to split.
+- * @param delimiter The delimiter to split on.
+- * @return A vector containing the split string.
+- */
+-std::vector<std::string> split(const std::string& s, char delimiter);
+-
+-/**
+- * @brief getCursorX Gets the x-coordinate of the cursor in global screen coordinates.
+- * @return The x-coordinate of the cursor.
+- */
+-int getCursorX();
+-
+-/**
+- * @brief getCursorY Gets the y-coordinate of the cursor in global screen coordinates.
+- * @return The y-coordinate of the cursor.
+- */
+-int getCursorY();
+-
+-/**
+- * @brief setCursorPos Sets the cursor position in global screen coordinates.
+- * @param x The x-coordinate of the cursor.
+- * @param y The y-coordinate of the cursor.
+- */
+-void setCursorPos(int x, int y);
+-
+-/**
+- * @brief getOperatingSystemProductType Returns the product name of the operating system this application is running in.
+- * @return The name of the operating system: "windows", "osx", "linux", "android", "ios", "tvos" etc
+- */
+-std::string getOperatingSystemProductType();
+-
+-/**
+- * @brief saveWidgetScreenshot Takes a screenshot of the given widget and saves it as a .png image to the given path.
+- * @param path The file path to save the screenshot to.
+- * @param widget The widget to take a screenshot of.
+- * @return True if the screenshot was taken and save successfully, else false.
+- */
+-bool saveWidgetScreenshot(const std::string& path, QWidget* widget);
+-
+-/**
+- * @brief getAllWidgetNames Returns a vector containing the names of all the existing widgets in the application
+- * @return A vector containing the names of all the existing widgets in the application
+- */
+-std::vector<std::string> getAllNamedWidgets();
+-
+-/**
+- * @brief getAllWidgetNames Returns a vector containing the names of all the widgets in the application with "geometrize" in their name
+- * @return A vector containing the names of all the existing widgets in the application with "geometrize" in their name
+- */
+-std::vector<std::string> getAllNamedGeometrizeWidgets();
+-
+-/**
+- * @brief getWidgetByName Returns the first found instance of the existing widget with the given name
+- * @param widgetName The name of the widget to find
+- * @return A pointer to the first widget instance with the given name, nullptr if no match
+- */
+-QWidget* getWidgetByName(const std::string& widgetName);
+-
+-/**
+- * @brief getAllNamedCommandHandlers Gets all of the existing objects in the application that implement the CommandHandler interface and can be addressed by name
+- * @return A vector containing the names of all existing objects that implement the CommandHandler interface
+- */
+-std::vector<std::string> getAllNamedCommandHandlers();
+-
+-/**
+- * @brief getCommandHandlerByName Returns the first found instance of the existing command handler with the given name
+- * @param name The name of the command handler to find
+- * @return A pointer to the first command handler with the given name, nullptr if no match
+- */
+-geometrize::script::CommandHandler* getCommandHandlerByName(const std::string& name);
+-
+-/**
+- * @brief sendCommand Sends a command to the given command handler
+- * @param target The name of the target command handler
+- * @param command A string representation of the command
+- */
+-void sendCommand(const std::string& target, const std::string& command);
+-
+-/**
+- * @brief sendCommand Sends a command to the given command handler
+- * @param target The name of the target command handler
+- * @param command A command object representing the command
+- */
+-void sendCommand(const std::string& target, geometrize::script::Command& command);
+-
+-/**
+- * @brief broadcastCommand Sends a command to all command handlers
+- * @param command A string representation of the command
+- */
+-void broadcastCommand(const std::string& command);
+-
+-/**
+- * @brief broadcastCommand Sends a command to all command handlers
+- * @param command A command object representing the command
+- */
+-void broadcastCommand(geometrize::script::Command& command);
+-
+-/**
+- * @brief getFormattedTimestamp Gets a formatted timestamp for the current local time
+- * @param formatString The format of the timestamp e.g. "ddMMyyyy-hhmmss"
+- * @return A string representing a timestamp for the current local time
+- */
+-std::string getFormattedTimestamp(const std::string& formatString);
+-
+-/**
+- * @brief getFilenameTimestamp Gets a filename timestamp string for the current local time
+- * @return A timestamp string in the format "yyyy_MM_dd_hh_mm_ss_zzz"
+- */
+-std::string getFilenameTimestamp();
+-
+-/**
+- * @brief getUuidString Gets a Universally Unique Identifier (UUID) as a string
+- * @return The UUID string
+- */
+-std::string getUuidString();
+-
+-/**
+- * @brief setWidgetSize Sets the size of the given widget in pixels.
+- * @param widget The widget to resize.
+- * @param width The width to set on the widget.
+- * @param height The height to set on the widget.
+- */
+-void setWidgetSize(QWidget* widget, int width, int height);
+-
+-/**
+- * @brief setWidgetPosition Sets the widget to the given position.
+- * @param widget The widget to move.
+- * @param x The x-coordinate to set on the widget.
+- * @param y The y-coordinate to set on the widget.
+- */
+-void setWidgetPosition(QWidget* widget, int x, int y);
+-
+-/**
+- * @brief arrangeWidgetsInGrid Arranges the given widgets into a grid shape
+- * @param widgets The widgets to arrange
+- * @param centerX The x coordinate of where to center the grid
+- * @param centerY The y coordinate of where to center the grid
+- * @param xDim The number of widgets to lay out horizontally
+- * @param yDim The number of widgets to lay out vertically
+- * @param resizeX The width to resize the widgets to
+- * @param resizeY The height to resize the widgets to
+- */
+-void arrangeWidgetsInGrid(const std::vector<QWidget*>& widgets, int centerX, int centerY, int xDim, int yDim, int resizeX, int resizeY);
+-
+-/**
+- * @brief arrangeImageTaskWidgetsInGrid Arranges all the open image task widgets into a grid shape
+- * @param centerX The x coordinate of where to center the grid
+- * @param centerY The y coordinate of where to center the grid
+- * @param xDim The number of widgets to lay out horizontally
+- * @param yDim The number of widgets to lay out vertically
+- * @param resizeX The width to resize the widgets to
+- * @param resizeY The height to resize the widgets to
+- */
+-void arrangeImageTaskWidgetsInGrid(int centerX, int centerY, int xDim, int yDim, int resizeX, int resizeY);
+-
+-/**
+- * @brief arrangeWidgetsInGridOnMonitor Arranges the given widgets into a grid on the given monitor
+- * @param widgets The widgets to arrange
+- * @param screenIdx The index of the screen to center the grid on
+- * @param resizeX The width to resize the widgets to
+- * @param resizeY The height to resize the widgets to
+- */
+-void arrangeWidgetsInGridOnMonitor(const std::vector<QWidget*>& widgets, int screenIdx, int resizeX, int resizeY);
+-
+-/**
+- * @brief arrangeImageTaskWidgetsInGridOnMonitor Arranges all the open image task widgets into a grid on the given monitor
+- * @param screenIdx The index of the screen to center the grid on
+- * @param resizeX The width to resize the widgets to
+- * @param resizeY The height to resize the widgets to
+- */
+-void arrangeImageTaskWidgetsInGridOnMonitor(int screenIdx, int resizeX, int resizeY);
+-
+-/**
+- * @brief arrangeWidgetsInGridOnPrimaryMonitor Arranges the given widgets into a grid on the primary monitor
+- * @param widgets The widgets to arrange
+- * @param resizeX The width to resize the widgets to
+- * @param resizeY The height to resize the widgets to
+- */
+-void arrangeWidgetsInGridOnPrimaryMonitor(const std::vector<QWidget*>& widgets, int resizeX, int resizeY);
+-
+-/**
+- * @brief arrangeImageTaskWidgetsInGridOnPrimaryMonitor Arranges all the open image task widgets into a grid on the given monitor
+- * @param resizeX The width to resize the widgets to
+- * @param resizeY The height to resize the widgets to
+- */
+-void arrangeImageTaskWidgetsInGridOnPrimaryMonitor(int resizeX, int resizeY);
+-
+-/**
+- * @brief fitWidgetsInGridOnMonitor Fits the given widgets into a grid on the given monitor
+- * @param widgets The widgets to arrange
+- * @param screenIdx The index of the screen to center the grid on
+- */
+-void fitWidgetsInGridOnMonitor(const std::vector<QWidget*>& widgets, int screenIdx);
+-
+-/**
+- * @brief fitImageTaskWidgetsInGridOnMonitor Fits all of the open image task widgets into a grid on the given monitor
+- * @param screenIdx The index of the screen to center the grid on
+- */
+-void fitImageTaskWidgetsInGridOnMonitor(int screenIdx);
+-
+-/**
+- * @brief fitWidgetsInGridOnPrimaryMonitor Fits the given widgets into a grid on the primary monitor
+- * @param widgets The widgets to arrange
+- */
+-void fitWidgetsInGridOnPrimaryMonitor(const std::vector<QWidget*>& widgets);
+-
+-/**
+- * @brief fitImageTaskWidgetsInGridOnPrimaryMonitor Fits all of the open image task widgets into a grid on the primary monitor
+- */
+-void fitImageTaskWidgetsInGridOnPrimaryMonitor();
+-
+-}
+-
+-}
++#pragma once
++
++#include <cassert>
++#include <string>
++#include <sstream>
++#include <vector>
++
++class QWidget;
++
++namespace geometrize
++{
++
++namespace script
++{
++
++class Command;
++class CommandHandler;
++
++}
++
++}
++
++namespace geometrize
++{
++
++namespace util
++{
++
++/**
++ * @brief printToConsole A convenience function for printing a string to the command-line console.
++ * @param str The string to print to the console.
++ */
++void printToConsole(const std::string& str);
++
++/**
++ * @brief printToAllScriptConsoleWidgets A convenience function for printing a string to all the GUI console widgets in the application
++ * @param str The string to print to the script console widgets.
++ */
++void printToAllScriptConsoleWidgets(const std::string& str);
++
++/**
++ * @brief messageBox A convenience function for displaying a message box containing a message.
++ * @param str The string to display in the message box.
++ */
++void messageBox(const std::string& str);
++
++/**
++ * @brief debugBreak Forces the debugger to break/halt the application when this is called.
++ */
++void debugBreak();
++
++/**
++ * @brief processApplicationEvents Processes all pending application events for the calling thread.
++ */
++void processApplicationEvents();
++
++/**
++ * @brief fileExists Checks if a file exists, returns true if it does.
++ * @param filePath The file path.
++ * @return True if the file exists, false if it does not.
++ */
++bool fileExists(const std::string& filePath);
++
++/**
++ * @brief directoryExists Checks if a directory exists, returns true if it does.
++ * @param dirPath The directory path.
++ * @return True if the directory exists, false if it does not.
++ */
++bool directoryExists(const std::string& dirPath);
++
++/**
++ * @brief directoriesExist Checks if the given directories exist, returns true if all do.
++ * @param dirPaths The directory paths.
++ * @return True if all the directories exist, false if any do not.
++ */
++bool directoriesExist(const std::vector<std::string>& dirPaths);
++
++/**
++ * @brief directoryContainsFile Checks if the directory contains the given file, returns true if it does.
++ * @return True if the directory contains the given file, false otherwise.
++ */
++bool directoryContainsFile(const std::string& dirPath, const std::string& fileName);
++
++/**
++ * @brief createDirectory Creates the directory at the given path, recursively creating subdirectories if needed
++ * @return True if the directory was created (or already existed), else false
++ */
++bool createDirectory(const std::string& dirPath);
++
++/**
++ * @brief readFileAsString Reads a file, returning a string containing the contents.
++ * @param filePath The path to the file.
++ * @return The contents of the file, as a string.
++ */
++std::string readFileAsString(const std::string& filePath);
++
++/**
++ * @brief getFilePathsForDirectory Gets the absolute file paths to the files in the given directory.
++ * @param dirPath The directory to search.
++ * @return A vector of files.
++ */
++std::vector<std::string> getFilePathsForDirectory(const std::string& dirPath);
++
++/**
++ * @brief getSubdirectoriesForDirectory Gets the absolute paths for direct subdirectories of the given directory.
++ * @param dirPath The directory to search.
++ * @return A vector of directory paths.
++ */
++std::vector<std::string> getSubdirectoriesForDirectory(const std::string& dirPath);
++
++/**
++ * @brief getFilesWithExtension Gets the absolute file paths to the files with the given extension in the given directory.
++ * @param dirPath The directory to search.
++ * @param extension The file extension to match.
++ * @return The file paths to the files encountered, empty vector if there are no matching files. The order of the file paths is implementation-dependent.
++ */
++std::vector<std::string> getFilesWithExtension(const std::string& dirPath, const std::string& extension);
++
++/**
++ * @brief getFirstFileWithExtension Gets the absolute file path to the first file with the given extension in the given directory.
++ * @param dirPath The directory to search.
++ * @param extension The file extension to match.
++ * @return The file path to the first matching file encountered, empty string if there are no matching files. The 'first' file is implementation-dependent.
++ */
++std::string getFirstFileWithExtension(const std::string& dirPath, const std::string& extension);
++
++/**
++ * @brief getFirstFileWithExtensions Gets the absolute file path to the first file with one of the given extensions in the given directory.
++ * @param dirPath The directory to search.
++ * @param extensions The file extension to match.
++ * @return The file path to the first matching file encountered, empty string if there are no matching files. The 'first' file is implementation-dependent.
++ */
++std::string getFirstFileWithExtensions(const std::string& dirPath, const std::vector<std::string>& extensions);
++
++/**
++ * @brief getFirstFileWithAnyExtension Gets the absolute file path to the first file whose name ends with any of the given extensions.
++ * Single-pass directory enumeration: cost is O(files) instead of O(extensions x files) of getFirstFileWithExtensions.
++ * Matching is by directory enumeration order, not extension list priority order.
++ * @param dirPath The directory to search.
++ * @param extensions The file extensions to match (with or without dot prefix, suffix-match semantics).
++ * @return The file path to the first matching file in directory order, empty string if there are no matching files.
++ */
++std::string getFirstFileWithAnyExtension(const std::string& dirPath, const std::vector<std::string>& extensions);
++
++/**
++ * @brief getScriptsForPath Gets the absolute file paths to the script files (*.chai) for the given directory, using recursive search.
++ * @param dirPath The directory to search.
++ * @return The absolute file paths to the script files for the given directory.
++ */
++std::vector<std::string> getScriptsForPath(const std::string& path);
++
++/**
++ * @brief getScriptsForPaths Gets the absolute file paths to the script files (*.chai) for the given directories, using recursive search.
++ * @param dirPaths The directories to search.
++ * @return The absolute file paths to the script files for the given directories.
++ */
++std::vector<std::string> getScriptsForPaths(const std::vector<std::string>& dirPaths);
++
++/**
++ * @brief getDirectoryForFilePath Gets the directory path from the given local file path.
++ * @param filePath The filepath to chop.
++ * @return The directory path i.e. the file path with the file name and any trailing slashes removed.
++ */
++std::string getDirectoryForFilePath(const std::string& filePath);
++
++/**
++ * @brief getFileNameForFilePath Gets the filename from the given local file path.
++ * @param filePath The filepath to chop.
++ * @return The filename i.e. the file name from the end of the filepath
++ */
++std::string getFileNameForFilePath(const std::string& filePath);
++
++/**
++ * @brief openInDefaultApplication Opens the given path in the default application.
++ * @param path The path to the resource to open.
++ * @return True if the directory, file, URL (or whatever) should open, else false.
++ */
++bool openInDefaultApplication(const std::string& path);
++
++/**
++ * @brief revealInDefaultApplication Reveals the given path in the parent folder (or path with the filename trimmed).
++ * @param path The path to the resource to view.
++ * @return True if the file, folder, URL (or whatever) should be revealed, else false.
++ */
++bool revealInDefaultApplication(const std::string& path);
++
++/**
++ * @brief clearGlobalClipboard Clears the global system clipboard contents.
++ */
++void clearGlobalClipboard();
++
++/**
++ * @brief getGlobalClipboardText Gets the global system clipboard text.
++ * @return The global system clipboard text, or an empty string if the clipboard does not contain any text.
++ */
++std::string getGlobalClipboardText();
++
++/**
++ * @brief setClipboardText Sets the global system clipboard text.
++ * @param text The text to set as the clipboard text.
++ */
++void setGlobalClipboardText(const std::string& text);
++
++/**
++ * @brief stringBeginsWith Checks if a string begins with the given prefix.
++ * @param str The string to check.
++ * @param prefix The prefix to check for.
++ * @return True if the string begins with the given prefix, false otherwise.
++ */
++bool stringBeginsWith(const std::string& str, const std::string& prefix);
++
++/**
++ * @brief stringEndsWith Checks if a string ends with the given suffix.
++ * @param str The string to check.
++ * @param suffix The suffix ending to check for.
++ * @return True if the string ends with the given suffix, false otherwise.
++ */
++bool stringEndsWith(const std::string& str, const std::string& suffix);
++
++/**
++ * @brief getApplicationDirectory Get directory that the application is in.
++ * @return Get application directory.
++ */
++std::string getApplicationDirectoryLocation();
++
++/**
++ * @brief getAppDataLocation Returns a directory location where persistent application data can be stored.
++ * @return Directory location where persistent application data can be stored.
++ */
++std::string getAppDataLocation();
++
++/**
++ * @brief getHomeDirectoryLocation Returns a path to where the user's home directory is.
++ * @return Location of the user's home directory.
++ */
++std::string getHomeDirectoryLocation();
++
++/**
++ * @brief getDesktopDirectoryLocation Returns a path to where the user's desktop is.
++ * @return Location of the user's desktop directory.
++ */
++std::string getDesktopDirectoryLocation();
++
++/**
++ * @brief writeStringToFile Writes the string to the file path, attempting to overwrite any existing file at the path.
++ * @param str The string to write to file.
++ * @param path The file path to write to.
++ * @return True if the string was successfully written to the file, else false.
++ */
++bool writeStringToFile(const std::string& str, const std::string& path);
++
++/**
++ * @brief percentEncode Returns a percent-encoded copy of the input string.
++ * @param str The input string, to be percent-encoded.
++ * @return The percent-encoded input string.
++ */
++std::string percentEncode(const std::string& str);
++
++/**
++ * @brief randomInRange Returns a random integer in the range [lower, upper], inclusive. Note that this uses thread-local RNGs under the hood.
++ * This must not be called on the same thread as the Geometrize shape mutation code - otherwise the shape generation may not be deterministic.
++ * @param lower The minimum value.
++ * @param upper The maximum value.
++ * @return An integer in the range [lower, upper] inclusive.
++ */
++int randomInRange(int lower, int upper);
++
++/**
++ * @brief clamp Clamps a value within a range.
++ * @param value The value to clamp.
++ * @param lower The lower bound of the range.
++ * @param upper The upper bound of the range.
++ * @return The clamped value.
++ */
++template<typename T>
++T clamp(T value, T lower, T upper)
++{
++    assert(lower <= upper);
++    if (value < lower) {
++        value = lower;
++    }
++    if (value > upper) {
++        value = upper;
++    }
++    return value;
++}
++
++template<typename T>
++void split(const std::string& s, const char delimiter, T result)
++{
++    std::stringstream ss;
++    ss.str(s);
++    std::string item;
++    while (std::getline(ss, item, delimiter)) {
++        *(result++) = item;
++    }
++}
++
++/**
++ * @brief split Splits a given string into a vector of tokens using the given delimiter.
++ * @param s The string to split.
++ * @param delimiter The delimiter to split on.
++ * @return A vector containing the split string.
++ */
++std::vector<std::string> split(const std::string& s, char delimiter);
++
++/**
++ * @brief getCursorX Gets the x-coordinate of the cursor in global screen coordinates.
++ * @return The x-coordinate of the cursor.
++ */
++int getCursorX();
++
++/**
++ * @brief getCursorY Gets the y-coordinate of the cursor in global screen coordinates.
++ * @return The y-coordinate of the cursor.
++ */
++int getCursorY();
++
++/**
++ * @brief setCursorPos Sets the cursor position in global screen coordinates.
++ * @param x The x-coordinate of the cursor.
++ * @param y The y-coordinate of the cursor.
++ */
++void setCursorPos(int x, int y);
++
++/**
++ * @brief getOperatingSystemProductType Returns the product name of the operating system this application is running in.
++ * @return The name of the operating system: "windows", "osx", "linux", "android", "ios", "tvos" etc
++ */
++std::string getOperatingSystemProductType();
++
++/**
++ * @brief saveWidgetScreenshot Takes a screenshot of the given widget and saves it as a .png image to the given path.
++ * @param path The file path to save the screenshot to.
++ * @param widget The widget to take a screenshot of.
++ * @return True if the screenshot was taken and save successfully, else false.
++ */
++bool saveWidgetScreenshot(const std::string& path, QWidget* widget);
++
++/**
++ * @brief getAllWidgetNames Returns a vector containing the names of all the existing widgets in the application
++ * @return A vector containing the names of all the existing widgets in the application
++ */
++std::vector<std::string> getAllNamedWidgets();
++
++/**
++ * @brief getAllWidgetNames Returns a vector containing the names of all the widgets in the application with "geometrize" in their name
++ * @return A vector containing the names of all the existing widgets in the application with "geometrize" in their name
++ */
++std::vector<std::string> getAllNamedGeometrizeWidgets();
++
++/**
++ * @brief getWidgetByName Returns the first found instance of the existing widget with the given name
++ * @param widgetName The name of the widget to find
++ * @return A pointer to the first widget instance with the given name, nullptr if no match
++ */
++QWidget* getWidgetByName(const std::string& widgetName);
++
++/**
++ * @brief getAllNamedCommandHandlers Gets all of the existing objects in the application that implement the CommandHandler interface and can be addressed by name
++ * @return A vector containing the names of all existing objects that implement the CommandHandler interface
++ */
++std::vector<std::string> getAllNamedCommandHandlers();
++
++/**
++ * @brief getCommandHandlerByName Returns the first found instance of the existing command handler with the given name
++ * @param name The name of the command handler to find
++ * @return A pointer to the first command handler with the given name, nullptr if no match
++ */
++geometrize::script::CommandHandler* getCommandHandlerByName(const std::string& name);
++
++/**
++ * @brief sendCommand Sends a command to the given command handler
++ * @param target The name of the target command handler
++ * @param command A string representation of the command
++ */
++void sendCommand(const std::string& target, const std::string& command);
++
++/**
++ * @brief sendCommand Sends a command to the given command handler
++ * @param target The name of the target command handler
++ * @param command A command object representing the command
++ */
++void sendCommand(const std::string& target, geometrize::script::Command& command);
++
++/**
++ * @brief broadcastCommand Sends a command to all command handlers
++ * @param command A string representation of the command
++ */
++void broadcastCommand(const std::string& command);
++
++/**
++ * @brief broadcastCommand Sends a command to all command handlers
++ * @param command A command object representing the command
++ */
++void broadcastCommand(geometrize::script::Command& command);
++
++/**
++ * @brief getFormattedTimestamp Gets a formatted timestamp for the current local time
++ * @param formatString The format of the timestamp e.g. "ddMMyyyy-hhmmss"
++ * @return A string representing a timestamp for the current local time
++ */
++std::string getFormattedTimestamp(const std::string& formatString);
++
++/**
++ * @brief getFilenameTimestamp Gets a filename timestamp string for the current local time
++ * @return A timestamp string in the format "yyyy_MM_dd_hh_mm_ss_zzz"
++ */
++std::string getFilenameTimestamp();
++
++/**
++ * @brief getUuidString Gets a Universally Unique Identifier (UUID) as a string
++ * @return The UUID string
++ */
++std::string getUuidString();
++
++/**
++ * @brief setWidgetSize Sets the size of the given widget in pixels.
++ * @param widget The widget to resize.
++ * @param width The width to set on the widget.
++ * @param height The height to set on the widget.
++ */
++void setWidgetSize(QWidget* widget, int width, int height);
++
++/**
++ * @brief setWidgetPosition Sets the widget to the given position.
++ * @param widget The widget to move.
++ * @param x The x-coordinate to set on the widget.
++ * @param y The y-coordinate to set on the widget.
++ */
++void setWidgetPosition(QWidget* widget, int x, int y);
++
++/**
++ * @brief arrangeWidgetsInGrid Arranges the given widgets into a grid shape
++ * @param widgets The widgets to arrange
++ * @param centerX The x coordinate of where to center the grid
++ * @param centerY The y coordinate of where to center the grid
++ * @param xDim The number of widgets to lay out horizontally
++ * @param yDim The number of widgets to lay out vertically
++ * @param resizeX The width to resize the widgets to
++ * @param resizeY The height to resize the widgets to
++ */
++void arrangeWidgetsInGrid(const std::vector<QWidget*>& widgets, int centerX, int centerY, int xDim, int yDim, int resizeX, int resizeY);
++
++/**
++ * @brief arrangeImageTaskWidgetsInGrid Arranges all the open image task widgets into a grid shape
++ * @param centerX The x coordinate of where to center the grid
++ * @param centerY The y coordinate of where to center the grid
++ * @param xDim The number of widgets to lay out horizontally
++ * @param yDim The number of widgets to lay out vertically
++ * @param resizeX The width to resize the widgets to
++ * @param resizeY The height to resize the widgets to
++ */
++void arrangeImageTaskWidgetsInGrid(int centerX, int centerY, int xDim, int yDim, int resizeX, int resizeY);
++
++/**
++ * @brief arrangeWidgetsInGridOnMonitor Arranges the given widgets into a grid on the given monitor
++ * @param widgets The widgets to arrange
++ * @param screenIdx The index of the screen to center the grid on
++ * @param resizeX The width to resize the widgets to
++ * @param resizeY The height to resize the widgets to
++ */
++void arrangeWidgetsInGridOnMonitor(const std::vector<QWidget*>& widgets, int screenIdx, int resizeX, int resizeY);
++
++/**
++ * @brief arrangeImageTaskWidgetsInGridOnMonitor Arranges all the open image task widgets into a grid on the given monitor
++ * @param screenIdx The index of the screen to center the grid on
++ * @param resizeX The width to resize the widgets to
++ * @param resizeY The height to resize the widgets to
++ */
++void arrangeImageTaskWidgetsInGridOnMonitor(int screenIdx, int resizeX, int resizeY);
++
++/**
++ * @brief arrangeWidgetsInGridOnPrimaryMonitor Arranges the given widgets into a grid on the primary monitor
++ * @param widgets The widgets to arrange
++ * @param resizeX The width to resize the widgets to
++ * @param resizeY The height to resize the widgets to
++ */
++void arrangeWidgetsInGridOnPrimaryMonitor(const std::vector<QWidget*>& widgets, int resizeX, int resizeY);
++
++/**
++ * @brief arrangeImageTaskWidgetsInGridOnPrimaryMonitor Arranges all the open image task widgets into a grid on the given monitor
++ * @param resizeX The width to resize the widgets to
++ * @param resizeY The height to resize the widgets to
++ */
++void arrangeImageTaskWidgetsInGridOnPrimaryMonitor(int resizeX, int resizeY);
++
++/**
++ * @brief fitWidgetsInGridOnMonitor Fits the given widgets into a grid on the given monitor
++ * @param widgets The widgets to arrange
++ * @param screenIdx The index of the screen to center the grid on
++ */
++void fitWidgetsInGridOnMonitor(const std::vector<QWidget*>& widgets, int screenIdx);
++
++/**
++ * @brief fitImageTaskWidgetsInGridOnMonitor Fits all of the open image task widgets into a grid on the given monitor
++ * @param screenIdx The index of the screen to center the grid on
++ */
++void fitImageTaskWidgetsInGridOnMonitor(int screenIdx);
++
++/**
++ * @brief fitWidgetsInGridOnPrimaryMonitor Fits the given widgets into a grid on the primary monitor
++ * @param widgets The widgets to arrange
++ */
++void fitWidgetsInGridOnPrimaryMonitor(const std::vector<QWidget*>& widgets);
++
++/**
++ * @brief fitImageTaskWidgetsInGridOnPrimaryMonitor Fits all of the open image task widgets into a grid on the primary monitor
++ */
++void fitImageTaskWidgetsInGridOnPrimaryMonitor();
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/common/util.cpp	2026-08-27 13:24:25.851593600 +0800
++++ src/improved-app/geometrize/common/util.cpp	2026-08-31 08:06:41.700321600 +0800
+@@ -1,604 +1,616 @@
+-#include "util.h"
+-
+-#include <cassert>
+-#include <cmath>
+-#include <csignal>
+-#include <fstream>
+-#include <random>
+-
+-#include <QApplication>
+-#include <QClipboard>
+-#include <QCoreApplication>
+-#include <QCursor>
+-#include <QDateTime>
+-#include <QDesktopServices>
+-#include <QDir>
+-#include <QDirIterator>
+-#include <QFileInfo>
+-#include <QGuiApplication>
+-#include <QMessageBox>
+-#include <QObject>
+-#include <QPixmap>
+-#include <QPoint>
+-#include <QScreen>
+-#include <QStandardPaths>
+-#include <QTextStream>
+-#include <QUrl>
+-#include <QUuid>
+-#include <QWindow>
+-
+-#include "dialog/imagetaskwindow.h"
+-#include "dialog/scriptconsole.h"
+-#include "script/command.h"
+-#include "script/commandhandler.h"
+-
+-#include "geometrize/commonutil.h"
+-
+-#ifdef _MSC_VER
+-#include <intrin.h> // For debugbreak
+-#endif
+-
+-namespace
+-{
+-
+-std::vector<QWidget*> getImageTaskWidgets()
+-{
+-    const std::vector<geometrize::dialog::ImageTaskWindow*> windows = geometrize::dialog::ImageTaskWindow::getExistingImageTaskWindows();
+-    std::vector<QWidget*> widgets;
+-    for(auto* w : windows) {
+-        widgets.emplace_back(w);
+-    }
+-    return widgets;
+-}
+-
+-int getPrimaryScreenIdx()
+-{
+-    QScreen* primaryScreen = QGuiApplication::primaryScreen();
+-    int screenIdx = 0;
+-    for(QScreen* s : QGuiApplication::screens()) {
+-        if(primaryScreen == s) {
+-            break;
+-        }
+-        screenIdx++;
+-    }
+-    return screenIdx;
+-}
+-
+-}
+-
+-namespace geometrize
+-{
+-
+-namespace util
+-{
+-
+-void debugBreak()
+-{
+-#ifdef _MSC_VER
+-    __debugbreak();
+-#elif __MINGW32__
+-    // Not sure how to break here...
+-    assert(0 && "Mingw32 debug break");
+-#else
+-    raise(SIGTRAP);
+-#endif
+-}
+-
+-void printToConsole(const std::string& str)
+-{
+-    QTextStream(stdout) << QString::fromStdString(str);
+-}
+-
+-void printToAllScriptConsoleWidgets(const std::string& str)
+-{
+-    const auto& allWidgets = QApplication::topLevelWidgets();
+-    for (const auto& widget : allWidgets) {
+-        const auto& consoles = widget->findChildren<geometrize::dialog::ScriptConsole*>();
+-        for(auto& console : consoles) {
+-            console->appendString(str);
+-        }
+-    }
+-}
+-
+-void messageBox(const std::string& str)
+-{
+-    QMessageBox msgBox;
+-    msgBox.setText(QString::fromStdString(str));
+-    msgBox.exec();
+-}
+-
+-void processApplicationEvents()
+-{
+-    QCoreApplication* app = QCoreApplication::instance();
+-    if(app == nullptr) {
+-        assert(0 && "Application instance pointer is null");
+-        return;
+-    }
+-    app->processEvents();
+-}
+-
+-bool fileExists(const std::string& filePath)
+-{
+-    return QFile(QString::fromStdString(filePath)).exists();
+-}
+-
+-bool directoryExists(const std::string& dirPath)
+-{
+-    return QDir(QString::fromStdString(dirPath)).exists();
+-}
+-
+-bool directoriesExist(const std::vector<std::string>& dirPaths)
+-{
+-    return std::all_of(dirPaths.begin(), dirPaths.end(), directoryExists);
+-}
+-
+-bool directoryContainsFile(const std::string& dirPath, const std::string& fileName)
+-{
+-    const QString qFileName{QString::fromStdString(fileName)};
+-    QDirIterator it(QString::fromStdString(dirPath));
+-    while(it.hasNext()) {
+-        it.next();
+-        if(QFileInfo(it.filePath()).isFile()) {
+-            if(it.fileName() == qFileName) {
+-                return true;
+-            }
+-        }
+-    }
+-    return false;
+-}
+-
+-bool createDirectory(const std::string& dirPath)
+-{
+-    return QDir().mkpath(QString::fromStdString(dirPath));
+-}
+-
+-std::string readFileAsString(const std::string& filePath)
+-{
+-    QFile file(QString::fromStdString(filePath));
+-
+-    if(file.exists() && file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+-        return QString(file.readAll()).toStdString();
+-    }
+-
+-    return "";
+-}
+-
+-std::vector<std::string> getFilePathsForDirectory(const std::string& dirPath)
+-{
+-    std::vector<std::string> files;
+-
+-    QDirIterator it(QString::fromStdString(dirPath));
+-    while(it.hasNext()) {
+-        it.next();
+-        if(QFileInfo(it.filePath()).isFile()) {
+-            files.push_back(it.filePath().toStdString());
+-        }
+-    }
+-    return files;
+-}
+-
+-std::vector<std::string> getSubdirectoriesForDirectory(const std::string& dirPath)
+-{
+-    std::vector<std::string> files;
+-
+-    QDirIterator it(QString::fromStdString(dirPath));
+-    while(it.hasNext()) {
+-        it.next();
+-        if(QFileInfo(it.filePath()).isDir()) {
+-            files.push_back(it.filePath().toStdString());
+-        }
+-    }
+-    return files;
+-}
+-
+-inline bool endsWith(const std::string& value, const std::string& ending)
+-{
+-    if (value.length() >= ending.length()) {
+-        return (0 == value.compare (value.length() - ending.length(), ending.length(), ending));
+-    } else {
+-        return false;
+-    }
+-}
+-
+-std::vector<std::string> getFilesWithExtension(const std::string& dirPath, const std::string& extension)
+-{
+-    std::vector<std::string> files{getFilePathsForDirectory(dirPath)};
+-
+-    files.erase(std::remove_if(files.begin(), files.end(), [&extension](const std::string& s) {
+-        return !endsWith(s, extension);
+-    }), files.end());
+-
+-    return files;
+-}
+-
+-std::string getFirstFileWithExtension(const std::string& dirPath, const std::string& extension)
+-{
+-    const std::vector<std::string> files{getFilesWithExtension(dirPath, extension)};
+-
+-    if(files.empty()) {
+-        return "";
+-    }
+-    return files.front();
+-}
+-
+-std::string getFirstFileWithExtensions(const std::string& dirPath, const std::vector<std::string>& extensions)
+-{
+-    for(const std::string& ext : extensions) {
+-        const std::string s{getFirstFileWithExtension(dirPath, ext)};
+-        if(!s.empty()) {
+-            return s;
+-        }
+-    }
+-
+-    return "";
+-}
+-
+-std::vector<std::string> getScriptsForPath(const std::string& dirPath)
+-{
+-    std::vector<std::string> scripts;
+-    if(!util::directoryExists(dirPath)) {
+-        assert(0 && "Script directory does not exist");
+-        return scripts;
+-    }
+-
+-    QDirIterator it(QString::fromStdString(dirPath), { "*.chai" }, QDir::Files, QDirIterator::Subdirectories);
+-    while (it.hasNext()) {
+-        scripts.push_back(it.next().toStdString());
+-    }
+-
+-    return scripts;
+-}
+-
+-std::vector<std::string> getScriptsForPaths(const std::vector<std::string>& dirPaths)
+-{
+-    std::vector<std::string> scripts;
+-    for(const auto& dirPath : dirPaths) {
+-        const auto newScripts = getScriptsForPath(dirPath);
+-        scripts.insert(scripts.end(), newScripts.begin(), newScripts.end());
+-    }
+-    return scripts;
+-}
+-
+-std::string getDirectoryForFilePath(const std::string& filePath)
+-{
+-    const QFileInfo fileInfo{QString::fromStdString(filePath)};
+-
+-    if(!fileInfo.exists()) {
+-        assert(0 && "File does not exist");
+-    }
+-
+-    return fileInfo.absoluteDir().absolutePath().toStdString();
+-}
+-
+-std::string getFileNameForFilePath(const std::string& filePath)
+-{
+-    return QFileInfo(QString::fromStdString(filePath)).fileName().toStdString();
+-}
+-
+-bool openInDefaultApplication(const std::string& path)
+-{
+-    return QDesktopServices::openUrl(QUrl::fromUserInput(QString::fromStdString(path)));
+-}
+-
+-bool revealInDefaultApplication(const std::string& path)
+-{
+-    const QUrl directoryPath{QUrl::fromUserInput(QString::fromStdString(path)).adjusted(QUrl::RemoveFilename)};
+-    return QDesktopServices::openUrl(directoryPath);
+-}
+-
+-void clearGlobalClipboard()
+-{
+-    QApplication::clipboard()->clear();
+-}
+-
+-std::string getGlobalClipboardText()
+-{
+-    return QApplication::clipboard()->text().toStdString();
+-}
+-
+-void setGlobalClipboardText(const std::string& text)
+-{
+-    QApplication::clipboard()->setText(QString::fromStdString(text));
+-}
+-
+-bool stringBeginsWith(const std::string& str, const std::string& prefix)
+-{
+-    return str.size() >= prefix.size() && std::equal(prefix.begin(), prefix.end(), str.begin());
+-}
+-
+-bool stringEndsWith(const std::string& str, const std::string& suffix)
+-{
+-    return str.size() >= suffix.size() && str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
+-}
+-
+-std::string getApplicationDirectoryLocation()
+-{
+-    return QCoreApplication::applicationDirPath().toStdString();
+-}
+-
+-std::string getAppDataLocation()
+-{
+-    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation).toStdString();
+-}
+-
+-std::string getHomeDirectoryLocation()
+-{
+-    return QStandardPaths::writableLocation(QStandardPaths::HomeLocation).toStdString();
+-}
+-
+-std::string getDesktopDirectoryLocation()
+-{
+-    return QStandardPaths::writableLocation(QStandardPaths::DesktopLocation).toStdString();
+-}
+-
+-bool writeStringToFile(const std::string& str, const std::string& path)
+-{
+-    std::ofstream out(path, std::ios::trunc | std::ios::out);
+-    if(!out.is_open()) {
+-        return false;
+-    }
+-
+-    if(out) {
+-        out << str;
+-    }
+-
+-    out.close();
+-
+-    if(!out) {
+-        return false;
+-    }
+-
+-    return true;
+-}
+-
+-std::string percentEncode(const std::string& str)
+-{
+-    const QString s{QString::fromStdString(str)};
+-    const QString percentEncoded{QUrl::toPercentEncoding(s)};
+-    return percentEncoded.toStdString();
+-}
+-
+-int randomInRange(const int lower, const int upper)
+-{
+-    assert(lower <= upper);
+-    return geometrize::commonutil::randomRange(lower, upper);
+-}
+-
+-std::vector<std::string> split(const std::string& s, const char delimiter)
+-{
+-    std::vector<std::string> elements;
+-    split(s, delimiter, std::back_inserter(elements));
+-    return elements;
+-}
+-
+-int getCursorX()
+-{
+-    return QCursor::pos().x();
+-}
+-
+-int getCursorY()
+-{
+-    return QCursor::pos().y();
+-}
+-
+-void setCursorPos(const int x, const int y)
+-{
+-    QCursor::setPos(x, y);
+-}
+-
+-std::string getOperatingSystemProductType()
+-{
+-    return QSysInfo::productType().toStdString();
+-}
+-
+-bool saveWidgetScreenshot(const std::string& path, QWidget* widget)
+-{
+-    return widget->grab().save(QString::fromStdString(path), "png");
+-}
+-
+-std::vector<std::string> getAllNamedWidgets()
+-{
+-    std::vector<std::string> names;
+-    const QWidgetList allWidgets = QApplication::allWidgets();
+-    for (QWidget* widget : allWidgets) {
+-        if(widget && !widget->objectName().isEmpty()) {
+-            names.emplace_back(widget->objectName().toStdString());
+-        }
+-    }
+-    return names;
+-}
+-
+-std::vector<std::string> getAllNamedGeometrizeWidgets()
+-{
+-    std::vector<std::string> names;
+-    const QWidgetList allWidgets = QApplication::allWidgets();
+-    for (QWidget* widget : allWidgets) {
+-        if(widget && widget->objectName().contains("geometrize")) {
+-            names.emplace_back(widget->objectName().toStdString());
+-        }
+-    }
+-    return names;
+-}
+-
+-QWidget* getWidgetByName(const std::string& widgetName)
+-{
+-    const QWidgetList allWidgets = QApplication::allWidgets();
+-    for (QWidget* widget : allWidgets) {
+-        if(widget && widget->objectName().toStdString() == widgetName) {
+-            return widget;
+-        }
+-    }
+-    return nullptr;
+-}
+-
+-std::vector<std::string> getAllNamedCommandHandlers()
+-{
+-    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
+-    std::vector<std::string> names;
+-    for(const auto& h : handlers) {
+-        names.emplace_back(h->getCommandHandlerName());
+-    }
+-    return names;
+-}
+-
+-geometrize::script::CommandHandler* getCommandHandlerByName(const std::string& name)
+-{
+-    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
+-    for(const auto& h : handlers) {
+-        if(h->getCommandHandlerName() == name)
+-        {
+-            return h;
+-        }
+-    }
+-    return nullptr;
+-}
+-
+-void sendCommand(const std::string& target, const std::string& command)
+-{
+-    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
+-    for(const auto& h : handlers) {
+-        if(h->getCommandHandlerName() == target)
+-        {
+-            h->handleCommand(geometrize::script::Command(command));
+-            return;
+-        }
+-    }
+-}
+-
+-void sendCommand(const std::string& target, geometrize::script::Command& command)
+-{
+-    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
+-    for(const auto& h : handlers) {
+-        if(h->getCommandHandlerName() == target)
+-        {
+-            h->handleCommand(geometrize::script::Command(command));
+-            return;
+-        }
+-    }
+-}
+-
+-void broadcastCommand(const std::string& command)
+-{
+-    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
+-    for(const auto& h : handlers) {
+-        h->handleCommand(geometrize::script::Command(command));
+-    }
+-}
+-
+-void broadcastCommand(geometrize::script::Command& command)
+-{
+-    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
+-    for(const auto& h : handlers) {
+-        h->handleCommand(command);
+-    }
+-}
+-
+-std::string getFormattedTimestamp(const std::string& formatString)
+-{
+-    return QDateTime::currentDateTime().toString(QString::fromStdString(formatString)).toStdString();
+-}
+-
+-std::string getFilenameTimestamp()
+-{
+-    return getFormattedTimestamp("yyyy_MM_dd_hh_mm_ss_zzz");
+-}
+-
+-std::string getUuidString()
+-{
+-    return QUuid::createUuid().toString().toStdString();
+-}
+-
+-void setWidgetSize(QWidget* widget, int width, int height)
+-{
+-    widget->resize(width, height);
+-}
+-
+-void setWidgetPosition(QWidget* widget, int x, int y)
+-{
+-    widget->move(x, y);
+-}
+-
+-void arrangeWidgetsInGrid(const std::vector<QWidget*>& widgets, int centerX, int centerY, int xDim, int yDim, int resizeX, int resizeY)
+-{
+-    int idx = 0;
+-    const int width = xDim * resizeX;
+-    const int height = yDim * resizeY;
+-    for(int y = 0; y < yDim; y++) {
+-        for(int x = 0; x < xDim; x++) {
+-            if(idx >= widgets.size()) {
+-                continue;
+-            }
+-            if(QWidget* widget = widgets[idx]) {
+-                setWidgetSize(widget, resizeX, resizeY);
+-                setWidgetPosition(widget, (centerX - width / 2) + x * resizeX, (centerY - height / 2) + y * resizeY);
+-            }
+-            idx++;
+-        }
+-    }
+-}
+-
+-void arrangeImageTaskWidgetsInGrid(int centerX, int centerY, int xDim, int yDim, int resizeX, int resizeY)
+-{
+-    arrangeWidgetsInGrid(getImageTaskWidgets(), centerX, centerY, xDim, yDim, resizeX, resizeY);
+-}
+-
+-void arrangeWidgetsInGridOnMonitor(const std::vector<QWidget*>& widgets, int screenIdx, int resizeX, int resizeY)
+-{
+-    QList<QScreen*> screens = QGuiApplication::screens();
+-    if(screenIdx >= screens.size()) {
+-        return;
+-    }
+-    QRect screenGeometry = screens.at(screenIdx)->geometry();
+-    int height = screenGeometry.height();
+-    int width = screenGeometry.width();
+-    arrangeWidgetsInGrid(widgets, screenGeometry.x() + width / 2, screenGeometry.y() + height / 2, (width / resizeX), (height / resizeY), resizeX, resizeY);
+-}
+-
+-void arrangeImageTaskWidgetsInGridOnMonitor(int screenIdx, int resizeX, int resizeY)
+-{
+-    arrangeWidgetsInGridOnMonitor(getImageTaskWidgets(), screenIdx, resizeX, resizeY);
+-}
+-
+-void arrangeWidgetsInGridOnPrimaryMonitor(const std::vector<QWidget*>& widgets, int resizeX, int resizeY)
+-{
+-    arrangeWidgetsInGridOnMonitor(widgets, getPrimaryScreenIdx(), resizeX, resizeY);
+-}
+-
+-void arrangeImageTaskWidgetsInGridOnPrimaryMonitor(int resizeX, int resizeY)
+-{
+-    arrangeWidgetsInGridOnPrimaryMonitor(getImageTaskWidgets(), resizeX, resizeY);
+-}
+-
+-void fitWidgetsInGridOnMonitor(const std::vector<QWidget*>& widgets, int screenIdx)
+-{
+-    QList<QScreen*> screens = QGuiApplication::screens();
+-    if(screenIdx >= screens.size()) {
+-        return;
+-    }
+-    QRect screenGeometry = screens.at(screenIdx)->geometry();
+-    const int width = screenGeometry.width();
+-    const int height = screenGeometry.height();
+-    const double maxWidgetsAcross = 4.0;
+-    const int widgetWidth = std::max(1.0, (static_cast<double>(width) / maxWidgetsAcross) - 5);
+-    const int widgetHeight = std::max(1.0, std::min((static_cast<double>(height) / (static_cast<double>(widgets.size() / maxWidgetsAcross))) - 5, 800.0));
+-    arrangeWidgetsInGridOnMonitor(widgets, screenIdx, widgetWidth, widgetHeight);
+-}
+-
+-void fitImageTaskWidgetsInGridOnMonitor(int screenIdx)
+-{
+-    fitWidgetsInGridOnMonitor(getImageTaskWidgets(), screenIdx);
+-}
+-
+-void fitWidgetsInGridOnPrimaryMonitor(const std::vector<QWidget*>& widgets)
+-{
+-    fitWidgetsInGridOnMonitor(widgets, getPrimaryScreenIdx());
+-}
+-
+-void fitImageTaskWidgetsInGridOnPrimaryMonitor()
+-{
+-    fitWidgetsInGridOnPrimaryMonitor(getImageTaskWidgets());
+-}
+-
+-}
+-
+-}
++#include "util.h"
++
++#include <cassert>
++#include <cmath>
++#include <csignal>
++#include <fstream>
++#include <random>
++
++#include <QApplication>
++#include <QClipboard>
++#include <QCoreApplication>
++#include <QCursor>
++#include <QDateTime>
++#include <QDesktopServices>
++#include <QDir>
++#include <QDirIterator>
++#include <QFileInfo>
++#include <QGuiApplication>
++#include <QMessageBox>
++#include <QObject>
++#include <QPixmap>
++#include <QPoint>
++#include <QScreen>
++#include <QStandardPaths>
++#include <QTextStream>
++#include <QUrl>
++#include <QUuid>
++#include <QWindow>
++
++#include "dialog/imagetaskwindow.h"
++#include "dialog/scriptconsole.h"
++#include "script/command.h"
++#include "script/commandhandler.h"
++
++#include "geometrize/commonutil.h"
++
++#ifdef _MSC_VER
++#include <intrin.h> // For debugbreak
++#endif
++
++namespace
++{
++
++std::vector<QWidget*> getImageTaskWidgets()
++{
++    const std::vector<geometrize::dialog::ImageTaskWindow*> windows = geometrize::dialog::ImageTaskWindow::getExistingImageTaskWindows();
++    std::vector<QWidget*> widgets;
++    for(auto* w : windows) {
++        widgets.emplace_back(w);
++    }
++    return widgets;
++}
++
++int getPrimaryScreenIdx()
++{
++    QScreen* primaryScreen = QGuiApplication::primaryScreen();
++    int screenIdx = 0;
++    for(QScreen* s : QGuiApplication::screens()) {
++        if(primaryScreen == s) {
++            break;
++        }
++        screenIdx++;
++    }
++    return screenIdx;
++}
++
++}
++
++namespace geometrize
++{
++
++namespace util
++{
++
++void debugBreak()
++{
++#ifdef _MSC_VER
++    __debugbreak();
++#elif __MINGW32__
++    // Not sure how to break here...
++    assert(0 && "Mingw32 debug break");
++#else
++    raise(SIGTRAP);
++#endif
++}
++
++void printToConsole(const std::string& str)
++{
++    QTextStream(stdout) << QString::fromStdString(str);
++}
++
++void printToAllScriptConsoleWidgets(const std::string& str)
++{
++    const auto& allWidgets = QApplication::topLevelWidgets();
++    for (const auto& widget : allWidgets) {
++        const auto& consoles = widget->findChildren<geometrize::dialog::ScriptConsole*>();
++        for(auto& console : consoles) {
++            console->appendString(str);
++        }
++    }
++}
++
++void messageBox(const std::string& str)
++{
++    QMessageBox msgBox;
++    msgBox.setText(QString::fromStdString(str));
++    msgBox.exec();
++}
++
++void processApplicationEvents()
++{
++    QCoreApplication* app = QCoreApplication::instance();
++    if(app == nullptr) {
++        assert(0 && "Application instance pointer is null");
++        return;
++    }
++    app->processEvents();
++}
++
++bool fileExists(const std::string& filePath)
++{
++    return QFile(QString::fromStdString(filePath)).exists();
++}
++
++bool directoryExists(const std::string& dirPath)
++{
++    return QDir(QString::fromStdString(dirPath)).exists();
++}
++
++bool directoriesExist(const std::vector<std::string>& dirPaths)
++{
++    return std::all_of(dirPaths.begin(), dirPaths.end(), directoryExists);
++}
++
++bool directoryContainsFile(const std::string& dirPath, const std::string& fileName)
++{
++    const QString qFileName{QString::fromStdString(fileName)};
++    QDirIterator it(QString::fromStdString(dirPath));
++    while(it.hasNext()) {
++        it.next();
++        if(QFileInfo(it.filePath()).isFile()) {
++            if(it.fileName() == qFileName) {
++                return true;
++            }
++        }
++    }
++    return false;
++}
++
++bool createDirectory(const std::string& dirPath)
++{
++    return QDir().mkpath(QString::fromStdString(dirPath));
++}
++
++std::string readFileAsString(const std::string& filePath)
++{
++    QFile file(QString::fromStdString(filePath));
++
++    if(file.exists() && file.open(QIODevice::ReadOnly | QIODevice::Text)) {
++        return QString(file.readAll()).toStdString();
++    }
++
++    return "";
++}
++
++std::vector<std::string> getFilePathsForDirectory(const std::string& dirPath)
++{
++    std::vector<std::string> files;
++
++    QDirIterator it(QString::fromStdString(dirPath));
++    while(it.hasNext()) {
++        it.next();
++        if(QFileInfo(it.filePath()).isFile()) {
++            files.push_back(it.filePath().toStdString());
++        }
++    }
++    return files;
++}
++
++std::vector<std::string> getSubdirectoriesForDirectory(const std::string& dirPath)
++{
++    std::vector<std::string> files;
++
++    QDirIterator it(QString::fromStdString(dirPath));
++    while(it.hasNext()) {
++        it.next();
++        if(QFileInfo(it.filePath()).isDir()) {
++            files.push_back(it.filePath().toStdString());
++        }
++    }
++    return files;
++}
++
++inline bool endsWith(const std::string& value, const std::string& ending)
++{
++    if (value.length() >= ending.length()) {
++        return (0 == value.compare (value.length() - ending.length(), ending.length(), ending));
++    } else {
++        return false;
++    }
++}
++
++std::vector<std::string> getFilesWithExtension(const std::string& dirPath, const std::string& extension)
++{
++    std::vector<std::string> files{getFilePathsForDirectory(dirPath)};
++
++    files.erase(std::remove_if(files.begin(), files.end(), [&extension](const std::string& s) {
++        return !endsWith(s, extension);
++    }), files.end());
++
++    return files;
++}
++
++std::string getFirstFileWithExtension(const std::string& dirPath, const std::string& extension)
++{
++    const std::vector<std::string> files{getFilesWithExtension(dirPath, extension)};
++
++    if(files.empty()) {
++        return "";
++    }
++    return files.front();
++}
++
++std::string getFirstFileWithExtensions(const std::string& dirPath, const std::vector<std::string>& extensions)
++{
++    for(const std::string& ext : extensions) {
++        const std::string s{getFirstFileWithExtension(dirPath, ext)};
++        if(!s.empty()) {
++            return s;
++        }
++    }
++
++    return "";
++}
++
++std::string getFirstFileWithAnyExtension(const std::string& dirPath, const std::vector<std::string>& extensions)
++{
++    for(const std::string& filePath : getFilePathsForDirectory(dirPath)) {
++        for(const std::string& ext : extensions) {
++            if(endsWith(filePath, ext)) {
++                return filePath;
++            }
++        }
++    }
++    return "";
++}
++
++std::vector<std::string> getScriptsForPath(const std::string& dirPath)
++{
++    std::vector<std::string> scripts;
++    if(!util::directoryExists(dirPath)) {
++        assert(0 && "Script directory does not exist");
++        return scripts;
++    }
++
++    QDirIterator it(QString::fromStdString(dirPath), { "*.chai" }, QDir::Files, QDirIterator::Subdirectories);
++    while (it.hasNext()) {
++        scripts.push_back(it.next().toStdString());
++    }
++
++    return scripts;
++}
++
++std::vector<std::string> getScriptsForPaths(const std::vector<std::string>& dirPaths)
++{
++    std::vector<std::string> scripts;
++    for(const auto& dirPath : dirPaths) {
++        const auto newScripts = getScriptsForPath(dirPath);
++        scripts.insert(scripts.end(), newScripts.begin(), newScripts.end());
++    }
++    return scripts;
++}
++
++std::string getDirectoryForFilePath(const std::string& filePath)
++{
++    const QFileInfo fileInfo{QString::fromStdString(filePath)};
++
++    if(!fileInfo.exists()) {
++        assert(0 && "File does not exist");
++    }
++
++    return fileInfo.absoluteDir().absolutePath().toStdString();
++}
++
++std::string getFileNameForFilePath(const std::string& filePath)
++{
++    return QFileInfo(QString::fromStdString(filePath)).fileName().toStdString();
++}
++
++bool openInDefaultApplication(const std::string& path)
++{
++    return QDesktopServices::openUrl(QUrl::fromUserInput(QString::fromStdString(path)));
++}
++
++bool revealInDefaultApplication(const std::string& path)
++{
++    const QUrl directoryPath{QUrl::fromUserInput(QString::fromStdString(path)).adjusted(QUrl::RemoveFilename)};
++    return QDesktopServices::openUrl(directoryPath);
++}
++
++void clearGlobalClipboard()
++{
++    QApplication::clipboard()->clear();
++}
++
++std::string getGlobalClipboardText()
++{
++    return QApplication::clipboard()->text().toStdString();
++}
++
++void setGlobalClipboardText(const std::string& text)
++{
++    QApplication::clipboard()->setText(QString::fromStdString(text));
++}
++
++bool stringBeginsWith(const std::string& str, const std::string& prefix)
++{
++    return str.size() >= prefix.size() && std::equal(prefix.begin(), prefix.end(), str.begin());
++}
++
++bool stringEndsWith(const std::string& str, const std::string& suffix)
++{
++    return str.size() >= suffix.size() && str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
++}
++
++std::string getApplicationDirectoryLocation()
++{
++    return QCoreApplication::applicationDirPath().toStdString();
++}
++
++std::string getAppDataLocation()
++{
++    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation).toStdString();
++}
++
++std::string getHomeDirectoryLocation()
++{
++    return QStandardPaths::writableLocation(QStandardPaths::HomeLocation).toStdString();
++}
++
++std::string getDesktopDirectoryLocation()
++{
++    return QStandardPaths::writableLocation(QStandardPaths::DesktopLocation).toStdString();
++}
++
++bool writeStringToFile(const std::string& str, const std::string& path)
++{
++    std::ofstream out(path, std::ios::trunc | std::ios::out);
++    if(!out.is_open()) {
++        return false;
++    }
++
++    if(out) {
++        out << str;
++    }
++
++    out.close();
++
++    if(!out) {
++        return false;
++    }
++
++    return true;
++}
++
++std::string percentEncode(const std::string& str)
++{
++    const QString s{QString::fromStdString(str)};
++    const QString percentEncoded{QUrl::toPercentEncoding(s)};
++    return percentEncoded.toStdString();
++}
++
++int randomInRange(const int lower, const int upper)
++{
++    assert(lower <= upper);
++    return geometrize::commonutil::randomRange(lower, upper);
++}
++
++std::vector<std::string> split(const std::string& s, const char delimiter)
++{
++    std::vector<std::string> elements;
++    split(s, delimiter, std::back_inserter(elements));
++    return elements;
++}
++
++int getCursorX()
++{
++    return QCursor::pos().x();
++}
++
++int getCursorY()
++{
++    return QCursor::pos().y();
++}
++
++void setCursorPos(const int x, const int y)
++{
++    QCursor::setPos(x, y);
++}
++
++std::string getOperatingSystemProductType()
++{
++    return QSysInfo::productType().toStdString();
++}
++
++bool saveWidgetScreenshot(const std::string& path, QWidget* widget)
++{
++    return widget->grab().save(QString::fromStdString(path), "png");
++}
++
++std::vector<std::string> getAllNamedWidgets()
++{
++    std::vector<std::string> names;
++    const QWidgetList allWidgets = QApplication::allWidgets();
++    for (QWidget* widget : allWidgets) {
++        if(widget && !widget->objectName().isEmpty()) {
++            names.emplace_back(widget->objectName().toStdString());
++        }
++    }
++    return names;
++}
++
++std::vector<std::string> getAllNamedGeometrizeWidgets()
++{
++    std::vector<std::string> names;
++    const QWidgetList allWidgets = QApplication::allWidgets();
++    for (QWidget* widget : allWidgets) {
++        if(widget && widget->objectName().contains("geometrize")) {
++            names.emplace_back(widget->objectName().toStdString());
++        }
++    }
++    return names;
++}
++
++QWidget* getWidgetByName(const std::string& widgetName)
++{
++    const QWidgetList allWidgets = QApplication::allWidgets();
++    for (QWidget* widget : allWidgets) {
++        if(widget && widget->objectName().toStdString() == widgetName) {
++            return widget;
++        }
++    }
++    return nullptr;
++}
++
++std::vector<std::string> getAllNamedCommandHandlers()
++{
++    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
++    std::vector<std::string> names;
++    for(const auto& h : handlers) {
++        names.emplace_back(h->getCommandHandlerName());
++    }
++    return names;
++}
++
++geometrize::script::CommandHandler* getCommandHandlerByName(const std::string& name)
++{
++    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
++    for(const auto& h : handlers) {
++        if(h->getCommandHandlerName() == name)
++        {
++            return h;
++        }
++    }
++    return nullptr;
++}
++
++void sendCommand(const std::string& target, const std::string& command)
++{
++    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
++    for(const auto& h : handlers) {
++        if(h->getCommandHandlerName() == target)
++        {
++            h->handleCommand(geometrize::script::Command(command));
++            return;
++        }
++    }
++}
++
++void sendCommand(const std::string& target, geometrize::script::Command& command)
++{
++    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
++    for(const auto& h : handlers) {
++        if(h->getCommandHandlerName() == target)
++        {
++            h->handleCommand(geometrize::script::Command(command));
++            return;
++        }
++    }
++}
++
++void broadcastCommand(const std::string& command)
++{
++    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
++    for(const auto& h : handlers) {
++        h->handleCommand(geometrize::script::Command(command));
++    }
++}
++
++void broadcastCommand(geometrize::script::Command& command)
++{
++    const auto& handlers = geometrize::script::CommandHandler::allCommandHandlers;
++    for(const auto& h : handlers) {
++        h->handleCommand(command);
++    }
++}
++
++std::string getFormattedTimestamp(const std::string& formatString)
++{
++    return QDateTime::currentDateTime().toString(QString::fromStdString(formatString)).toStdString();
++}
++
++std::string getFilenameTimestamp()
++{
++    return getFormattedTimestamp("yyyy_MM_dd_hh_mm_ss_zzz");
++}
++
++std::string getUuidString()
++{
++    return QUuid::createUuid().toString().toStdString();
++}
++
++void setWidgetSize(QWidget* widget, int width, int height)
++{
++    widget->resize(width, height);
++}
++
++void setWidgetPosition(QWidget* widget, int x, int y)
++{
++    widget->move(x, y);
++}
++
++void arrangeWidgetsInGrid(const std::vector<QWidget*>& widgets, int centerX, int centerY, int xDim, int yDim, int resizeX, int resizeY)
++{
++    int idx = 0;
++    const int width = xDim * resizeX;
++    const int height = yDim * resizeY;
++    for(int y = 0; y < yDim; y++) {
++        for(int x = 0; x < xDim; x++) {
++            if(idx >= widgets.size()) {
++                continue;
++            }
++            if(QWidget* widget = widgets[idx]) {
++                setWidgetSize(widget, resizeX, resizeY);
++                setWidgetPosition(widget, (centerX - width / 2) + x * resizeX, (centerY - height / 2) + y * resizeY);
++            }
++            idx++;
++        }
++    }
++}
++
++void arrangeImageTaskWidgetsInGrid(int centerX, int centerY, int xDim, int yDim, int resizeX, int resizeY)
++{
++    arrangeWidgetsInGrid(getImageTaskWidgets(), centerX, centerY, xDim, yDim, resizeX, resizeY);
++}
++
++void arrangeWidgetsInGridOnMonitor(const std::vector<QWidget*>& widgets, int screenIdx, int resizeX, int resizeY)
++{
++    QList<QScreen*> screens = QGuiApplication::screens();
++    if(screenIdx >= screens.size()) {
++        return;
++    }
++    QRect screenGeometry = screens.at(screenIdx)->geometry();
++    int height = screenGeometry.height();
++    int width = screenGeometry.width();
++    arrangeWidgetsInGrid(widgets, screenGeometry.x() + width / 2, screenGeometry.y() + height / 2, (width / resizeX), (height / resizeY), resizeX, resizeY);
++}
++
++void arrangeImageTaskWidgetsInGridOnMonitor(int screenIdx, int resizeX, int resizeY)
++{
++    arrangeWidgetsInGridOnMonitor(getImageTaskWidgets(), screenIdx, resizeX, resizeY);
++}
++
++void arrangeWidgetsInGridOnPrimaryMonitor(const std::vector<QWidget*>& widgets, int resizeX, int resizeY)
++{
++    arrangeWidgetsInGridOnMonitor(widgets, getPrimaryScreenIdx(), resizeX, resizeY);
++}
++
++void arrangeImageTaskWidgetsInGridOnPrimaryMonitor(int resizeX, int resizeY)
++{
++    arrangeWidgetsInGridOnPrimaryMonitor(getImageTaskWidgets(), resizeX, resizeY);
++}
++
++void fitWidgetsInGridOnMonitor(const std::vector<QWidget*>& widgets, int screenIdx)
++{
++    QList<QScreen*> screens = QGuiApplication::screens();
++    if(screenIdx >= screens.size()) {
++        return;
++    }
++    QRect screenGeometry = screens.at(screenIdx)->geometry();
++    const int width = screenGeometry.width();
++    const int height = screenGeometry.height();
++    const double maxWidgetsAcross = 4.0;
++    const int widgetWidth = std::max(1.0, (static_cast<double>(width) / maxWidgetsAcross) - 5);
++    const int widgetHeight = std::max(1.0, std::min((static_cast<double>(height) / (static_cast<double>(widgets.size() / maxWidgetsAcross))) - 5, 800.0));
++    arrangeWidgetsInGridOnMonitor(widgets, screenIdx, widgetWidth, widgetHeight);
++}
++
++void fitImageTaskWidgetsInGridOnMonitor(int screenIdx)
++{
++    fitWidgetsInGridOnMonitor(getImageTaskWidgets(), screenIdx);
++}
++
++void fitWidgetsInGridOnPrimaryMonitor(const std::vector<QWidget*>& widgets)
++{
++    fitWidgetsInGridOnMonitor(widgets, getPrimaryScreenIdx());
++}
++
++void fitImageTaskWidgetsInGridOnPrimaryMonitor()
++{
++    fitWidgetsInGridOnPrimaryMonitor(getImageTaskWidgets());
++}
++
++}
++
++}

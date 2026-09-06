@@ -1,0 +1,20 @@
+# 内嵌仓库 vendored 快照的 pin 记录(.git 已改名为 .git-disabled 以便内容入库;需恢复 VCS 元数据时改回即可)
+# 记录时间: 2026-09-07 06:25
+./src/improved-app/lib/burstlinker/burstlinker  677b714e886dfaa39da8cc718fb45959d923de21
+./src/improved-app/lib/cereal  22a1b369f39be918ca79206a83c4facd759f9105
+./src/improved-app/lib/chaiscript  2898ae679f733db37f2e9db6256c3d36e87b40eb
+./src/improved-app/lib/dataslinger  161709a9b0bad8bac2563584a3ec5ccc6314f62f
+./src/improved-app/lib/geometrize  d0f652d299e58a9c68e8377c9202b89d474cf580
+./src/improved-app/resources/scripts  45628f606daa527cd682a349594a751560f9e9d7
+./src/improved-app/resources/templates  81b867f1f8d22ce993388c6b61536a0d8806846a
+./src/improved-app/resources/web_export  ab6ea6e15441e10f8e88ec777b4a26b68b057bd0
+./src/improved-app/translations  65903b47ca177cbe02567e30a80fc9e198025964
+./upstream/geometrize-app/lib/burstlinker/burstlinker  677b714e886dfaa39da8cc718fb45959d923de21
+./upstream/geometrize-app/lib/cereal  22a1b369f39be918ca79206a83c4facd759f9105
+./upstream/geometrize-app/lib/chaiscript  f635b51e3f8e95868210edfc66fdbd8e475710f5
+./upstream/geometrize-app/lib/dataslinger  161709a9b0bad8bac2563584a3ec5ccc6314f62f
+./upstream/geometrize-app/lib/geometrize  d0f652d299e58a9c68e8377c9202b89d474cf580
+./upstream/geometrize-app/resources/scripts  45628f606daa527cd682a349594a751560f9e9d7
+./upstream/geometrize-app/resources/templates  81b867f1f8d22ce993388c6b61536a0d8806846a
+./upstream/geometrize-app/resources/web_export  ab6ea6e15441e10f8e88ec777b4a26b68b057bd0
+./upstream/geometrize-app/translations  65903b47ca177cbe02567e30a80fc9e198025964

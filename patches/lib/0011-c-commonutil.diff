@@ -1,0 +1,12 @@
+--- src/baseline-lib/geometrize/geometrize/commonutil.cpp	2026-08-27 13:24:27.429671200 +0800
++++ src/improved-lib/geometrize/geometrize/commonutil.cpp	2026-08-27 15:46:33.418851200 +0800
+@@ -63,7 +63,8 @@
+ {
+     const auto& trimmedScanlines = geometrize::trimScanlines(scanlines, 0, 0, image.getWidth(), image.getHeight());
+     for(const geometrize::Scanline& scanline : trimmedScanlines) {
+-        for(int x = scanline.x1; x < scanline.x2; x++) {
++        // 闭区间遍历与库内其余扫描线遍历一致(上游 x < x2 漏检末像素)
++        for(int x = scanline.x1; x <= scanline.x2; x++) {
+             if(image.getPixel(x, scanline.y).a < minAlpha) {
+                 return true;
+             }

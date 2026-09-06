@@ -1,0 +1,83 @@
+# A2.4 分段颜色(第八批,2026-08-30)—— 补丁定位说明
+# 与 0012-0015 同款口径:baseline 侧 = 纯上游快照,+ 侧 = 改进库累积态(含 0001-0015 全部差异)。
+# 本组补丁覆盖 A2.4 触碰的文件;检阅本批增量请与 0015 交付态对照。
+# 触碰文件:shaperesult.h(ScanlineColor+segments)、core.h/cpp(segmentColors 开关 +
+#   computeSegmentColors + isLineLikeShape + defaultEnergyFunctionSegmented + 接入三元)、
+#   rasterizer.h/cpp(drawLinesSegmented)、model.h/cpp(useEnhanced 第四开关 + 分段落画 +
+#   collectAndDrawWithUndoSegmented + drawShape 三参重载)、svgexporter.h/cpp(色带组导出)、
+#   shapejsonexporter.cpp(可选 segments 数组)。
+# 双轨制:segmentColors 默认关,12 个 bit-exact 门禁不破;开启走增强轨道(run_ab segment_color_* 3 例锁定)。
+# 注意:本补丁含非 ASCII(UTF-8 中文注释);应用时保持 /utf-8。
+
+--- src/baseline-lib/geometrize/geometrize/shaperesult.h	2026-08-27 13:24:27.428668900 +0800
++++ src/improved-lib/geometrize/geometrize/shaperesult.h	2026-08-30 19:42:15.909723100 +0800
+@@ -1,26 +1,43 @@
+-#pragma once
+-
+-#include <memory>
+-
+-#include "bitmap/rgba.h"
+-
+-namespace geometrize
+-{
+-class Shape;
+-}
+-
+-namespace geometrize
+-{
+-
+-/**
+- * @brief The ShapeResult struct is a container for info about a shape added to the model.
+- * @author Sam Twidale (https://samcodes.co.uk/)
+- */
+-struct ShapeResult
+-{
+-    const double score;
+-    const geometrize::rgba color;
+-    const std::shared_ptr<geometrize::Shape> shape;
+-};
+-
+-}
++#pragma once
++
++#include <cstdint>
++#include <memory>
++#include <vector>
++
++#include "bitmap/rgba.h"
++
++namespace geometrize
++{
++class Shape;
++}
++
++namespace geometrize
++{
++
++/**
++ * @brief The ScanlineColor struct holds the per-scanline color of a segmented shape.
++ */
++struct ScanlineColor
++{
++    std::int32_t y; ///< The y-coordinate of the scanline.
++    std::int32_t x1; ///< The leftmost x-coordinate of the scanline.
++    std::int32_t x2; ///< The rightmost x-coordinate of the scanline.
++    rgba color; ///< The color of the scanline.
++};
++
++/**
++ * @brief The ShapeResult struct is a container for info about a shape added to the model.
++ * @author Sam Twidale (https://samcodes.co.uk/)
++ */
++struct ShapeResult
++{
++    const double score;
++    const geometrize::rgba color;
++    const std::shared_ptr<geometrize::Shape> shape;
++    // A2.4 分段颜色:非空时是各扫描线的行级取色存档(导出/重放/重做的唯一权威来源——
++    // 分段色依赖落画时刻的位图,事后重算是错的)。空 = 单色语义(开关关/线型形状),全链向后兼容。
++    const std::vector<ScanlineColor> segments;
++};
++
++}
++

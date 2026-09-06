@@ -1,0 +1,45 @@
+--- upstream/geometrize-app/geometrize/dialog/imagetaskscriptingwidget.cpp	2026-08-27 13:24:25.880662800 +0800
++++ src/improved-app/geometrize/dialog/imagetaskscriptingwidget.cpp	2026-08-28 03:01:09.139288300 +0800
+@@ -262,6 +262,17 @@
+         }
+     }
+ 
++    bool hasScriptsWithPrefix(const std::string& scriptGroupNamePrefix) const
++    {
++        const auto scriptWidgets = ui->customScriptsGroupBox->findChildren<geometrize::dialog::ScriptEditorWidget*>();
++        for(const auto& widget : scriptWidgets) {
++            if(widget->getFunctionName().substr(0, scriptGroupNamePrefix.length()) == scriptGroupNamePrefix) {
++                return true;
++            }
++        }
++        return false;
++    }
++
+     bool evaluateStopConditionScripts() const
+     {
+         return evaluateScriptsWithBooleanReturnValue(::stopConditionIdPrefix);
+@@ -347,6 +358,12 @@
+         evaluateScriptsWithNoReturnValue(::onTimedUpdateCallbackPrefix);
+     }
+ 
++    bool hasTimedUpdateScripts() const
++    {
++        // 供宿主决定是否启动 100ms 轮询定时器:没有任何 timed-update 脚本时轮询纯属空转
++        return hasScriptsWithPrefix(::onTimedUpdateCallbackPrefix);
++    }
++
+     void onLanguageChange()
+     {
+         ui->retranslateUi(q);
+@@ -683,6 +700,11 @@
+     d->evaluateOnTimedUpdateEventScripts();
+ }
+ 
++bool ImageTaskScriptingWidget::hasTimedUpdateScripts() const
++{
++    return d->hasTimedUpdateScripts();
++}
++
+ std::map<std::string, std::string> ImageTaskScriptingWidget::getScripts() const
+ {
+     return d->getScripts();

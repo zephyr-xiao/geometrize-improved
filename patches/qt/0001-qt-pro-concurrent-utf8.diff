@@ -1,0 +1,18 @@
+--- upstream/geometrize-app/geometrize.pro	2026-08-27 13:24:25.775130400 +0800
++++ src/improved-app/geometrize.pro	2026-08-28 03:32:24.092031700 +0800
+@@ -1,4 +1,4 @@
+-QT += core gui network svg
++QT += core gui network svg concurrent
+ 
+ greaterThan(QT_MAJOR_VERSION, 5) {
+     QT += svgwidgets
+@@ -23,6 +23,9 @@
+ # Note that mingw32 builds may not work with the compiled-in stdlib because of a "too many sections error" with Chaiscript
+ msvc:QMAKE_CXXFLAGS += -bigobj
+ 
++# 改进版核心库源码含中文注释,MSVC 须显式按 UTF-8 解析(否则 GBK 代码页下注释被切碎产生假语法错误)
++msvc:QMAKE_CXXFLAGS += -utf-8
++
+ # Options for the Mac AppStore version of Geometrize
+ macx {
+     include($$PWD/osx/geometrize_osx.pri)

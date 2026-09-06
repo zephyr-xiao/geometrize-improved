@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/fire_whirl/fire_whirl.jpg</file>
+        <file>templates/templates/fire_whirl/manifest.json</file>
+        <file>templates/templates/fire_whirl/settings.json</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,3814 @@
+# A2.4 分段颜色 重放/重做信号链(第八批,2026-08-30)—— 补丁定位说明
+# baseline 侧 = 纯上游快照,+ 侧 = improved-app 累积态。检阅本批增量请与 0022 交付态对照。
+# 覆盖:imagetask.h/cpp(signal_drawShape 三参 + drawShape 重载 + qRegisterMetaType + Q_DECLARE_METATYPE)
+#   + imagetaskworker.h/cpp(slot 三参 + replayShapes 传 result.segments)+ imagetaskwindow.cpp(redoModel 传 segments)。
+--- upstream/geometrize-app/geometrize/task/imagetask.h	2026-08-27 13:24:26.098059300 +0800
++++ src/improved-app/geometrize/task/imagetask.h	2026-08-30 22:42:57.363574600 +0800
+@@ -1,194 +1,226 @@
+-#pragma once
+-
+-#include <functional>
+-#include <memory>
+-#include <string>
+-#include <vector>
+-
+-#include <QObject>
+-
+-#include "geometrize/core.h"
+-#include "geometrize/bitmap/bitmap.h"
+-#include "geometrize/bitmap/rgba.h"
+-#include "geometrize/model.h"
+-#include "geometrize/shaperesult.h"
+-#include "geometrize/runner/imagerunneroptions.h"
+-#include "geometrize/shape/shape.h"
+-
+-#include "preferences/imagetaskpreferences.h"
+-
+-namespace geometrize
+-{
+-
+-namespace script
+-{
+-class GeometrizerEngine;
+-}
+-
+-}
+-
+-namespace chaiscript
+-{
+-class ChaiScript;
+-}
+-
+-Q_DECLARE_METATYPE(std::vector<geometrize::ShapeResult>) ///< Shape data passed around by the image task worker thread.
+-Q_DECLARE_METATYPE(geometrize::ImageRunnerOptions) ///< Image runner options passed to the image task worker thread.
+-Q_DECLARE_METATYPE(std::function<std::shared_ptr<geometrize::Shape>()>) ///< Function that generates shapes passed to the image task worker thread.
+-Q_DECLARE_METATYPE(std::shared_ptr<geometrize::Shape>) ///< Shape passed to the image task worker thread.
+-Q_DECLARE_METATYPE(geometrize::rgba) ///< Shape color passed to the image task worker thread.
+-Q_DECLARE_METATYPE(geometrize::core::EnergyFunction); ///< Energy function passed to the image task worker thread.
+-Q_DECLARE_METATYPE(geometrize::ShapeAcceptancePreconditionFunction); ///< Shape-add precondition function passed to the image task worker thread.
+-
+-namespace geometrize
+-{
+-
+-namespace task
+-{
+-
+-/**
+- * @brief The ImageTask class transforms a source image into a collection of shapes approximating the source image.
+- */
+-class ImageTask : public QObject
+-{
+-    Q_OBJECT
+-public:
+-    ImageTask(Bitmap& target, Qt::ConnectionType workerConnectionType = Qt::QueuedConnection);
+-    ImageTask(Bitmap& target, Bitmap& background, Qt::ConnectionType workerConnectionType = Qt::QueuedConnection);
+-    ImageTask(const std::string& displayName, Bitmap& bitmap, Qt::ConnectionType workerConnectionType = Qt::QueuedConnection);
+-    ImageTask(const std::string& displayName, Bitmap& bitmap, const Bitmap& initial, Qt::ConnectionType workerConnectionType = Qt::QueuedConnection);
+-
+-    ImageTask& operator=(const ImageTask&) = delete;
+-    ImageTask(const ImageTask&) = delete;
+-    virtual ~ImageTask();
+-
+-    /**
+-     * @brief getGeometrizer Gets a reference to the script-based engine used to turn images into shapes.
+-     * @return The script-based engine used to turn images into shapes.
+-     */
+-    geometrize::script::GeometrizerEngine& getGeometrizer();
+-
+-    /**
+-     * @brief getTarget Gets the target bitmap, non-const edition.
+-     * @return The target bitmap.
+-     */
+-    Bitmap& getTargetMutable();
+-
+-    /**
+-     * @brief getCurrent Gets the current bitmap, non-const edition.
+-     * @return The current bitmap.
+-     */
+-    Bitmap& getCurrentMutable();
+-
+-    /**
+-     * @brief getTarget Gets the target bitmap, const-edition.
+-     * @return The target bitmap.
+-     */
+-    const Bitmap& getTarget() const;
+-
+-    /**
+-     * @brief getCurrent Gets the current bitmap, const-edition.
+-     * @return The current bitmap.
+-     */
+-    const Bitmap& getCurrent() const;
+-
+-    /**
+-     * @brief getWidth Gets the width of the images used by the image task.
+-     * @return The width of the images used by the image task.
+-     */
+-    std::uint32_t getWidth() const;
+-
+-    /**
+-     * @brief getHeight Gets the height of the images used by the image task.
+-     * @return The height of the images used by the image task.
+-     */
+-    std::uint32_t getHeight() const;
+-
+-    /**
+-     * @brief getDisplayName Gets the display name of the image task.
+-     * @return The display name of the image task.
+-     */
+-    std::string getDisplayName() const;
+-
+-    /**
+-     * @brief getTaskId Gets the unique id of the image task.
+-     * @return The unique id of the image task.
+-     */
+-     std::size_t getTaskId() const;
+-
+-     /**
+-      * @brief isStepping Returns true if the internal model is currently stepping.
+-      * @return True if the internal model is currently stepping, else false.
+-      */
+-     bool isStepping() const;
+-
+-     /**
+-      * @brief stepModel Steps the internal model, typically adding a shape.
+-      */
+-     void stepModel();
+-
+-     /**
+-      * @brief drawShape Draws a shape with the given color to the internal model.
+-      * @param shape The shape to add to the model.
+-      * @param color The color of the shape.
+-      */
+-     void drawShape(const std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color);
+-
+-     /**
+-      * @brief drawBackgroundRectangle Convenience function that draws a background rectangle shape.
+-      * @param color The color of the background rectangle.
+-      */
+-     void drawBackgroundRectangle(geometrize::rgba color);
+-
+-     /**
+-      * @brief getPreferences Gets a reference to the current preferences of this task.
+-      * @return A reference to the current preferences of this task.
+-      */
+-     geometrize::preferences::ImageTaskPreferences& getPreferences();
+-
+-     /**
+-      * @brief setPreferences Sets the preferences for this task.
+-      * @param preferences The preferences to set.
+-      */
+-     void setPreferences(preferences::ImageTaskPreferences preferences);
+-
+-signals:
+-     /**
+-      * @brief signal_step Signal that the image task emits to make the internal model step.
+-      */
+-     void signal_step(geometrize::ImageRunnerOptions options, std::function<std::shared_ptr<geometrize::Shape>()> shapeCreator, geometrize::core::EnergyFunction energyFunction, geometrize::ShapeAcceptancePreconditionFunction addShapePrecondition);
+-
+-     /**
+-      * @brief signal_drawShape Signal that the image task emits to draw a shape to the internal model.
+-      * @param shape The shape to draw.
+-      * @param color The color of the shape to draw.
+-      */
+-     void signal_drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color);
+-
+-     /**
+-      * @brief signal_modelWillStep Signal that is emitted immediately before the underlying image task model is stepped.
+-      */
+-     void signal_modelWillStep();
+-
+-     /**
+-      * @brief signal_modelDidStep Signal that is emitted immediately after the underlying image task model is stepped.
+-      * @param shapes The shapes that were added in the last step.
+-      */
+-     void signal_modelDidStep(std::vector<geometrize::ShapeResult> shapes);
+-
+-     /**
+-      * @brief signal_preferencesSet Signal that is emitted immediately after the image task preferences are set.
+-      */
+-     void signal_preferencesSet();
+-
+-private:
+-    void modelWillStep();
+-    void modelDidStep(std::vector<geometrize::ShapeResult> shapes);
+-
+-    class ImageTaskImpl;
+-    std::unique_ptr<ImageTaskImpl> d;
+-};
+-
+-}
+-
+-}
++#pragma once
++
++#include <functional>
++#include <memory>
++#include <string>
++#include <vector>
++
++#include <QObject>
++
++#include "geometrize/core.h"
++#include "geometrize/bitmap/bitmap.h"
++#include "geometrize/bitmap/rgba.h"
++#include "geometrize/model.h"
++#include "geometrize/shaperesult.h"
++#include "geometrize/runner/imagerunneroptions.h"
++#include "geometrize/shape/shape.h"
++
++#include "preferences/imagetaskpreferences.h"
++
++namespace geometrize
++{
++
++namespace script
++{
++class GeometrizerEngine;
++}
++
++}
++
++namespace chaiscript
++{
++class ChaiScript;
++}
++
++Q_DECLARE_METATYPE(std::vector<geometrize::ShapeResult>) ///< Shape data passed around by the image task worker thread.
++Q_DECLARE_METATYPE(std::vector<geometrize::ScanlineColor>) ///< A2.4 per-scanline colors passed around by the image task worker thread.
++Q_DECLARE_METATYPE(geometrize::ImageRunnerOptions) ///< Image runner options passed to the image task worker thread.
++Q_DECLARE_METATYPE(std::function<std::shared_ptr<geometrize::Shape>()>) ///< Function that generates shapes passed to the image task worker thread.
++Q_DECLARE_METATYPE(std::shared_ptr<geometrize::Shape>) ///< Shape passed to the image task worker thread.
++Q_DECLARE_METATYPE(geometrize::rgba) ///< Shape color passed to the image task worker thread.
++Q_DECLARE_METATYPE(geometrize::core::EnergyFunction); ///< Energy function passed to the image task worker thread.
++Q_DECLARE_METATYPE(geometrize::ShapeAcceptancePreconditionFunction); ///< Shape-add precondition function passed to the image task worker thread.
++
++namespace geometrize
++{
++
++namespace task
++{
++
++/**
++ * @brief The ImageTask class transforms a source image into a collection of shapes approximating the source image.
++ */
++class ImageTask : public QObject
++{
++    Q_OBJECT
++public:
++    ImageTask(Bitmap& target, Qt::ConnectionType workerConnectionType = Qt::QueuedConnection);
++    ImageTask(Bitmap& target, Bitmap& background, Qt::ConnectionType workerConnectionType = Qt::QueuedConnection);
++    ImageTask(const std::string& displayName, Bitmap& bitmap, Qt::ConnectionType workerConnectionType = Qt::QueuedConnection);
++    ImageTask(const std::string& displayName, Bitmap& bitmap, const Bitmap& initial, Qt::ConnectionType workerConnectionType = Qt::QueuedConnection);
++
++    ImageTask& operator=(const ImageTask&) = delete;
++    ImageTask(const ImageTask&) = delete;
++    virtual ~ImageTask();
++
++    /**
++     * @brief getGeometrizer Gets a reference to the script-based engine used to turn images into shapes.
++     * @return The script-based engine used to turn images into shapes.
++     */
++    geometrize::script::GeometrizerEngine& getGeometrizer();
++
++    /**
++     * @brief getTarget Gets the target bitmap, non-const edition.
++     * @return The target bitmap.
++     */
++    Bitmap& getTargetMutable();
++
++    /**
++     * @brief getCurrent Gets the current bitmap, non-const edition.
++     * @return The current bitmap.
++     */
++    Bitmap& getCurrentMutable();
++
++    /**
++     * @brief getTarget Gets the target bitmap, const-edition.
++     * @return The target bitmap.
++     */
++    const Bitmap& getTarget() const;
++
++    /**
++     * @brief getCurrent Gets the current bitmap, const-edition.
++     * @return The current bitmap.
++     */
++    const Bitmap& getCurrent() const;
++
++    /**
++     * @brief getWidth Gets the width of the images used by the image task.
++     * @return The width of the images used by the image task.
++     */
++    std::uint32_t getWidth() const;
++
++    /**
++     * @brief getHeight Gets the height of the images used by the image task.
++     * @return The height of the images used by the image task.
++     */
++    std::uint32_t getHeight() const;
++
++    /**
++     * @brief getDisplayName Gets the display name of the image task.
++     * @return The display name of the image task.
++     */
++    std::string getDisplayName() const;
++
++    /**
++     * @brief getTaskId Gets the unique id of the image task.
++     * @return The unique id of the image task.
++     */
++     std::size_t getTaskId() const;
++
++     /**
++      * @brief isStepping Returns true if the internal model is currently stepping.
++      * @return True if the internal model is currently stepping, else false.
++      */
++     bool isStepping() const;
++
++     /**
++      * @brief stepModel Steps the internal model, typically adding a shape.
++      */
++     void stepModel();
++
++     /**
++      * @brief drawShape Draws a shape with the given color to the internal model.
++      * @param shape The shape to add to the model.
++      * @param color The color of the shape.
++      */
++     void drawShape(const std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color);
++
++     /**
++      * @brief drawShape A2.4 带分段颜色的绘制重载(重做/重放复用 ShapeResult 里存储的 segments,
++      * 不重算——分段色依赖落画时刻的位图)。空 segments 等价于单色重载。
++      * @param shape The shape to add to the model.
++      * @param color The average color of the shape.
++      * @param segments The per-scanline colors recorded when the shape was originally drawn.
++      */
++     void drawShape(const std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color, std::vector<geometrize::ScanlineColor> segments);
++
++     /**
++      * @brief drawBackgroundRectangle Convenience function that draws a background rectangle shape.
++      * @param color The color of the background rectangle.
++      */
++     void drawBackgroundRectangle(geometrize::rgba color);
++
++    /**
++     * @brief replayShapes Rebuilds the task model by resetting it to the given background color and
++     * redrawing the given shapes in order (undo support). A single willStep bracket covers the batch;
++     * on completion signal_modelDidReplay is emitted (not signal_modelDidStep, so replaying does not
++     * re-trigger shape-added hooks or chained stepping).
++     * @param shapes The shapes to redraw, in original order.
++     * @param resetColor The background color to reset the model to first.
++     */
++    void replayShapes(const std::vector<geometrize::ShapeResult>& shapes, geometrize::rgba resetColor);
++
++     /**
++      * @brief getPreferences Gets a reference to the current preferences of this task.
++      * @return A reference to the current preferences of this task.
++      */
++     geometrize::preferences::ImageTaskPreferences& getPreferences();
++
++     /**
++      * @brief setPreferences Sets the preferences for this task.
++      * @param preferences The preferences to set.
++      */
++     void setPreferences(preferences::ImageTaskPreferences preferences);
++
++signals:
++     /**
++      * @brief signal_step Signal that the image task emits to make the internal model step.
++      */
++     void signal_step(geometrize::ImageRunnerOptions options, std::function<std::shared_ptr<geometrize::Shape>()> shapeCreator, geometrize::core::EnergyFunction energyFunction, geometrize::ShapeAcceptancePreconditionFunction addShapePrecondition);
++
++     /**
++      * @brief signal_drawShape Signal that the image task emits to draw a shape to the internal model.
++      * @param shape The shape to draw.
++      * @param color The color of the shape to draw.
++      */
++     void signal_drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color, std::vector<geometrize::ScanlineColor> segments);
++
++     /**
++      * @brief signal_modelWillStep Signal that is emitted immediately before the underlying image task model is stepped.
++      */
++     void signal_modelWillStep();
++
++     /**
++      * @brief signal_modelDidStep Signal that is emitted immediately after the underlying image task model is stepped.
++      * @param shapes The shapes that were added in the last step.
++      */
++     void signal_modelDidStep(std::vector<geometrize::ShapeResult> shapes);
++
++     /**
++      * @brief signal_replayShapes Internal signal that makes the worker rebuild the model state (undo support).
++      */
++     void signal_replayShapes(std::vector<geometrize::ShapeResult> shapes, geometrize::rgba resetColor);
++
++     /**
++      * @brief signal_modelDidReplay Signal that is emitted when a replayShapes batch has finished applying.
++      * @param shapes The shapes that are now present in the model.
++      */
++     void signal_modelDidReplay(std::vector<geometrize::ShapeResult> shapes);
++
++     /**
++      * @brief signal_preferencesSet Signal that is emitted immediately after the image task preferences are set.
++      */
++     void signal_preferencesSet();
++
++private:
++    void modelWillStep();
++    void modelDidStep(std::vector<geometrize::ShapeResult> shapes);
++    void modelDidReplay(std::vector<geometrize::ShapeResult> shapes);
++
++    class ImageTaskImpl;
++    std::unique_ptr<ImageTaskImpl> d;
++};
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/task/imagetask.cpp	2026-08-27 13:24:26.097061500 +0800
++++ src/improved-app/geometrize/task/imagetask.cpp	2026-08-30 22:49:30.764761200 +0800
+@@ -1,409 +1,455 @@
+-#include "imagetask.h"
+-
+-#include <atomic>
+-#include <cassert>
+-#include <functional>
+-#include <memory>
+-#include <vector>
+-
+-#include <QThread>
+-
+-#include "geometrize/commonutil.h"
+-#include "geometrize/bitmap/bitmap.h"
+-#include "geometrize/rasterizer/rasterizer.h"
+-#include "geometrize/rasterizer/scanline.h"
+-#include "geometrize/shape/shapemutator.h"
+-#include "geometrize/runner/imagerunner.h"
+-#include "geometrize/model.h"
+-#include "geometrize/shaperesult.h"
+-#include "geometrize/shape/shape.h"
+-#include "geometrize/shape/rectangle.h"
+-#include "geometrize/shape/shapefactory.h"
+-
+-#include "preferences/imagetaskpreferences.h"
+-#include "script/geometrizerengine.h"
+-#include "task/imagetaskworker.h"
+-
+-namespace geometrize
+-{
+-
+-namespace task
+-{
+-
+-class ImageTask::ImageTaskImpl
+-{
+-public:
+-    ImageTaskImpl(ImageTask* pQ, const std::string& displayName, Bitmap& bitmap, Qt::ConnectionType workerConnectionType) :
+-        q{pQ}, m_preferences{}, m_displayName{displayName}, m_id{getId()}, m_worker{bitmap}
+-    {
+-        init(workerConnectionType);
+-    }
+-
+-    ImageTaskImpl(ImageTask* pQ, const std::string& displayName, Bitmap& bitmap, const Bitmap& initial, Qt::ConnectionType workerConnectionType) :
+-        q{pQ}, m_preferences{}, m_displayName{displayName}, m_id{getId()}, m_worker{bitmap, initial}
+-    {
+-        init(workerConnectionType);
+-    }
+-
+-    ~ImageTaskImpl()
+-    {
+-        disconnectAll();
+-
+-        m_workerThread.quit();
+-        if(!m_workerThread.wait(1000)) {
+-            m_workerThread.terminate();
+-            m_workerThread.wait();
+-        }
+-    }
+-
+-    ImageTaskImpl& operator=(const ImageTaskImpl&) = delete;
+-    ImageTaskImpl(const ImageTaskImpl&) = delete;
+-
+-    geometrize::script::GeometrizerEngine& getGeometrizer()
+-    {
+-        return m_geometrizer;
+-    }
+-
+-    Bitmap& getTarget()
+-    {
+-        return m_worker.getTarget();
+-    }
+-
+-    Bitmap& getCurrent()
+-    {
+-        return m_worker.getCurrent();
+-    }
+-
+-    const Bitmap& getTarget() const
+-    {
+-        return m_worker.getTarget();
+-    }
+-
+-    const Bitmap& getCurrent() const
+-    {
+-        return m_worker.getCurrent();
+-    }
+-
+-    std::uint32_t getWidth() const
+-    {
+-        return m_worker.getCurrent().getWidth();
+-    }
+-
+-    std::uint32_t getHeight() const
+-    {
+-        return m_worker.getCurrent().getHeight();
+-    }
+-
+-    std::string getDisplayName() const
+-    {
+-        return m_displayName;
+-    }
+-
+-    std::size_t getTaskId() const
+-    {
+-        return m_id;
+-    }
+-
+-    bool isStepping() const
+-    {
+-        return m_worker.isStepping();
+-    }
+-
+-    void stepModel()
+-    {
+-        const bool isScriptModeEnabled = m_preferences.isScriptModeEnabled();
+-        const auto imageRunnerOptions = m_preferences.getImageRunnerOptions();
+-
+-        // Install the scripts that are required for the geometrization process
+-        m_geometrizer.installScripts(m_preferences.getScripts());
+-
+-        // Install the additional precondition scripts to decide whether to accept/reject shapes offered back by the library
+-        std::vector<std::pair<std::string, std::string>> addShapePreconditionScripts;
+-        for(const auto& script : m_preferences.getScripts()) {
+-            if(QString::fromStdString(script.first).startsWith("add_shape_precondition_")) { // NOTE prefix is also used by the scripting widgets elsewhere
+-                addShapePreconditionScripts.push_back(std::make_pair(script.first, script.second));
+-            }
+-        }
+-
+-        const auto addShapePreconditionFunction =
+-                [this](const std::vector<std::pair<std::string, std::string>>& scripts)
+-                -> geometrize::ShapeAcceptancePreconditionFunction
+-        {
+-            if(scripts.empty()) {
+-                return nullptr;
+-            }
+-
+-            const geometrize::ShapeAcceptancePreconditionFunction g = [this, scripts](double lastScore,
+-                 double newScore,
+-                 const geometrize::Shape& shape,
+-                 const std::vector<geometrize::Scanline>& lines,
+-                 const geometrize::rgba& color,
+-                 const geometrize::Bitmap& before,
+-                 const geometrize::Bitmap& after,
+-                 const geometrize::Bitmap& target) {
+-                std::vector<bool> retValues;
+-                try {
+-                    m_geometrizer.getEngine()->set_global(chaiscript::var(lastScore), "candidateShapeLastScore");
+-                    m_geometrizer.getEngine()->set_global(chaiscript::var(newScore), "candidateShapeNextScore");
+-                    m_geometrizer.getEngine()->set_global(chaiscript::var(shape), "candidateShape");
+-                    m_geometrizer.getEngine()->set_global(chaiscript::var(lines), "candidateScanlines");
+-                    m_geometrizer.getEngine()->set_global(chaiscript::var(color), "candidateShapeColor");
+-                    m_geometrizer.getEngine()->set_global(chaiscript::var(before), "beforeBitmap");
+-                    m_geometrizer.getEngine()->set_global(chaiscript::var(after), "afterBitmap");
+-                    m_geometrizer.getEngine()->set_global(chaiscript::var(target), "targetBitmap");
+-
+-                    for(const auto& script : scripts) {
+-                        retValues.emplace_back(m_geometrizer.getEngine()->eval<bool>(script.second));
+-                    }
+-                    return std::all_of(retValues.begin(), retValues.end(), [](const bool b) { return b == true; });
+-                } catch(std::exception& e) {
+-                    std::cout << e.what() << std::endl;
+-                }
+-                return false;
+-            };
+-            return g;
+-        }(addShapePreconditionScripts);
+-
+-        // Opt out of the multithreaded scripts if the engine is disabled (use the default/C++ implementations)
+-        if(!isScriptModeEnabled) {
+-            emit q->signal_step(imageRunnerOptions, nullptr, nullptr, addShapePreconditionFunction);
+-            return;
+-        }
+-
+-        const auto& target = m_worker.getTarget();
+-
+-        const auto bounds = geometrize::commonutil::mapShapeBoundsToImage(imageRunnerOptions.shapeBounds, target);
+-
+-        // Scripting is enabled - clone the entire geometrizer engine
+-        // This is important because many threads will be working with it when geometrizing shapes
+-        // and we don't want to mess with the state of the engine on the main thread while these threads are working with it
+-        const auto geometrizerEngineClone = [this]() {
+-            auto engine = std::make_shared<geometrize::script::GeometrizerEngine>(m_geometrizer.getEngine()->get_state());
+-            engine->installScripts(m_preferences.getScripts());
+-            return engine;
+-        }();
+-
+-        // Pick the shape creation function
+-        const auto shapeCreator = [geometrizerEngineClone, imageRunnerOptions, bounds]() {
+-            // NOTE - this method uses shared_from_this to keep the engine alive
+-            const auto [xMin, yMin, xMax, yMax] = bounds;
+-            return geometrizerEngineClone->makeShapeCreator(imageRunnerOptions.shapeTypes, xMin, yMin, xMax, yMax);
+-        }();
+-
+-        // Pick the energy calculation function
+-        const geometrize::core::EnergyFunction energyFunction = [geometrizerEngineClone]() {
+-            // NOTE - this method uses shared_from_this to keep the engine alive
+-            return geometrizerEngineClone->makeEnergyFunction();
+-        }();
+-
+-        emit q->signal_step(imageRunnerOptions, shapeCreator, energyFunction, addShapePreconditionFunction);
+-    }
+-
+-    void drawShape(const std::shared_ptr<geometrize::Shape> shape, const geometrize::rgba color)
+-    {
+-        emit q->signal_drawShape(shape, color);
+-    }
+-
+-    void drawBackgroundRectangle(const geometrize::rgba color)
+-    {
+-        const std::int32_t w = m_worker.getTarget().getWidth();
+-        const std::int32_t h = m_worker.getTarget().getHeight();
+-        const std::shared_ptr<geometrize::Rectangle> rectangle = std::make_shared<geometrize::Rectangle>(0, 0, w, h);
+-        rectangle->rasterize = [w, h](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Rectangle&>(s), 0, 0, w, h); };
+-
+-        emit q->signal_drawShape(rectangle, color);
+-    }
+-
+-    void modelWillStep()
+-    {
+-        emit q->signal_modelWillStep();
+-    }
+-
+-    void modelDidStep(const std::vector<geometrize::ShapeResult> shapes)
+-    {
+-        emit q->signal_modelDidStep(shapes);
+-    }
+-
+-    preferences::ImageTaskPreferences& getPreferences()
+-    {
+-        return m_preferences;
+-    }
+-
+-    void setPreferences(const preferences::ImageTaskPreferences preferences)
+-    {
+-        m_preferences = preferences;
+-        emit q->signal_preferencesSet();
+-    }
+-
+-private:
+-    static std::size_t getId()
+-    {
+-        static std::atomic<std::size_t> id{0U};
+-        return id++;
+-    }
+-
+-    void init(const Qt::ConnectionType connectionType)
+-    {
+-        const auto& shapeBounds = m_preferences.getImageRunnerOptions().shapeBounds;
+-
+-        m_geometrizer.getEngine()->set_global(chaiscript::var(q), "task");
+-
+-        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(shapeBounds, getTarget());
+-
+-        m_geometrizer.getEngine()->set_global(chaiscript::var(xMin), "xMin");
+-        m_geometrizer.getEngine()->set_global(chaiscript::var(yMin), "yMin");
+-        m_geometrizer.getEngine()->set_global(chaiscript::var(xMax), "xMax");
+-        m_geometrizer.getEngine()->set_global(chaiscript::var(yMax), "yMax");
+-
+-        qRegisterMetaType<std::vector<geometrize::ShapeResult>>();
+-        qRegisterMetaType<geometrize::ImageRunnerOptions>();
+-        qRegisterMetaType<std::function<std::shared_ptr<geometrize::Shape>()>>();
+-        qRegisterMetaType<std::shared_ptr<geometrize::Shape>>();
+-        qRegisterMetaType<geometrize::rgba>();
+-        qRegisterMetaType<geometrize::core::EnergyFunction>();
+-        qRegisterMetaType<geometrize::ShapeAcceptancePreconditionFunction>();
+-
+-        m_worker.moveToThread(&m_workerThread);
+-
+-        connectSignals(connectionType);
+-
+-        m_workerThread.start();
+-    }
+-
+-    void connectSignals(const Qt::ConnectionType connectionType)
+-    {
+-        q->connect(q, &ImageTask::signal_step, &m_worker, &ImageTaskWorker::step, connectionType);
+-        q->connect(q, &ImageTask::signal_drawShape, &m_worker, &ImageTaskWorker::drawShape, connectionType);
+-        q->connect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep, Qt::BlockingQueuedConnection);
+-        q->connect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep, Qt::BlockingQueuedConnection);
+-    }
+-
+-    void disconnectAll()
+-    {
+-        q->disconnect(q, &ImageTask::signal_step, &m_worker, &ImageTaskWorker::step);
+-        q->disconnect(q, &ImageTask::signal_drawShape, &m_worker, &ImageTaskWorker::drawShape);
+-        q->disconnect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep);
+-        q->disconnect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep);
+-    }
+-
+-    ImageTask* q;
+-    preferences::ImageTaskPreferences m_preferences; ///> Runtime configuration parameters for the runner.
+-    const std::string m_displayName; ///> The display name of the image task.
+-    const std::size_t m_id; ///> A unique id for the image task.
+-    QThread m_workerThread; ///> Thread that the image task worker runs on.
+-    ImageTaskWorker m_worker; ///> The image task worker.
+-    geometrize::script::GeometrizerEngine m_geometrizer; ///> The script-based geometrizer for the image task.
+-};
+-
+-ImageTask::ImageTask(Bitmap& target, Qt::ConnectionType workerConnectionType) : QObject(),
+-    d{std::make_unique<ImageTask::ImageTaskImpl>(this, "", target, workerConnectionType)}
+-{
+-}
+-
+-ImageTask::ImageTask(Bitmap& target, Bitmap& background, Qt::ConnectionType workerConnectionType) : QObject(),
+-    d{std::make_unique<ImageTask::ImageTaskImpl>(this, "", target, background, workerConnectionType)}
+-{
+-}
+-
+-ImageTask::ImageTask(const std::string& displayName, Bitmap& bitmap, Qt::ConnectionType workerConnectionType) : QObject(),
+-    d{std::make_unique<ImageTask::ImageTaskImpl>(this, displayName, bitmap, workerConnectionType)}
+-{
+-}
+-
+-ImageTask::ImageTask(const std::string& displayName, Bitmap& bitmap, const Bitmap& initial, Qt::ConnectionType workerConnectionType) : QObject(),
+-    d{std::make_unique<ImageTask::ImageTaskImpl>(this, displayName, bitmap, initial, workerConnectionType)}
+-{
+-}
+-
+-ImageTask::~ImageTask()
+-{
+-}
+-
+-Bitmap& ImageTask::getTargetMutable()
+-{
+-    return d->getTarget();
+-}
+-
+-Bitmap& ImageTask::getCurrentMutable()
+-{
+-    return d->getCurrent();
+-}
+-
+-const Bitmap& ImageTask::getTarget() const
+-{
+-    return d->getTarget();
+-}
+-
+-const Bitmap& ImageTask::getCurrent() const
+-{
+-    return d->getCurrent();
+-}
+-
+-std::uint32_t ImageTask::getWidth() const
+-{
+-    return d->getWidth();
+-}
+-
+-std::uint32_t ImageTask::getHeight() const
+-{
+-    return d->getHeight();
+-}
+-
+-std::string ImageTask::getDisplayName() const
+-{
+-    return d->getDisplayName();
+-}
+-
+-std::size_t ImageTask::getTaskId() const
+-{
+-    return d->getTaskId();
+-}
+-
+-bool ImageTask::isStepping() const
+-{
+-    return d->isStepping();
+-}
+-
+-void ImageTask::stepModel()
+-{
+-    d->stepModel();
+-}
+-
+-void ImageTask::drawShape(std::shared_ptr<geometrize::Shape> shape, const geometrize::rgba color)
+-{
+-    d->drawShape(shape, color);
+-}
+-
+-void ImageTask::drawBackgroundRectangle(const geometrize::rgba color)
+-{
+-    d->drawBackgroundRectangle(color);
+-}
+-
+-void ImageTask::modelWillStep()
+-{
+-    d->modelWillStep();
+-}
+-
+-void ImageTask::modelDidStep(std::vector<geometrize::ShapeResult> shapes)
+-{
+-    d->modelDidStep(shapes);
+-}
+-
+-preferences::ImageTaskPreferences& ImageTask::getPreferences()
+-{
+-    return d->getPreferences();
+-}
+-
+-void ImageTask::setPreferences(const preferences::ImageTaskPreferences preferences)
+-{
+-    d->setPreferences(preferences);
+-}
+-
+-geometrize::script::GeometrizerEngine& ImageTask::getGeometrizer()
+-{
+-    return d->getGeometrizer();
+-}
+-
+-}
+-
+-}
++#include "imagetask.h"
++
++#include <atomic>
++#include <cassert>
++#include <functional>
++#include <memory>
++#include <vector>
++
++#include <QThread>
++#include <cstdio>
++
++#include "geometrize/commonutil.h"
++#include "geometrize/bitmap/bitmap.h"
++#include "geometrize/rasterizer/rasterizer.h"
++#include "geometrize/rasterizer/scanline.h"
++#include "geometrize/shape/shapemutator.h"
++#include "geometrize/runner/imagerunner.h"
++#include "geometrize/model.h"
++#include "geometrize/shaperesult.h"
++#include "geometrize/shape/shape.h"
++#include "geometrize/shape/rectangle.h"
++#include "geometrize/shape/shapefactory.h"
++
++#include "preferences/imagetaskpreferences.h"
++#include "script/geometrizerengine.h"
++#include "task/imagetaskworker.h"
++
++namespace geometrize
++{
++
++namespace task
++{
++
++class ImageTask::ImageTaskImpl
++{
++public:
++    ImageTaskImpl(ImageTask* pQ, const std::string& displayName, Bitmap& bitmap, Qt::ConnectionType workerConnectionType) :
++        q{pQ}, m_preferences{}, m_displayName{displayName}, m_id{getId()}, m_worker{bitmap}
++    {
++        init(workerConnectionType);
++    }
++
++    ImageTaskImpl(ImageTask* pQ, const std::string& displayName, Bitmap& bitmap, const Bitmap& initial, Qt::ConnectionType workerConnectionType) :
++        q{pQ}, m_preferences{}, m_displayName{displayName}, m_id{getId()}, m_worker{bitmap, initial}
++    {
++        init(workerConnectionType);
++    }
++
++    ~ImageTaskImpl()
++    {
++        disconnectAll();
++
++        m_workerThread.quit();
++        if(!m_workerThread.wait(1000)) {
++            m_workerThread.terminate();
++            m_workerThread.wait();
++        }
++    }
++
++    ImageTaskImpl& operator=(const ImageTaskImpl&) = delete;
++    ImageTaskImpl(const ImageTaskImpl&) = delete;
++
++    geometrize::script::GeometrizerEngine& getGeometrizer()
++    {
++        return m_geometrizer;
++    }
++
++    Bitmap& getTarget()
++    {
++        return m_worker.getTarget();
++    }
++
++    Bitmap& getCurrent()
++    {
++        return m_worker.getCurrent();
++    }
++
++    const Bitmap& getTarget() const
++    {
++        return m_worker.getTarget();
++    }
++
++    const Bitmap& getCurrent() const
++    {
++        return m_worker.getCurrent();
++    }
++
++    std::uint32_t getWidth() const
++    {
++        return m_worker.getCurrent().getWidth();
++    }
++
++    std::uint32_t getHeight() const
++    {
++        return m_worker.getCurrent().getHeight();
++    }
++
++    std::string getDisplayName() const
++    {
++        return m_displayName;
++    }
++
++    std::size_t getTaskId() const
++    {
++        return m_id;
++    }
++
++    bool isStepping() const
++    {
++        return m_worker.isStepping();
++    }
++
++    void stepModel()
++    {
++        const bool isScriptModeEnabled = m_preferences.isScriptModeEnabled();
++        auto imageRunnerOptions = m_preferences.getImageRunnerOptions();
++
++        // Install the scripts that are required for the geometrization process
++        m_geometrizer.installScripts(m_preferences.getScripts());
++
++        // Install the additional precondition scripts to decide whether to accept/reject shapes offered back by the library
++        std::vector<std::pair<std::string, std::string>> addShapePreconditionScripts;
++        for(const auto& script : m_preferences.getScripts()) {
++            if(QString::fromStdString(script.first).startsWith("add_shape_precondition_")) { // NOTE prefix is also used by the scripting widgets elsewhere
++                addShapePreconditionScripts.push_back(std::make_pair(script.first, script.second));
++            }
++        }
++        m_preconditionScriptsActive = !addShapePreconditionScripts.empty();
++
++        const auto addShapePreconditionFunction =
++                [this](const std::vector<std::pair<std::string, std::string>>& scripts)
++                -> geometrize::ShapeAcceptancePreconditionFunction
++        {
++            if(scripts.empty()) {
++                return nullptr;
++            }
++
++            // 前条件脚本直接跑在主脚本引擎上,而库会在多个 hill-climb 线程并发调它 ——
++            // 与引擎逐线程克隆的设计冲突,构成数据竞争。启用时强制本步单线程恢复正确性
++            // (m_preconditionScriptsActive 已在上方按脚本清单置位)。
++            const geometrize::ShapeAcceptancePreconditionFunction g = [this, scripts](double lastScore,
++                 double newScore,
++                 const geometrize::Shape& shape,
++                 const std::vector<geometrize::Scanline>& lines,
++                 const geometrize::rgba& color,
++                 const geometrize::Bitmap& before,
++                 const geometrize::Bitmap& after,
++                 const geometrize::Bitmap& target) {
++                std::vector<bool> retValues;
++                try {
++                    m_geometrizer.getEngine()->set_global(chaiscript::var(lastScore), "candidateShapeLastScore");
++                    m_geometrizer.getEngine()->set_global(chaiscript::var(newScore), "candidateShapeNextScore");
++                    m_geometrizer.getEngine()->set_global(chaiscript::var(shape), "candidateShape");
++                    m_geometrizer.getEngine()->set_global(chaiscript::var(lines), "candidateScanlines");
++                    m_geometrizer.getEngine()->set_global(chaiscript::var(color), "candidateShapeColor");
++                    m_geometrizer.getEngine()->set_global(chaiscript::var(before), "beforeBitmap");
++                    m_geometrizer.getEngine()->set_global(chaiscript::var(after), "afterBitmap");
++                    m_geometrizer.getEngine()->set_global(chaiscript::var(target), "targetBitmap");
++
++                    for(const auto& script : scripts) {
++                        retValues.emplace_back(m_geometrizer.getEngine()->eval<bool>(script.second));
++                    }
++                    return std::all_of(retValues.begin(), retValues.end(), [](const bool b) { return b == true; });
++                } catch(std::exception& e) {
++                    std::cout << e.what() << std::endl;
++                }
++                return false;
++            };
++            return g;
++        }(addShapePreconditionScripts);
++
++        // 前条件脚本在主引擎上求值,不支持并发 —— 启用时本步强制单线程(正确性优先于吞吐)
++        if(m_preconditionScriptsActive) {
++            imageRunnerOptions.maxThreads = 1;
++        }
++
++        // Opt out of the multithreaded scripts if the engine is disabled (use the default/C++ implementations)
++        if(!isScriptModeEnabled) {
++            emit q->signal_step(imageRunnerOptions, nullptr, nullptr, addShapePreconditionFunction);
++            return;
++        }
++
++        const auto& target = m_worker.getTarget();
++
++        const auto bounds = geometrize::commonutil::mapShapeBoundsToImage(imageRunnerOptions.shapeBounds, target);
++
++        // Scripting is enabled - clone the entire geometrizer engine
++        // This is important because many threads will be working with it when geometrizing shapes
++        // and we don't want to mess with the state of the engine on the main thread while these threads are working with it
++        const auto geometrizerEngineClone = [this]() {
++            auto engine = std::make_shared<geometrize::script::GeometrizerEngine>(m_geometrizer.getEngine()->get_state());
++            engine->installScripts(m_preferences.getScripts());
++            return engine;
++        }();
++
++        // Pick the shape creation function
++        const auto shapeCreator = [geometrizerEngineClone, imageRunnerOptions, bounds]() {
++            // NOTE - this method uses shared_from_this to keep the engine alive
++            const auto [xMin, yMin, xMax, yMax] = bounds;
++            return geometrizerEngineClone->makeShapeCreator(imageRunnerOptions.shapeTypes, xMin, yMin, xMax, yMax);
++        }();
++
++        // Pick the energy calculation function
++        const geometrize::core::EnergyFunction energyFunction = [geometrizerEngineClone]() {
++            // NOTE - this method uses shared_from_this to keep the engine alive
++            return geometrizerEngineClone->makeEnergyFunction();
++        }();
++
++        emit q->signal_step(imageRunnerOptions, shapeCreator, energyFunction, addShapePreconditionFunction);
++    }
++
++    void drawShape(const std::shared_ptr<geometrize::Shape> shape, const geometrize::rgba color)
++    {
++        emit q->signal_drawShape(shape, color, {});
++    }
++
++    void drawShape(const std::shared_ptr<geometrize::Shape> shape, const geometrize::rgba color, const std::vector<geometrize::ScanlineColor> segments)
++    {
++        emit q->signal_drawShape(shape, color, segments);
++    }
++
++    void replayShapes(const std::vector<geometrize::ShapeResult>& shapes, const geometrize::rgba resetColor)
++    {
++        emit q->signal_replayShapes(shapes, resetColor);
++    }
++
++    void drawBackgroundRectangle(const geometrize::rgba color)
++    {
++        const std::int32_t w = m_worker.getTarget().getWidth();
++        const std::int32_t h = m_worker.getTarget().getHeight();
++        const std::shared_ptr<geometrize::Rectangle> rectangle = std::make_shared<geometrize::Rectangle>(0, 0, w, h);
++        rectangle->rasterize = [w, h](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Rectangle&>(s), 0, 0, w, h); };
++
++        emit q->signal_drawShape(rectangle, color, {});
++    }
++
++    void modelWillStep()
++    {
++        emit q->signal_modelWillStep();
++    }
++
++    void modelDidStep(const std::vector<geometrize::ShapeResult> shapes)
++    {
++        emit q->signal_modelDidStep(shapes);
++    }
++
++    void modelDidReplay(const std::vector<geometrize::ShapeResult> shapes)
++    {
++        emit q->signal_modelDidReplay(shapes);
++    }
++
++    preferences::ImageTaskPreferences& getPreferences()
++    {
++        return m_preferences;
++    }
++
++    void setPreferences(const preferences::ImageTaskPreferences preferences)
++    {
++        m_preferences = preferences;
++        emit q->signal_preferencesSet();
++    }
++
++private:
++    static std::size_t getId()
++    {
++        static std::atomic<std::size_t> id{0U};
++        return id++;
++    }
++
++    void init(const Qt::ConnectionType connectionType)
++    {
++        const auto& shapeBounds = m_preferences.getImageRunnerOptions().shapeBounds;
++
++        m_geometrizer.getEngine()->set_global(chaiscript::var(q), "task");
++
++        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(shapeBounds, getTarget());
++
++        m_geometrizer.getEngine()->set_global(chaiscript::var(xMin), "xMin");
++        m_geometrizer.getEngine()->set_global(chaiscript::var(yMin), "yMin");
++        m_geometrizer.getEngine()->set_global(chaiscript::var(xMax), "xMax");
++        m_geometrizer.getEngine()->set_global(chaiscript::var(yMax), "yMax");
++
++        qRegisterMetaType<std::vector<geometrize::ShapeResult>>();
++        qRegisterMetaType<std::vector<geometrize::ScanlineColor>>();
++        qRegisterMetaType<geometrize::ImageRunnerOptions>();
++        qRegisterMetaType<std::function<std::shared_ptr<geometrize::Shape>()>>();
++        qRegisterMetaType<std::shared_ptr<geometrize::Shape>>();
++        qRegisterMetaType<geometrize::rgba>();
++        qRegisterMetaType<geometrize::core::EnergyFunction>();
++        qRegisterMetaType<geometrize::ShapeAcceptancePreconditionFunction>();
++
++        m_worker.moveToThread(&m_workerThread);
++
++        connectSignals(connectionType);
++
++        m_workerThread.start();
++    }
++
++    void connectSignals(const Qt::ConnectionType connectionType)
++    {
++        q->connect(q, &ImageTask::signal_step, &m_worker, &ImageTaskWorker::step, connectionType);
++        q->connect(q, &ImageTask::signal_drawShape, &m_worker, &ImageTaskWorker::drawShape, connectionType);
++        q->connect(q, &ImageTask::signal_replayShapes, &m_worker, &ImageTaskWorker::replayShapes, connectionType);
++        q->connect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep, Qt::BlockingQueuedConnection);
++        q->connect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep, Qt::BlockingQueuedConnection);
++        q->connect(&m_worker, &ImageTaskWorker::signal_didReplay, q, &ImageTask::modelDidReplay, Qt::BlockingQueuedConnection);
++    }
++
++    void disconnectAll()
++    {
++        q->disconnect(q, &ImageTask::signal_step, &m_worker, &ImageTaskWorker::step);
++        q->disconnect(q, &ImageTask::signal_drawShape, &m_worker, &ImageTaskWorker::drawShape);
++        q->disconnect(q, &ImageTask::signal_replayShapes, &m_worker, &ImageTaskWorker::replayShapes);
++        q->disconnect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep);
++        q->disconnect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep);
++        q->disconnect(&m_worker, &ImageTaskWorker::signal_didReplay, q, &ImageTask::modelDidReplay);
++    }
++
++    ImageTask* q;
++    preferences::ImageTaskPreferences m_preferences; ///> Runtime configuration parameters for the runner.
++    const std::string m_displayName; ///> The display name of the image task.
++    const std::size_t m_id; ///> A unique id for the image task.
++    QThread m_workerThread; ///> Thread that the image task worker runs on.
++    ImageTaskWorker m_worker; ///> The image task worker.
++    geometrize::script::GeometrizerEngine m_geometrizer; ///> The script-based geometrizer for the image task.
++    bool m_preconditionScriptsActive{false}; ///> Whether add-shape precondition scripts are installed this step (forces single-threaded stepping for engine safety).
++};
++
++ImageTask::ImageTask(Bitmap& target, Qt::ConnectionType workerConnectionType) : QObject(),
++    d{std::make_unique<ImageTask::ImageTaskImpl>(this, "", target, workerConnectionType)}
++{
++}
++
++ImageTask::ImageTask(Bitmap& target, Bitmap& background, Qt::ConnectionType workerConnectionType) : QObject(),
++    d{std::make_unique<ImageTask::ImageTaskImpl>(this, "", target, background, workerConnectionType)}
++{
++}
++
++ImageTask::ImageTask(const std::string& displayName, Bitmap& bitmap, Qt::ConnectionType workerConnectionType) : QObject(),
++    d{std::make_unique<ImageTask::ImageTaskImpl>(this, displayName, bitmap, workerConnectionType)}
++{
++}
++
++ImageTask::ImageTask(const std::string& displayName, Bitmap& bitmap, const Bitmap& initial, Qt::ConnectionType workerConnectionType) : QObject(),
++    d{std::make_unique<ImageTask::ImageTaskImpl>(this, displayName, bitmap, initial, workerConnectionType)}
++{
++}
++
++ImageTask::~ImageTask()
++{
++}
++
++Bitmap& ImageTask::getTargetMutable()
++{
++    return d->getTarget();
++}
++
++Bitmap& ImageTask::getCurrentMutable()
++{
++    return d->getCurrent();
++}
++
++const Bitmap& ImageTask::getTarget() const
++{
++    return d->getTarget();
++}
++
++const Bitmap& ImageTask::getCurrent() const
++{
++    return d->getCurrent();
++}
++
++std::uint32_t ImageTask::getWidth() const
++{
++    return d->getWidth();
++}
++
++std::uint32_t ImageTask::getHeight() const
++{
++    return d->getHeight();
++}
++
++std::string ImageTask::getDisplayName() const
++{
++    return d->getDisplayName();
++}
++
++std::size_t ImageTask::getTaskId() const
++{
++    return d->getTaskId();
++}
++
++bool ImageTask::isStepping() const
++{
++    return d->isStepping();
++}
++
++void ImageTask::stepModel()
++{
++    d->stepModel();
++}
++
++void ImageTask::drawShape(std::shared_ptr<geometrize::Shape> shape, const geometrize::rgba color)
++{
++    d->drawShape(shape, color);
++}
++
++void ImageTask::drawShape(std::shared_ptr<geometrize::Shape> shape, const geometrize::rgba color, std::vector<geometrize::ScanlineColor> segments)
++{
++    d->drawShape(shape, color, std::move(segments));
++}
++
++void ImageTask::drawBackgroundRectangle(const geometrize::rgba color)
++{
++    d->drawBackgroundRectangle(color);
++}
++
++void ImageTask::replayShapes(const std::vector<geometrize::ShapeResult>& shapes, const geometrize::rgba resetColor)
++{
++    d->replayShapes(shapes, resetColor);
++}
++
++void ImageTask::modelWillStep()
++{
++    d->modelWillStep();
++}
++
++void ImageTask::modelDidStep(std::vector<geometrize::ShapeResult> shapes)
++{
++    d->modelDidStep(shapes);
++}
++
++void ImageTask::modelDidReplay(std::vector<geometrize::ShapeResult> shapes)
++{
++    d->modelDidReplay(shapes);
++}
++
++preferences::ImageTaskPreferences& ImageTask::getPreferences()
++{
++    return d->getPreferences();
++}
++
++void ImageTask::setPreferences(const preferences::ImageTaskPreferences preferences)
++{
++    d->setPreferences(preferences);
++}
++
++geometrize::script::GeometrizerEngine& ImageTask::getGeometrizer()
++{
++    return d->getGeometrizer();
++}
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/task/imagetaskworker.h	2026-08-27 13:24:26.107566400 +0800
++++ src/improved-app/geometrize/task/imagetaskworker.h	2026-08-30 22:33:11.901903300 +0800
+@@ -1,96 +1,106 @@
+-#pragma once
+-
+-#include <atomic>
+-#include <memory>
+-
+-#include <QObject>
+-
+-#include "geometrize/core.h"
+-#include "geometrize/bitmap/bitmap.h"
+-#include "geometrize/runner/imagerunner.h"
+-#include "geometrize/runner/imagerunneroptions.h"
+-#include "geometrize/shaperesult.h"
+-
+-namespace geometrize
+-{
+-
+-namespace task
+-{
+-
+-/**
+- * @brief The ImageTaskWorker class transforms a source image into a collection of shapes.
+- * It is made to be run on its own thread to avoid blocking the UI.
+- */
+-class ImageTaskWorker : public QObject
+-{
+-    Q_OBJECT
+-public:
+-    explicit ImageTaskWorker(Bitmap& bitmap);
+-    ImageTaskWorker(Bitmap& bitmap, const Bitmap& initial);
+-    ImageTaskWorker& operator=(const ImageTaskWorker&) = delete;
+-    ImageTaskWorker(const ImageTaskWorker&) = delete;
+-    virtual ~ImageTaskWorker();
+-
+-    /**
+-     * @brief step Steps the image task worker. Emits the willStep signal when called, and didStep signal on completion.
+-     * @param options The options to provide the image runner when stepping.
+-     * @param shapeCreator A function that produces the shapes when stepping.
+-     * @param energyFunction An optional function to calculate the energy (if unspecified a default implementation is used).
+-     * @param addShapePreconditionFunction An optional function to determine whether to accept a shape (if unspecified a default implementation is used).
+-     */
+-    void step(geometrize::ImageRunnerOptions options,
+-              std::function<std::shared_ptr<geometrize::Shape>()> shapeCreator,
+-              geometrize::core::EnergyFunction energyFunction = nullptr,
+-              geometrize::ShapeAcceptancePreconditionFunction addShapePreconditionFunction = nullptr);
+-
+-    /**
+-     * @brief isStepping Returns true if the internal model is currently stepping.
+-     * @return True if the internal model is currently stepping, else false.
+-     */
+-    bool isStepping() const;
+-
+-    /**
+-     * @brief drawShape Draws a shape with the given color to the image task. Emits the willStep signal when called, and didStep signal on completion.
+-     * @param shape The shape to draw.
+-     * @param color The color of the shape to draw.
+-     */
+-    void drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color);
+-
+-    /**
+-     * @brief getCurrent Gets the current working bitmap.
+-     * @return The current working bitmap.
+-     */
+-    geometrize::Bitmap& getCurrent();
+-
+-    /**
+-     * @brief getTarget Gets the current target bitmap.
+-     * @return The current target bitmap.
+-     */
+-    geometrize::Bitmap& getTarget();
+-
+-    /**
+-     * @brief getCurrent Gets the current working bitmap, const-edition.
+-     * @return The current working bitmap.
+-     */
+-    const geometrize::Bitmap& getCurrent() const;
+-
+-    /**
+-     * @brief getTarget Gets the current target bitmap, const-edition.
+-     * @return The current target bitmap.
+-     */
+-    const geometrize::Bitmap& getTarget() const;
+-
+-    ImageRunner& getRunner();
+-
+-signals:
+-    void signal_willStep();
+-    void signal_didStep(std::vector<geometrize::ShapeResult> shapes);
+-
+-private:
+-    ImageRunner m_runner;
+-    std::atomic<bool> m_working;
+-};
+-
+-}
+-
+-}
++#pragma once
++
++#include <atomic>
++#include <memory>
++
++#include <QObject>
++
++#include "geometrize/core.h"
++#include "geometrize/bitmap/bitmap.h"
++#include "geometrize/runner/imagerunner.h"
++#include "geometrize/runner/imagerunneroptions.h"
++#include "geometrize/shaperesult.h"
++
++namespace geometrize
++{
++
++namespace task
++{
++
++/**
++ * @brief The ImageTaskWorker class transforms a source image into a collection of shapes.
++ * It is made to be run on its own thread to avoid blocking the UI.
++ */
++class ImageTaskWorker : public QObject
++{
++    Q_OBJECT
++public:
++    explicit ImageTaskWorker(Bitmap& bitmap);
++    ImageTaskWorker(Bitmap& bitmap, const Bitmap& initial);
++    ImageTaskWorker& operator=(const ImageTaskWorker&) = delete;
++    ImageTaskWorker(const ImageTaskWorker&) = delete;
++    virtual ~ImageTaskWorker();
++
++    /**
++     * @brief step Steps the image task worker. Emits the willStep signal when called, and didStep signal on completion.
++     * @param options The options to provide the image runner when stepping.
++     * @param shapeCreator A function that produces the shapes when stepping.
++     * @param energyFunction An optional function to calculate the energy (if unspecified a default implementation is used).
++     * @param addShapePreconditionFunction An optional function to determine whether to accept a shape (if unspecified a default implementation is used).
++     */
++    void step(geometrize::ImageRunnerOptions options,
++              std::function<std::shared_ptr<geometrize::Shape>()> shapeCreator,
++              geometrize::core::EnergyFunction energyFunction = nullptr,
++              geometrize::ShapeAcceptancePreconditionFunction addShapePreconditionFunction = nullptr);
++
++    /**
++     * @brief isStepping Returns true if the internal model is currently stepping.
++     * @return True if the internal model is currently stepping, else false.
++     */
++    bool isStepping() const;
++
++    /**
++     * @brief drawShape Draws a shape with the given color to the image task. Emits the willStep signal when called, and didStep signal on completion.
++     * @param shape The shape to draw.
++     * @param color The color of the shape to draw.
++     */
++    void drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color, std::vector<geometrize::ScanlineColor> segments);
++
++    /**
++     * @brief replayShapes Rebuilds the model state by resetting to the given background color and
++     * redrawing the given shapes in order. Used for undo: one willStep/didReplay bracket covers the
++     * whole batch, so queued steps stay serialized with the replay on the worker event queue.
++     * @param shapes The shapes to redraw, in original order.
++     * @param resetColor The background color the model is reset to before replaying.
++     */
++    void replayShapes(std::vector<geometrize::ShapeResult> shapes, geometrize::rgba resetColor);
++
++    /**
++     * @brief getCurrent Gets the current working bitmap.
++     * @return The current working bitmap.
++     */
++    geometrize::Bitmap& getCurrent();
++
++    /**
++     * @brief getTarget Gets the current target bitmap.
++     * @return The current target bitmap.
++     */
++    geometrize::Bitmap& getTarget();
++
++    /**
++     * @brief getCurrent Gets the current working bitmap, const-edition.
++     * @return The current working bitmap.
++     */
++    const geometrize::Bitmap& getCurrent() const;
++
++    /**
++     * @brief getTarget Gets the current target bitmap, const-edition.
++     * @return The current target bitmap.
++     */
++    const geometrize::Bitmap& getTarget() const;
++
++    ImageRunner& getRunner();
++
++signals:
++    void signal_willStep();
++    void signal_didStep(std::vector<geometrize::ShapeResult> shapes);
++    void signal_didReplay(std::vector<geometrize::ShapeResult> shapes);
++
++private:
++    ImageRunner m_runner;
++    std::atomic<bool> m_working;
++};
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/task/imagetaskworker.cpp	2026-08-27 13:24:26.101057500 +0800
++++ src/improved-app/geometrize/task/imagetaskworker.cpp	2026-08-30 22:33:11.903902100 +0800
+@@ -1,81 +1,96 @@
+-#include "imagetaskworker.h"
+-
+-#include "geometrize/core.h"
+-#include "geometrize/bitmap/bitmap.h"
+-#include "geometrize/bitmap/rgba.h"
+-#include "geometrize/model.h"
+-#include "geometrize/runner/imagerunner.h"
+-#include "geometrize/shaperesult.h"
+-
+-namespace geometrize
+-{
+-
+-namespace task
+-{
+-
+-ImageTaskWorker::ImageTaskWorker(Bitmap& bitmap) : QObject(), m_runner{bitmap}, m_working{false}
+-{
+-}
+-
+-ImageTaskWorker::ImageTaskWorker(Bitmap& bitmap, const Bitmap& initial) : QObject(), m_runner{bitmap, initial}, m_working{false}
+-{
+-}
+-
+-ImageTaskWorker::~ImageTaskWorker()
+-{
+-}
+-
+-void ImageTaskWorker::step(const geometrize::ImageRunnerOptions options,
+-                           const std::function<std::shared_ptr<geometrize::Shape>()> shapeCreator,
+-                           const geometrize::core::EnergyFunction energyFunction,
+-                           const geometrize::ShapeAcceptancePreconditionFunction addShapePreconditionFunction)
+-{
+-    emit signal_willStep();
+-    m_working = true;
+-    const std::vector<geometrize::ShapeResult> results{m_runner.step(options, shapeCreator, energyFunction, addShapePreconditionFunction)};
+-    m_working = false;
+-    emit signal_didStep(results);
+-}
+-
+-void ImageTaskWorker::drawShape(const std::shared_ptr<geometrize::Shape> shape, const geometrize::rgba color)
+-{
+-    emit signal_willStep();
+-    m_working = true;
+-    const geometrize::ShapeResult result{m_runner.getModel().drawShape(shape, color)};
+-    m_working = false;
+-    emit signal_didStep({ result });
+-}
+-
+-geometrize::Bitmap& ImageTaskWorker::getCurrent()
+-{
+-    return m_runner.getCurrent();
+-}
+-
+-geometrize::Bitmap& ImageTaskWorker::getTarget()
+-{
+-    return m_runner.getTarget();
+-}
+-
+-const geometrize::Bitmap& ImageTaskWorker::getCurrent() const
+-{
+-    return m_runner.getCurrent();
+-}
+-
+-const geometrize::Bitmap& ImageTaskWorker::getTarget() const
+-{
+-    return m_runner.getTarget();
+-}
+-
+-geometrize::ImageRunner& ImageTaskWorker::getRunner()
+-{
+-    return m_runner;
+-}
+-
+-bool ImageTaskWorker::isStepping() const
+-{
+-    return m_working;
+-}
+-
+-}
+-
+-}
++#include "imagetaskworker.h"
++
++#include "geometrize/core.h"
++#include "geometrize/bitmap/bitmap.h"
++#include "geometrize/bitmap/rgba.h"
++#include "geometrize/model.h"
++#include "geometrize/runner/imagerunner.h"
++#include "geometrize/shaperesult.h"
++
++namespace geometrize
++{
++
++namespace task
++{
++
++ImageTaskWorker::ImageTaskWorker(Bitmap& bitmap) : QObject(), m_runner{bitmap}, m_working{false}
++{
++}
++
++ImageTaskWorker::ImageTaskWorker(Bitmap& bitmap, const Bitmap& initial) : QObject(), m_runner{bitmap, initial}, m_working{false}
++{
++}
++
++ImageTaskWorker::~ImageTaskWorker()
++{
++}
++
++void ImageTaskWorker::step(const geometrize::ImageRunnerOptions options,
++                           const std::function<std::shared_ptr<geometrize::Shape>()> shapeCreator,
++                           const geometrize::core::EnergyFunction energyFunction,
++                           const geometrize::ShapeAcceptancePreconditionFunction addShapePreconditionFunction)
++{
++    emit signal_willStep();
++    m_working = true;
++    const std::vector<geometrize::ShapeResult> results{m_runner.step(options, shapeCreator, energyFunction, addShapePreconditionFunction)};
++    m_working = false;
++    emit signal_didStep(results);
++}
++
++void ImageTaskWorker::drawShape(const std::shared_ptr<geometrize::Shape> shape, const geometrize::rgba color, const std::vector<geometrize::ScanlineColor> segments)
++{
++    emit signal_willStep();
++    m_working = true;
++    // A2.4:segments 非空时按行级颜色重画(重做/重放复用存档,不重算)
++    const geometrize::ShapeResult result{m_runner.getModel().drawShape(shape, color, segments)};
++    m_working = false;
++    emit signal_didStep({ result });
++}
++
++void ImageTaskWorker::replayShapes(std::vector<geometrize::ShapeResult> shapes, const geometrize::rgba resetColor)
++{
++    emit signal_willStep();
++    m_working = true;
++    geometrize::Model& model{m_runner.getModel()};
++    model.reset(resetColor);
++    // drawShape 无条件绘制且不消费 RNG:重放后的位图/分数链与原轨迹逐位一致
++    for(const geometrize::ShapeResult& result : shapes) {
++        model.drawShape(result.shape, result.color, result.segments);
++    }
++    m_working = false;
++    emit signal_didReplay(shapes);
++}
++
++geometrize::Bitmap& ImageTaskWorker::getCurrent()
++{
++    return m_runner.getCurrent();
++}
++
++geometrize::Bitmap& ImageTaskWorker::getTarget()
++{
++    return m_runner.getTarget();
++}
++
++const geometrize::Bitmap& ImageTaskWorker::getCurrent() const
++{
++    return m_runner.getCurrent();
++}
++
++const geometrize::Bitmap& ImageTaskWorker::getTarget() const
++{
++    return m_runner.getTarget();
++}
++
++geometrize::ImageRunner& ImageTaskWorker::getRunner()
++{
++    return m_runner;
++}
++
++bool ImageTaskWorker::isStepping() const
++{
++    return m_working;
++}
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/dialog/imagetaskwindow.cpp	2026-08-27 13:24:25.950820100 +0800
++++ src/improved-app/geometrize/dialog/imagetaskwindow.cpp	2026-08-30 22:33:11.904943600 +0800
+@@ -1,941 +1,1191 @@
+-#include "imagetaskwindow.h"
+-#include "ui_imagetaskwindow.h"
+-
+-#include <algorithm>
+-#include <cassert>
+-#include <functional>
+-#include <string>
+-#include <vector>
+-
+-#include <QByteArray>
+-#include <QCryptographicHash>
+-#include <QEvent>
+-#include <QKeySequence>
+-#include <QLocale>
+-#include <QMessageBox>
+-#include <QPixmap>
+-#include <QRectF>
+-#include <QTimer>
+-
+-#include "chaiscript/chaiscript.hpp"
+-
+-#include "geometrize/bitmap/bitmap.h"
+-#include "geometrize/commonutil.h"
+-#include "geometrize/runner/imagerunneroptions.h"
+-
+-#include "common/uiactions.h"
+-#include "common/util.h"
+-#include "dialog/imagetaskimagewidget.h"
+-#include "dialog/scripteditorwidget.h"
+-#include "image/imageloader.h"
+-#include "localization/strings.h"
+-#include "preferences/globalpreferences.h"
+-#include "script/geometrizerengine.h"
+-#include "script/command.h"
+-#include "script/commandhandler.h"
+-#include "scene/imagetaskgraphicsview.h"
+-#include "scene/imagetaskscenemanager.h"
+-#include "task/imagetask.h"
+-#include "task/shapecollection.h"
+-#include "version/versioninfo.h"
+-#include "tabletproximityeventfilter.h"
+-
+-#if defined DATASLINGER_INCLUDED
+-#include "dataslinger/imageslinger.h"
+-#include "geometrize/exporter/svgexporter.h"
+-#endif
+-
+-namespace
+-{
+-
+-// Utility function for destroying an image task set on a window.
+-// This has a special case because we may need to defer task deletion until the task is finished working.
+-void destroyTask(geometrize::task::ImageTask* task)
+-{
+-    if(task == nullptr) {
+-        assert(0 && "Attempted to destroy an image task that was already null");
+-        return;
+-    }
+-
+-    if(task->isStepping()) {
+-        // Wait until the task finishes stepping before disposing of it
+-        // Otherwise it will probably crash as the Geometrize library will be working with deleted data
+-        task->connect(task, &geometrize::task::ImageTask::signal_modelDidStep, [task](std::vector<geometrize::ShapeResult>) {
+-            task->disconnect();
+-            task->deleteLater();
+-        });
+-    } else {
+-        task->disconnect();
+-        task->deleteLater();
+-    }
+-}
+-
+-}
+-
+-namespace geometrize
+-{
+-
+-namespace dialog
+-{
+-
+-class ImageTaskWindow::ImageTaskWindowImpl
+-{
+-public:
+-    ImageTaskWindowImpl(ImageTaskWindow* pQ) :
+-        ui{std::make_unique<Ui::ImageTaskWindow>()},
+-        q{pQ}
+-    {
+-        ui->setupUi(q);
+-        populateUi();
+-        q->setAttribute(Qt::WA_DeleteOnClose);
+-
+-        // Set up the dock widgets
+-        q->tabifyDockWidget(ui->runnerSettingsDock, ui->scriptsDock);
+-        q->tabifyDockWidget(ui->runnerSettingsDock, ui->exporterDock);
+-
+-        ui->runnerSettingsDock->raise(); // Make sure runner settings dock is selected
+-
+-        ui->consoleWidget->setVisible(false); // Make sure console widget is hidden by default
+-
+-        // Set up the image task geometrization views
+-        m_pixmapView = new geometrize::scene::ImageTaskGraphicsView(ui->imageViewContainer);
+-        ui->imageViewContainer->layout()->addWidget(m_pixmapView);
+-
+-        m_svgView = new geometrize::scene::ImageTaskGraphicsView(ui->imageViewContainer);
+-        ui->imageViewContainer->layout()->addWidget(m_svgView);
+-
+-        m_sceneManager.setViews(*m_pixmapView, *m_svgView);
+-
+-        // Set initial view visibility
+-        const geometrize::preferences::GlobalPreferences& prefs{geometrize::preferences::getGlobalPreferences()};
+-        setConsoleVisibility(prefs.shouldShowImageTaskConsoleByDefault());
+-        setPixmapViewVisibility(prefs.shouldShowImageTaskPixmapViewByDefault());
+-        setVectorViewVisibility(prefs.shouldShowImageTaskVectorViewByDefault());
+-
+-        // Handle clicks on checkable title bar items
+-        connect(ui->actionScript_Console, &QAction::toggled, [this](const bool checked) {
+-            setConsoleVisibility(checked);
+-        });
+-        connect(ui->actionPixmap_Results_View, &QAction::toggled, [this](const bool checked) {
+-            setPixmapViewVisibility(checked);
+-        });
+-        connect(ui->actionVector_Results_View, &QAction::toggled, [this](const bool checked) {
+-            setVectorViewVisibility(checked);
+-        });
+-
+-        // Handle request to set the image task on the task window
+-        connect(q, &ImageTaskWindow::willSwitchImageTask, [this](task::ImageTask* lastTask, task::ImageTask* nextTask) {
+-            // Disconnect the last image task, which will soon be replaced by the next image task
+-            disconnectTask();
+-
+-            m_shapes.clear();
+-            ui->imageTaskRunnerWidget->setImageTask(nextTask);
+-            ui->scriptsWidget->setImageTask(nextTask);
+-            ui->imageTaskExportWidget->setImageTask(nextTask, &m_shapes.getShapeVector());
+-
+-            const auto taskIdForSerialization = [](const task::ImageTask& task) {
+-                std::string s = std::to_string(task.getWidth()) + "_" + std::to_string(task.getHeight()) + "_";
+-
+-                QCryptographicHash hash(QCryptographicHash::Md5);
+-                hash.addData(reinterpret_cast<const char*>(task.getTarget().getDataRef().data()), task.getTarget().getDataRef().size());
+-                const QByteArray result = hash.result().toHex();
+-                const std::string hashStr = std::string(result.begin(), result.end());
+-                return s + hashStr;
+-            };
+-
+-            // Autosave the preferences for the task being switched away from, if there was one
+-            if(lastTask != nullptr && geometrize::preferences::getGlobalPreferences().shouldAutoSaveImageTaskSettings()) {
+-                const std::string path{geometrize::preferences::getImageTaskPreferencesAutoSavePath(taskIdForSerialization(*lastTask))};
+-                if(path.empty()) {
+-                    assert(0 && "Auto save path for image task file must not be empty");
+-                }
+-                saveSettingsTemplate(lastTask, path);
+-            }
+-
+-            // Autoload the preferences for the task being switched to, if there is one
+-            if(nextTask != nullptr && geometrize::preferences::getGlobalPreferences().shouldAutoLoadImageTaskSettings()) {
+-                const std::string path{geometrize::preferences::getImageTaskPreferencesAutoSavePath(taskIdForSerialization(*nextTask))};
+-                if(path.empty()) {
+-                    assert(0 && "Auto load path for image task file must not be empty");
+-                }
+-                loadSettingsTemplate(nextTask, path);
+-            }
+-        });
+-        connect(q, &ImageTaskWindow::didSwitchImageTask, [this](task::ImageTask* lastTask, task::ImageTask* currentTask) {
+-            if(currentTask == nullptr) {
+-                m_taskPreferencesSetConnection = QMetaObject::Connection{};
+-                m_taskWillStepConnection = QMetaObject::Connection{};
+-                return; // Don't try to connect if we're setting the current task to nothing/nullptr
+-            }
+-
+-            m_taskPreferencesSetConnection = connect(currentTask, &task::ImageTask::signal_preferencesSet, [this]() {
+-                ui->imageTaskRunnerWidget->syncUserInterface();
+-                ui->scriptsWidget->syncUserInterface();
+-            });
+-
+-            m_taskWillStepConnection = connect(currentTask, &task::ImageTask::signal_modelWillStep, [this]() {
+-                ui->statsDockContents->setCurrentStatus(geometrize::dialog::ImageTaskStatsWidget::RUNNING);
+-
+-                // Apply the latest scripts and engine state prior to stepping
+-                auto& geometrizer = m_task->getGeometrizer();
+-
+-                m_task->getPreferences().setScripts(ui->scriptsWidget->getScripts());
+-
+-                chaiscript::ChaiScript* engine = geometrizer.getEngine();
+-                engine->set_global(chaiscript::var(m_shapes.getShapeVector().size()), "currentShapeCount");
+-
+-                ui->scriptsWidget->evaluateBeforeStepScripts();
+-            });
+-
+-            m_taskDidStepConnection = connect(currentTask, &task::ImageTask::signal_modelDidStep, [this](std::vector<geometrize::ShapeResult> shapes) {
+-                processPostStepCbs();
+-
+-                // If the first shape added background rectangle then fit the scenes to it
+-                if(m_shapes.empty()) {
+-                    m_sceneManager.fitScenesInViews(*m_pixmapView, *m_svgView);
+-                }
+-                m_shapes.appendShapes(shapes);
+-
+-                updateStats();
+-
+-                ui->scriptsWidget->evaluateAfterStepScripts();
+-
+-                if(shouldKeepStepping()) {
+-                    stepModel();
+-                }
+-            });
+-
+-            const QString windowTitle = [currentTask]() {
+-                QString title = geometrize::strings::Strings::getApplicationName()
+-                        .append(" ").append(geometrize::version::getApplicationVersionString());
+-                if(currentTask != nullptr) {
+-                    title.append(" ").append(QString::fromStdString(currentTask->getDisplayName()));
+-                }
+-                return title;
+-            }();
+-            q->setWindowTitle(windowTitle);
+-
+-            if(currentTask != nullptr) {
+-                const QPixmap target{image::createPixmap(m_task->getTarget())};
+-                m_sceneManager.setTargetPixmap(target);
+-            } else {
+-                m_sceneManager.setTargetPixmap(QPixmap());
+-            }
+-
+-            if(currentTask != nullptr) {
+-                const auto getStartingColor = [this]() {
+-                    const geometrize::preferences::GlobalPreferences& prefs{geometrize::preferences::getGlobalPreferences()};
+-                    if(prefs.shouldUseCustomImageTaskBackgroundOverrideColor()) {
+-                        const auto color = prefs.getCustomImageTaskBackgroundOverrideColor();
+-                        return geometrize::rgba{ static_cast<std::uint8_t>(color[0]), static_cast<std::uint8_t>(color[1]), static_cast<std::uint8_t>(color[2]), static_cast<std::uint8_t>(color[3]) };
+-                    }
+-                    return geometrize::commonutil::getAverageImageColor(m_task->getTarget());
+-                };
+-                currentTask->drawBackgroundRectangle(getStartingColor());
+-            }
+-
+-            if(currentTask != nullptr) {
+-                ui->consoleWidget->setEngine(currentTask->getGeometrizer().getEngine());
+-            } else {
+-                ui->consoleWidget->setEngine(nullptr);
+-            }
+-
+-            ui->imageTaskRunnerWidget->syncUserInterface();
+-            ui->scriptsWidget->syncUserInterface();
+-
+-            if(currentTask != nullptr) {
+-                ui->imageTaskImageWidget->setTargetImage(image::createImage(currentTask->getTarget()));
+-            } else {
+-                ui->imageTaskImageWidget->setTargetImage(QImage());
+-            }
+-
+-            m_timeRunning = 0.0f;
+-
+-            #if defined DATASLINGER_INCLUDED
+-            // Bind keyboard shortcuts, setup UI for sending images out over the network etc
+-            geometrize::installImageSlingerUserInterface(q);
+-            #endif
+-
+-            // As a final step, dispose of the old image task, if there was one
+-            if(lastTask != nullptr) {
+-                destroyTask(lastTask);
+-            }
+-        });
+-
+-        // Handle requested target image overlay opacity changes
+-        connect(ui->imageTaskImageWidget, &ImageTaskImageWidget::targetImageOpacityChanged, [this](const unsigned int value) {
+-            const float opacity{value * (1.0f / 255.0f)};
+-            m_sceneManager.setTargetPixmapOpacity(opacity);
+-        });
+-
+-        // Handle a request to change the target image
+-        connect(ui->imageTaskImageWidget, &ImageTaskImageWidget::targetImageSelected, [this](const QImage& image) {
+-            assert(!image.isNull());
+-
+-            // Validate the target image size
+-            const geometrize::Bitmap& target{m_task->getTarget()};
+-            const int targetWidth{static_cast<int>(target.getWidth())};
+-            const int targetHeight{static_cast<int>(target.getHeight())};
+-            if(targetWidth != image.width() || targetHeight != image.height()) {
+-                const QString selectedImageSize(tr("%1x%2", "Dimensions of an image e.g. width-x-height, 1024x800").arg(QLocale().toString(image.width())).arg(QLocale().toString(image.height())));
+-                const QString targetImageSize(tr("%1x%2", "Dimensions of an image e.g. width-x-height, 1024x800").arg(QLocale().toString(targetWidth)).arg(QLocale().toString(targetHeight)));
+-                QMessageBox::warning(
+-                            q,
+-                            tr("Image has incorrect dimensions", "Title of an error dialog shown when the user selects an image that was the wrong resolution/size"),
+-                            tr("Selected image must have the same dimensions as the current target image. Size was %1, but should have been %2",
+-                               "Error message shown when the user selects an image that was the wrong resolution/size").arg(selectedImageSize).arg(targetImageSize));
+-
+-                return;
+-            }
+-
+-            setTargetImage(image);
+-        });
+-
+-        // Handle a request to change the target image that has passed size checks and validation
+-        connect(ui->imageTaskImageWidget, &ImageTaskImageWidget::targetImageSet, [this](const QImage& image) {
+-            // If the task is running then defer the target image change to the next step, else do it immediately
+-            if(isRunning()) {
+-                const QImage imageCopy{image.copy()};
+-                addPostStepCb([this, imageCopy]() {
+-                    Bitmap target = geometrize::image::createBitmap(imageCopy);
+-                    switchTargetImage(target);
+-                });
+-            } else {
+-                Bitmap target = geometrize::image::createBitmap(image);
+-                switchTargetImage(target);
+-            }
+-        });
+-
+-        // Handle runner button presses
+-        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::runStopButtonClicked, [this]() {
+-            setShouldKeepStepping(!shouldKeepStepping());
+-
+-            // Request another image task step if user clicked start here
+-            if(shouldKeepStepping()) {
+-                stepModel();
+-            }
+-        });
+-        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::stepButtonClicked, [this]() {
+-            stepModel();
+-        });
+-        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::clearButtonClicked, [this]() {
+-            clearModel();
+-        });
+-
+-        connect(q, &ImageTaskWindow::didLoadSettingsTemplate, [this]() {
+-            ui->imageTaskRunnerWidget->syncUserInterface();
+-            ui->scriptsWidget->syncUserInterface();
+-        });
+-
+-        // Track how long the task has been in the running state
+-        connect(&m_timeRunningTimer, &QTimer::timeout, [this]() {
+-            if(isRunning()) {
+-                m_timeRunning += m_timeRunningTimerResolutionMs;
+-                updateStats();
+-            }
+-        });
+-
+-        connect(&m_scriptEngineUpdateTimer, &QTimer::timeout, [this]() {
+-            ui->scriptsWidget->evaluateOnTimedUpdateEventScripts();
+-        });
+-
+-        // Before shapes are added, evaluate he pre-add shape callbacks
+-        connect(&m_shapes, &geometrize::task::ShapeCollection::signal_beforeAppendShapes, [this](const std::vector<geometrize::ShapeResult>&) {
+-            ui->scriptsWidget->evaluateBeforeAddShapeScripts();
+-        });
+-
+-        // After shapes are added, evaluate the post-add shape callbacks and stop conditions
+-        connect(&m_shapes, &geometrize::task::ShapeCollection::signal_afterAppendShapes, [this](const std::vector<geometrize::ShapeResult>&) {
+-            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+-            engine->set_global(chaiscript::var(m_shapes.back().shape->clone()), "lastAddedShape");
+-            engine->set_global(chaiscript::var(m_shapes.back().score), "lastAddedShapeScore");
+-            engine->set_global(chaiscript::var(m_shapes.back().color), "lastAddedShapeColor");
+-
+-            ui->scriptsWidget->evaluateAfterAddShapeScripts();
+-
+-            if(!ui->scriptsWidget->evaluateStopConditionScripts()) {
+-                return;
+-            }
+-            setShouldKeepStepping(false);
+-            ui->scriptsWidget->evaluateOnStopConditionMetScripts();
+-            //geometrize::dialog::showImageTaskStopConditionMetMessage(q); // Letting the scripts handle notifying the user
+-        });
+-
+-        // Update the graphical image views after shapes are added
+-        connect(&m_shapes, &geometrize::task::ShapeCollection::signal_afterAppendShapes, [this](const std::vector<geometrize::ShapeResult>& shapes) {
+-            const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
+-            m_sceneManager.updateScenes(pixmap, shapes);
+-        });
+-
+-        #if defined DATASLINGER_INCLUDED
+-        // Send the newly added SVG shape data out to listening clients
+-        connect(&m_shapes, &geometrize::task::ShapeCollection::signal_afterAppendShapes, [](const std::vector<geometrize::ShapeResult>& shapes) {
+-
+-            // Exporting rotated ellipses as polygons, since OpenFL's SVG library can't handle regular rotated SVG ellipse or paths
+-            geometrize::exporter::SVGExportOptions options;
+-            options.rotatedEllipseExportMode = geometrize::exporter::RotatedEllipseSVGExportMode::POLYGON;
+-
+-            for(const auto& result : shapes) {
+-                geometrize::sendSvgShapeData(geometrize::exporter::getSingleShapeSVGData(result.color, *result.shape, options));
+-            }
+-        });
+-        #endif
+-
+-        // Update the graphical image views when the number of shapes changes (e.g. when cleared)
+-        connect(&m_shapes, &geometrize::task::ShapeCollection::signal_sizeChanged, [this](const std::size_t size) {
+-            if(size == 0) {
+-                m_sceneManager.reset();
+-            }
+-        });
+-
+-        // Pass the latest mouse event info to the current image task's script engine
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageHoverMoveEvent, [this](double lastX, double lastY, double x, double y, bool /*ctrlModifier*/) {
+-            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+-            engine->set_global(chaiscript::var(lastX), "targetImageLastMouseX");
+-            engine->set_global(chaiscript::var(lastY), "targetImageLastMouseY");
+-            engine->set_global(chaiscript::var(x), "targetImageMouseX");
+-            engine->set_global(chaiscript::var(y), "targetImageMouseY");
+-
+-            ui->scriptsWidget->evaluateOnMouseMoveEventScripts();
+-        });
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMousePressEvent, [this](double x, double y, bool /*ctrlModifier*/) {
+-            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+-            engine->set_global(chaiscript::var(x), "targetImageLastMouseX");
+-            engine->set_global(chaiscript::var(y), "targetImageLastMouseY");
+-            engine->set_global(chaiscript::var(x), "targetImageMouseX");
+-            engine->set_global(chaiscript::var(y), "targetImageMouseY");
+-
+-            ui->scriptsWidget->evaluateOnMouseDownEventScripts();
+-        });
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMouseMoveEvent, [this](double lastX, double lastY, double x, double y, bool /*ctrlModifier*/) {
+-            // NOTE not triggered currently, hover move events are used instead
+-            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+-            engine->set_global(chaiscript::var(lastX), "targetImageLastMouseX");
+-            engine->set_global(chaiscript::var(lastY), "targetImageLastMouseY");
+-            engine->set_global(chaiscript::var(x), "targetImageMouseX");
+-            engine->set_global(chaiscript::var(y), "targetImageMouseY");
+-
+-            ui->scriptsWidget->evaluateOnMouseMoveEventScripts();
+-        });
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMouseReleaseEvent, [this](double x, double y, bool /*ctrlModifier*/) {
+-            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+-            engine->set_global(chaiscript::var(x), "targetImageLastMouseX");
+-            engine->set_global(chaiscript::var(y), "targetImageLastMouseY");
+-            engine->set_global(chaiscript::var(x), "targetImageMouseX");
+-            engine->set_global(chaiscript::var(y), "targetImageMouseY");
+-
+-            ui->scriptsWidget->evaluateOnMouseUpEventScripts();
+-        });
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageWheelEvent, [this](double x, double y, int amount, bool /*ctrlModifier*/) {
+-            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+-            engine->set_global(chaiscript::var(x), "targetImageLastMouseX");
+-            engine->set_global(chaiscript::var(y), "targetImageLastMouseY");
+-            engine->set_global(chaiscript::var(x), "targetImageMouseX");
+-            engine->set_global(chaiscript::var(y), "targetImageMouseY");
+-            engine->set_global(chaiscript::var(amount), "targetImageWheelMoveAmount");
+-
+-            ui->scriptsWidget->evaluateOnMouseWheelEventScripts();
+-        });
+-
+-        // Pass the latest key event info to the current image task's script engine
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageKeyPressEvent, [this](int key, bool ctrlModifier) {
+-            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+-            const std::string keyString = QKeySequence(key).toString().toStdString();
+-
+-            // Update vars for pressed keys in the engine (cleared on key release)
+-            engine->set_global(chaiscript::var(keyString), "targetImageLastKeyDown");
+-            engine->set_global(chaiscript::var(true), "targetImageKeyDown_" + keyString);
+-            engine->set_global(chaiscript::var(ctrlModifier), "targetImageControlModifierDown");
+-
+-            // Last pressed key in the engine, not cleared on key release
+-            engine->set_global(chaiscript::var(keyString), "targetImageLastKeyDownPersistent");
+-
+-            ui->scriptsWidget->evaluateOnKeyDownEventScripts();
+-        });
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageKeyReleaseEvent, [this](int key, bool ctrlModifier) {
+-            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+-            const std::string keyString = QKeySequence(key).toString().toStdString();
+-
+-            // Update vars for pressed keys in the engine
+-            engine->set_global(chaiscript::var(""), "targetImageLastKeyDown");
+-            engine->set_global(chaiscript::var(false), "targetImageKeyDown_" + keyString);
+-            engine->set_global(chaiscript::var(ctrlModifier), "targetImageControlModifierDown");
+-
+-            ui->scriptsWidget->evaluateOnKeyUpEventScripts();
+-        });
+-
+-        // Pass the latest tablet event info to the current image task's script engine
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageTabletEvent, [this](const geometrize::scene::CustomTabletEvent& event) {
+-            if(!m_task) {
+-                return;
+-            }
+-
+-            const geometrize::scene::TabletEventData data = event.getData();
+-            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+-            engine->set_global(chaiscript::var(data), "lastTabletEvent");
+-
+-            ui->scriptsWidget->evaluateOnPenInputEventScripts();
+-
+-            try {
+-                std::shared_ptr<geometrize::Shape> aoiShape = engine->eval<std::shared_ptr<geometrize::Shape>>("aoi");
+-                engine->set_global(chaiscript::var(aoiShape->clone()), "aoi"); // Work around fail to assign shape to shape in the script
+-                m_sceneManager.setAreaOfInfluenceShape(*aoiShape);
+-            } catch(...) {
+-                // The pen input scripts should setup an area of influence shape
+-            }
+-        });
+-
+-        // Connect the global pen input proximity event filter signals
+-        // Note these are separate from the other tablet events, since they are application-wide
+-        // and proximity events don't seem to include useful data e.g. position etc
+-        auto& sharedTabletProximityEventFilter = geometrize::getSharedTabletProximityEventFilterInstance();
+-        connect(&sharedTabletProximityEventFilter, &geometrize::TabletProximityEventFilter::signal_onTabletEnterProximity, q, [this]() {
+-            ui->scriptsWidget->evaluateOnPenProximityEnterEventScripts();
+-        });
+-        connect(&sharedTabletProximityEventFilter, &geometrize::TabletProximityEventFilter::signal_onTabletLeaveProximity, q, [this]() {
+-            ui->scriptsWidget->evaluateOnPenProximityExitEventScripts();
+-        });
+-
+-        /*
+-        // TODO do stuff with the area of influence shape, or tell the script engine, when input happens
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onAreaOfInfluenceShapeHoverMoveEvent, [this](const int lastX, const int lastY, const int x, const int y, const bool ctrlModifier) {
+-            if(!ctrlModifier) {
+-                return;
+-            }
+-            //translateShape(x - lastX, y - lastY);
+-        });
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onAreaOfInfluenceShapeMouseWheelEvent, [this](const int, const int, const double amount, const bool ctrlModifier) {
+-            if(!ctrlModifier) {
+-                return;
+-            }
+-            //scaleShape(amount > 0 ? 1.03f : 0.97f);
+-        });
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onAreaOfInfluenceShapeKeyPressEvent, [this](const int key, const bool) {
+-            if(key == Qt::Key_R) { // Rotate
+-                //rotateShape(3);
+-            }
+-            if(key == Qt::Key_Q) { // Scale down
+-                //scaleShape(0.97f);
+-            }
+-            if(key == Qt::Key_A) { // Scale up
+-                //scaleShape(1.03f);
+-            }
+-        });
+-        */
+-
+-        // Set initial target image opacity
+-        const float initialTargetImageOpacity{0};
+-        ui->imageTaskImageWidget->setTargetImageOpacity(static_cast<unsigned int>(initialTargetImageOpacity));
+-
+-        // Start the timer used to track how long the image task has been in the running state
+-        m_timeRunningTimer.start(static_cast<int>(m_timeRunningTimerResolutionMs));
+-
+-        // Start the timer used to regularly update the associated image task's script engine (if any)
+-        m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
+-    }
+-    ImageTaskWindowImpl& operator=(const ImageTaskWindowImpl&) = delete;
+-    ImageTaskWindowImpl(const ImageTaskWindowImpl&) = delete;
+-    ~ImageTaskWindowImpl()
+-    {
+-        // Sets the task in the UI etc to nothing (potentially autosaving stuff etc), then dispose of the task
+-        task::ImageTask* lastTask = getImageTask();
+-        setImageTask(nullptr);
+-
+-        if(lastTask != nullptr) {
+-            destroyTask(lastTask);
+-        }
+-    }
+-
+-    static std::vector<ImageTaskWindow*> getExistingImageTaskWindows()
+-    {
+-        std::vector<ImageTaskWindow*> windows;
+-        const QWidgetList allWidgets = QApplication::allWidgets();
+-        for (QWidget* widget : allWidgets) {
+-            if(ImageTaskWindow* w = dynamic_cast<ImageTaskWindow*>(widget)) {
+-                windows.push_back(w);
+-            }
+-        }
+-        return windows;
+-    }
+-
+-    void close()
+-    {
+-        q->close();
+-    }
+-
+-    task::ImageTask* getImageTask()
+-    {
+-        return m_task;
+-    }
+-
+-    void setImageTask(task::ImageTask* task)
+-    {
+-        task::ImageTask* lastTask{m_task};
+-        task::ImageTask* nextTask{task};
+-        q->willSwitchImageTask(lastTask, nextTask);
+-        m_task = nextTask;
+-        q->didSwitchImageTask(lastTask, nextTask);
+-    }
+-
+-    void revealLaunchWindow()
+-    {
+-        if(common::ui::isLaunchWindowOpen()) {
+-            common::ui::bringLaunchWindowToFront();
+-        } else {
+-            common::ui::openLaunchWindow();
+-        }
+-    }
+-
+-    void setConsoleVisibility(const bool visible)
+-    {
+-        if(ui->actionScript_Console->isChecked() != visible) {
+-            ui->actionScript_Console->setChecked(visible);
+-        }
+-        ui->consoleWidget->setVisible(visible);
+-    }
+-
+-    void setPixmapViewVisibility(const bool visible)
+-    {
+-        if(ui->actionPixmap_Results_View->isChecked() != visible) {
+-            ui->actionPixmap_Results_View->setChecked(visible);
+-        }
+-
+-        m_pixmapView->setVisible(visible);
+-        if(visible) {
+-            m_sceneManager.fitPixmapSceneInView(*m_pixmapView);
+-        }
+-    }
+-
+-    void setVectorViewVisibility(const bool visible)
+-    {
+-        if(ui->actionVector_Results_View->isChecked() != visible) {
+-            ui->actionVector_Results_View->setChecked(visible);
+-        }
+-
+-        m_svgView->setVisible(visible);
+-        if(visible) {
+-            m_sceneManager.fitVectorSceneInView(*m_svgView);
+-        }
+-    }
+-
+-    void loadSettingsTemplate()
+-    {
+-        const QString path{common::ui::openLoadImageTaskSettingsDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-        loadSettingsTemplate(m_task, path.toStdString());
+-    }
+-
+-    void loadSettingsTemplate(task::ImageTask* task, const std::string& path)
+-    {
+-        if(task == nullptr) {
+-            return; // Can't load settings for a non-existent task
+-        }
+-        if(path.empty()) {
+-            assert(0 && "Auto load path for image task file must not be empty");
+-        }
+-        task->getPreferences().load(path);
+-        emit q->didLoadSettingsTemplate();
+-    }
+-
+-    void saveSettingsTemplate() const
+-    {
+-        const QString path{common::ui::openSaveImageTaskSettingsDialog(q)};
+-        if(path.isEmpty()) {
+-            return;
+-        }
+-        saveSettingsTemplate(m_task, path.toStdString());
+-    }
+-
+-    void saveSettingsTemplate(task::ImageTask* task, const std::string& path) const
+-    {
+-        if(task == nullptr) {
+-            return; // Can't save settings for a non-existent task
+-        }
+-        if(path.empty()) {
+-            assert(0 && "Auto save path for image task file must not be empty");
+-        }
+-        task->getPreferences().save(path);
+-        emit q->didSaveSettingsTemplate();
+-    }
+-
+-    void onLanguageChange()
+-    {
+-        ui->retranslateUi(q);
+-        populateUi();
+-    }
+-
+-    void handleCommand(const geometrize::script::Command& command)
+-    {
+-        const QString s = QString::fromStdString(command.getCommand());
+-
+-        if(s == "start") {
+-            setShouldKeepStepping(true);
+-            stepModel();
+-        }
+-        if(s == "stop") {
+-            setShouldKeepStepping(false);
+-        }
+-
+-        if(s == "click_start_stop_button") {
+-            ui->imageTaskRunnerWidget->runStopButtonClicked();
+-        }
+-        if(s == "click_step_button") {
+-            ui->imageTaskRunnerWidget->stepButtonClicked();
+-        }
+-        if(s == "click_clear_button") {
+-            ui->imageTaskRunnerWidget->clearButtonClicked();
+-        }
+-
+-        if(s == "toggle_script_console") {
+-            ui->actionScript_Console->toggle();
+-        }
+-        if(s == "show_script_console") {
+-            ui->actionScript_Console->setChecked(true);
+-        }
+-        if(s == "hide_script_console") {
+-            ui->actionScript_Console->setChecked(false);
+-        }
+-
+-        if(s == "toggle_pixmap_view") {
+-            ui->actionPixmap_Results_View->toggle();
+-        }
+-        if(s == "show_pixmap_view") {
+-            ui->actionPixmap_Results_View->setChecked(true);
+-        }
+-        if(s == "hide_pixmap_view") {
+-            ui->actionPixmap_Results_View->setChecked(false);
+-        }
+-
+-        if(s == "toggle_vector_view") {
+-            ui->actionVector_Results_View->toggle();
+-        }
+-        if(s == "show_vector_view") {
+-            ui->actionVector_Results_View->setChecked(true);
+-        }
+-        if(s == "hide_vector_view") {
+-            ui->actionVector_Results_View->setChecked(false);
+-        }
+-    }
+-
+-    void setCommandHandlerName(const std::string& name)
+-    {
+-        q->setObjectName(QString::fromStdString(name));
+-    }
+-
+-    std::string getCommandHandlerName() const
+-    {
+-        return q->objectName().toStdString();
+-    }
+-
+-private:
+-    void populateUi()
+-    {
+-        updateStartStopButtonText();
+-        q->setWindowTitle(geometrize::strings::Strings::getApplicationName());
+-    }
+-
+-    bool isRunning() const
+-    {
+-        if(!m_task) {
+-            return false;
+-        }
+-        return m_task->isStepping();
+-    }
+-
+-    bool shouldKeepStepping() const
+-    {
+-        return m_shouldKeepStepping;
+-    }
+-
+-    void setShouldKeepStepping(const bool stepping)
+-    {
+-        m_shouldKeepStepping = stepping;
+-        updateStartStopButtonText();
+-    }
+-
+-    void updateStartStopButtonText()
+-    {
+-        if(!shouldKeepStepping()) {
+-            ui->imageTaskRunnerWidget->setRunStopButtonText(tr("Start", "Text on a button that the user presses to make the app start/begin transforming an image into shapes"));
+-        } else {
+-            ui->imageTaskRunnerWidget->setRunStopButtonText(tr("Stop", "Text on a button that the user presses to make the app stop/pause transforming an image into shapes"));
+-        }
+-    }
+-
+-    void stepModel()
+-    {
+-        m_task->stepModel();
+-    }
+-
+-    void clearModel()
+-    {
+-        auto task = new geometrize::task::ImageTask(m_task->getDisplayName(), m_task->getTargetMutable());
+-        task->setPreferences(m_task->getPreferences());
+-        setImageTask(task);
+-    }
+-
+-    void switchTargetImage(Bitmap& bitmap)
+-    {
+-        Bitmap& targetBitmap{m_task->getTargetMutable()};
+-        targetBitmap = bitmap;
+-    }
+-
+-    void switchCurrentImage(Bitmap& bitmap)
+-    {
+-        Bitmap& currentBitmap{m_task->getCurrentMutable()};
+-        currentBitmap = bitmap;
+-    }
+-
+-    void updateStats()
+-    {
+-        ui->statsDockContents->setTaskId(m_task->getTaskId());
+-        ui->statsDockContents->setImageDimensions(m_task->getWidth(), m_task->getHeight());
+-
+-        // Note this is "stopped" when !isRunning alone, but this prevents flashing while
+-        // the user has it continually adding shapes
+-        if(!isRunning() && !shouldKeepStepping()) {
+-            ui->statsDockContents->setCurrentStatus(geometrize::dialog::ImageTaskStatsWidget::STOPPED);
+-        }
+-
+-        ui->statsDockContents->setShapeCount(m_shapes.size());
+-
+-        if(!m_shapes.empty()) {
+-            ui->statsDockContents->setSimilarity(m_shapes.back().score * 100.0f);
+-        }
+-
+-        ui->statsDockContents->setTimeRunning(static_cast<int>(m_timeRunning / 1000.0f));
+-    }
+-
+-    void disconnectTask()
+-    {
+-        if(m_taskPreferencesSetConnection) {
+-            disconnect(m_taskPreferencesSetConnection);
+-        }
+-        if(m_taskWillStepConnection) {
+-            disconnect(m_taskWillStepConnection);
+-        }
+-        if(m_taskDidStepConnection) {
+-            disconnect(m_taskDidStepConnection);
+-        }
+-    }
+-
+-    void setTargetImage(const QImage& image)
+-    {
+-        ui->imageTaskImageWidget->setTargetImage(image);
+-    }
+-
+-    void addPostStepCb(const std::function<void()>& f)
+-    {
+-        m_onPostStepCbs.push_back(f);
+-    }
+-
+-    void clearPostStepCbs()
+-    {
+-        m_onPostStepCbs.clear();
+-    }
+-
+-    void processPostStepCbs()
+-    {
+-        for(const auto& f : m_onPostStepCbs) {
+-            f();
+-        }
+-        clearPostStepCbs();
+-    }
+-
+-    std::unique_ptr<Ui::ImageTaskWindow> ui{nullptr};
+-    ImageTaskWindow* q{nullptr};
+-
+-    task::ImageTask* m_task{nullptr}; ///> The image task currently set and manipulated via this window
+-    QMetaObject::Connection m_taskPreferencesSetConnection{}; ///> Connection for telling the dialog when the image task preferences are set
+-    QMetaObject::Connection m_taskWillStepConnection{}; ///> Connection for the window to do work just prior the image task starts a step
+-    QMetaObject::Connection m_taskDidStepConnection{}; ///> Connection for the window to do work just after the image task finishes a step
+-    std::vector<std::function<void()>> m_onPostStepCbs; ///> One-shot callbacks triggered when the image task finishes a step
+-
+-    geometrize::task::ShapeCollection m_shapes; ///> Collection of shapes added so far
+-
+-    geometrize::scene::ImageTaskSceneManager m_sceneManager; ///> Manager for scenes containing the pixmap/vector-based representations of the shapes etc
+-    geometrize::scene::ImageTaskGraphicsView* m_pixmapView{nullptr}; ///> The view that holds the raster/pixel-based scene
+-    geometrize::scene::ImageTaskGraphicsView* m_svgView{nullptr}; ///> The view that holds the vector-based scene
+-
+-    bool m_shouldKeepStepping{false}; ///> Whether to continually step i.e. whether to start another step after stepping once
+-    QTimer m_timeRunningTimer; ///> Timer used to keep track of how long the image task has been in the "running" state
+-    float m_timeRunning{0.0f}; ///> Total time that the image task has been in the "running" state
+-    const float m_timeRunningTimerResolutionMs{100.0f}; ///> Resolution of the time running timer in milliseconds
+-
+-    QTimer m_scriptEngineUpdateTimer; ///> Timer used to call an update function on the script engine of the associated image task
+-    float m_scriptEngineUpdateTimerResolution{100.0f}; ///> Resolution of the script update timer in milliseconds
+-};
+-
+-ImageTaskWindow::ImageTaskWindow() :
+-    QMainWindow{nullptr},
+-    d{std::make_unique<ImageTaskWindow::ImageTaskWindowImpl>(this)}
+-{
+-}
+-
+-ImageTaskWindow::~ImageTaskWindow()
+-{
+-}
+-
+-std::vector<ImageTaskWindow*> ImageTaskWindow::getExistingImageTaskWindows()
+-{
+-    return ImageTaskWindowImpl::getExistingImageTaskWindows();
+-}
+-
+-void ImageTaskWindow::handleCommand(const geometrize::script::Command& command)
+-{
+-    d->handleCommand(command);
+-}
+-
+-std::string ImageTaskWindow::getCommandHandlerName() const
+-{
+-    return d->getCommandHandlerName();
+-}
+-
+-void ImageTaskWindow::setCommandHandlerName(const std::string& name)
+-{
+-    d->setCommandHandlerName(name);
+-}
+-
+-task::ImageTask* ImageTaskWindow::getImageTask()
+-{
+-    return d->getImageTask();
+-}
+-
+-void ImageTaskWindow::setImageTask(task::ImageTask* task)
+-{
+-    d->setImageTask(task);
+-}
+-
+-void ImageTaskWindow::on_actionExit_triggered()
+-{
+-    d->close();
+-}
+-
+-void ImageTaskWindow::on_actionLoad_Settings_Template_triggered()
+-{
+-    d->loadSettingsTemplate();
+-}
+-
+-void ImageTaskWindow::on_actionSave_Settings_Template_triggered()
+-{
+-    d->saveSettingsTemplate();
+-}
+-
+-void ImageTaskWindow::on_actionReveal_Launch_Window_triggered()
+-{
+-    d->revealLaunchWindow();
+-}
+-
+-void ImageTaskWindow::changeEvent(QEvent* event)
+-{
+-    if (event->type() == QEvent::LanguageChange) {
+-        d->onLanguageChange();
+-    }
+-    QMainWindow::changeEvent(event);
+-}
+-
+-}
+-
+-}
++#include "imagetaskwindow.h"
++#include "ui_imagetaskwindow.h"
++
++#include <algorithm>
++#include <cassert>
++#include <functional>
++#include <string>
++#include <vector>
++
++#include <QByteArray>
++#include <QCryptographicHash>
++#include <QEvent>
++#include <QKeySequence>
++#include <QLocale>
++#include <QMessageBox>
++#include <QPixmap>
++#include <QPointer>
++#include <QRectF>
++#include <QTimer>
++
++#include "chaiscript/chaiscript.hpp"
++
++#include "geometrize/bitmap/bitmap.h"
++#include "geometrize/commonutil.h"
++#include "geometrize/runner/imagerunneroptions.h"
++
++#include "common/uiactions.h"
++#include "common/util.h"
++#include "dialog/imagetaskimagewidget.h"
++#include "dialog/scripteditorwidget.h"
++#include "image/imageloader.h"
++#include "localization/strings.h"
++#include "preferences/globalpreferences.h"
++#include "script/geometrizerengine.h"
++#include "script/command.h"
++#include "script/commandhandler.h"
++#include "scene/imagetaskgraphicsview.h"
++#include "scene/imagetaskscenemanager.h"
++#include "task/imagetask.h"
++#include "task/shapecollection.h"
++#include "version/versioninfo.h"
++#include "tabletproximityeventfilter.h"
++
++#if defined DATASLINGER_INCLUDED
++#include "dataslinger/imageslinger.h"
++#include "geometrize/exporter/svgexporter.h"
++#endif
++
++namespace
++{
++
++// Utility function for destroying an image task set on a window.
++// This has a special case because we may need to defer task deletion until the task is finished working.
++void destroyTask(geometrize::task::ImageTask* task)
++{
++    if(task == nullptr) {
++        assert(0 && "Attempted to destroy an image task that was already null");
++        return;
++    }
++
++    if(task->isStepping()) {
++        // Wait until the task finishes stepping before disposing of it
++        // Otherwise it will probably crash as the Geometrize library will be working with deleted data
++        task->connect(task, &geometrize::task::ImageTask::signal_modelDidStep, [task](std::vector<geometrize::ShapeResult>) {
++            task->disconnect();
++            task->deleteLater();
++        });
++        task->connect(task, &geometrize::task::ImageTask::signal_modelDidReplay, [task](std::vector<geometrize::ShapeResult>) {
++            task->disconnect();
++            task->deleteLater();
++        });
++    } else {
++        task->disconnect();
++        task->deleteLater();
++    }
++}
++
++}
++
++namespace geometrize
++{
++
++namespace dialog
++{
++
++class ImageTaskWindow::ImageTaskWindowImpl
++{
++public:
++    ImageTaskWindowImpl(ImageTaskWindow* pQ) :
++        ui{std::make_unique<Ui::ImageTaskWindow>()},
++        q{pQ}
++    {
++        ui->setupUi(q);
++        populateUi();
++        q->setAttribute(Qt::WA_DeleteOnClose);
++
++        // Set up the dock widgets
++        q->tabifyDockWidget(ui->runnerSettingsDock, ui->scriptsDock);
++        q->tabifyDockWidget(ui->runnerSettingsDock, ui->exporterDock);
++
++        ui->runnerSettingsDock->raise(); // Make sure runner settings dock is selected
++
++        // 撤销/重做:按钮信号与菜单 action 汇合同一实现;快捷键挂 QAction(窗口级作用域)
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::undoButtonClicked, [this]() {
++            undoModel();
++        });
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::redoButtonClicked, [this]() {
++            redoModel();
++        });
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::priorityRegionSelectionModeChanged, [this](bool enabled) {
++            m_regionSelectMode = enabled;
++            if(!enabled) {
++                m_regionDragActive = false;
++                m_sceneManager.setPriorityRegionPreviewRect(QRectF()); // 隐藏预览
++            }
++        });
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::clearPriorityRegionsClicked, [this]() {
++            m_sceneManager.setPriorityRegions({});
++            ui->imageTaskRunnerWidget->syncUserInterface();
++        });
++        connect(ui->actionUndo, &QAction::triggered, [this]() {
++            undoModel();
++        });
++        connect(ui->actionRedo, &QAction::triggered, [this]() {
++            redoModel();
++        });
++        ui->actionUndo->setShortcuts({QKeySequence::Undo}); // Ctrl+Z
++        ui->actionRedo->setShortcuts({QKeySequence("Ctrl+Shift+Z"), QKeySequence("Ctrl+Y")});
++
++        ui->consoleWidget->setVisible(false); // Make sure console widget is hidden by default
++
++        // Set up the image task geometrization views
++        m_pixmapView = new geometrize::scene::ImageTaskGraphicsView(ui->imageViewContainer);
++        ui->imageViewContainer->layout()->addWidget(m_pixmapView);
++
++        m_svgView = new geometrize::scene::ImageTaskGraphicsView(ui->imageViewContainer);
++        ui->imageViewContainer->layout()->addWidget(m_svgView);
++
++        m_sceneManager.setViews(*m_pixmapView, *m_svgView);
++
++        // Set initial view visibility
++        const geometrize::preferences::GlobalPreferences& prefs{geometrize::preferences::getGlobalPreferences()};
++        setConsoleVisibility(prefs.shouldShowImageTaskConsoleByDefault());
++        setPixmapViewVisibility(prefs.shouldShowImageTaskPixmapViewByDefault());
++        setVectorViewVisibility(prefs.shouldShowImageTaskVectorViewByDefault());
++
++        // Handle clicks on checkable title bar items
++        connect(ui->actionScript_Console, &QAction::toggled, [this](const bool checked) {
++            setConsoleVisibility(checked);
++        });
++        connect(ui->actionPixmap_Results_View, &QAction::toggled, [this](const bool checked) {
++            setPixmapViewVisibility(checked);
++        });
++        connect(ui->actionVector_Results_View, &QAction::toggled, [this](const bool checked) {
++            setVectorViewVisibility(checked);
++        });
++
++        // Handle request to set the image task on the task window
++        connect(q, &ImageTaskWindow::willSwitchImageTask, [this](task::ImageTask* lastTask, task::ImageTask* nextTask) {
++            // Disconnect the last image task, which will soon be replaced by the next image task
++            disconnectTask();
++
++            m_shapes.clear();
++            // 任务切换:撤销/重做状态整体作废(旧任务的 redo 项不适用新任务)
++            m_redoStack.clear();
++            m_replayInFlight = false;
++            m_redoInFlight = false;
++            m_lastRedrawnShape = nullptr;
++            m_regionDragActive = false;
++            m_sceneManager.setPriorityRegionPreviewRect(QRectF());
++            ui->imageTaskRunnerWidget->setImageTask(nextTask);
++            ui->scriptsWidget->setImageTask(nextTask);
++            ui->imageTaskExportWidget->setImageTask(nextTask, &m_shapes.getShapeVector());
++
++            const auto taskIdForSerialization = [](const task::ImageTask& task) {
++                std::string s = std::to_string(task.getWidth()) + "_" + std::to_string(task.getHeight()) + "_";
++
++                QCryptographicHash hash(QCryptographicHash::Md5);
++                hash.addData(reinterpret_cast<const char*>(task.getTarget().getDataRef().data()), task.getTarget().getDataRef().size());
++                const QByteArray result = hash.result().toHex();
++                const std::string hashStr = std::string(result.begin(), result.end());
++                return s + hashStr;
++            };
++
++            // Autosave the preferences for the task being switched away from, if there was one
++            if(lastTask != nullptr && geometrize::preferences::getGlobalPreferences().shouldAutoSaveImageTaskSettings()) {
++                const std::string path{geometrize::preferences::getImageTaskPreferencesAutoSavePath(taskIdForSerialization(*lastTask))};
++                if(path.empty()) {
++                    assert(0 && "Auto save path for image task file must not be empty");
++                }
++                saveSettingsTemplate(lastTask, path);
++            }
++
++            // Autoload the preferences for the task being switched to, if there is one
++            if(nextTask != nullptr && geometrize::preferences::getGlobalPreferences().shouldAutoLoadImageTaskSettings()) {
++                const std::string path{geometrize::preferences::getImageTaskPreferencesAutoSavePath(taskIdForSerialization(*nextTask))};
++                if(path.empty()) {
++                    assert(0 && "Auto load path for image task file must not be empty");
++                }
++                loadSettingsTemplate(nextTask, path);
++            }
++        });
++        connect(q, &ImageTaskWindow::didSwitchImageTask, [this](task::ImageTask* lastTask, task::ImageTask* currentTask) {
++            if(currentTask == nullptr) {
++                m_taskPreferencesSetConnection = QMetaObject::Connection{};
++                m_taskWillStepConnection = QMetaObject::Connection{};
++                m_taskDidReplayConnection = QMetaObject::Connection{};
++                // 区域选择状态随任务作废
++                m_regionSelectMode = false;
++                m_regionDragActive = false;
++                m_sceneManager.setPriorityRegions({});
++                m_sceneManager.setPriorityRegionPreviewRect(QRectF());
++                return; // Don't try to connect if we're setting the current task to nothing/nullptr
++            }
++
++            m_taskPreferencesSetConnection = connect(currentTask, &task::ImageTask::signal_preferencesSet, [this]() {
++                ui->imageTaskRunnerWidget->syncUserInterface();
++                ui->scriptsWidget->syncUserInterface();
++            });
++
++            m_taskWillStepConnection = connect(currentTask, &task::ImageTask::signal_modelWillStep, [this]() {
++                ui->statsDockContents->setCurrentStatus(geometrize::dialog::ImageTaskStatsWidget::RUNNING);
++                updateUndoRedoActions(); // 步进/重放开始即禁用(守卫的 isStepping 分支同时兜底)
++
++                // Apply the latest scripts and engine state prior to stepping
++                auto& geometrizer = m_task->getGeometrizer();
++
++                m_task->getPreferences().setScripts(ui->scriptsWidget->getScripts());
++
++                chaiscript::ChaiScript* engine = geometrizer.getEngine();
++                engine->set_global(chaiscript::var(m_shapes.getShapeVector().size()), "currentShapeCount");
++
++                ui->scriptsWidget->evaluateBeforeStepScripts();
++            });
++
++            m_taskDidStepConnection = connect(currentTask, &task::ImageTask::signal_modelDidStep, [this](std::vector<geometrize::ShapeResult> shapes) {
++                processPostStepCbs();
++
++                // 撤销重放在途:丢弃竞争步进的结果(经典编辑器语义——在途编辑被丢弃),不进 append/脚本/链式步进
++                if(m_replayInFlight) {
++                    updateStats();
++                    updateUndoRedoActions();
++                    return;
++                }
++
++                // redo 自身的 drawShape 产物:不清 redo 栈;其余任何来源的新形状都使 redo 失效
++                if(m_redoInFlight && !shapes.empty() && shapes.back().shape == m_lastRedrawnShape) {
++                    m_redoInFlight = false;
++                } else if(!shapes.empty() && !m_redoStack.empty()) {
++                    m_redoStack.clear();
++                }
++
++                // If the first shape added background rectangle then fit the scenes to it
++                if(m_shapes.empty()) {
++                    m_sceneManager.fitScenesInViews(*m_pixmapView, *m_svgView);
++                }
++                m_shapes.appendShapes(shapes);
++
++                updateStats();
++
++                ui->scriptsWidget->evaluateAfterStepScripts();
++
++                if(shouldKeepStepping()) {
++                    stepModel();
++                }
++            });
++
++            m_taskDidReplayConnection = connect(currentTask, &task::ImageTask::signal_modelDidReplay, [this](std::vector<geometrize::ShapeResult> shapes) {
++                m_replayInFlight = false;
++                // 防御对账:worker 重放以列表为权威,列表若因竞争步进被丢弃不会小于此处
++                if(m_shapes.size() > shapes.size()) {
++                    m_shapes.truncate(shapes.size());
++                }
++                updateStats();
++                m_pendingSceneShapes.clear();
++                // 此时 worker 已空闲,读位图安全;pixmap 全量重传 + SVG 场景整体重建
++                const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
++                m_sceneManager.reset();
++                m_sceneManager.updateScenes(pixmap, shapes);
++                updateUndoRedoActions();
++            });
++
++            // 从新任务的偏好恢复区域 overlay 显示
++            refreshPriorityRegionOverlays();
++
++            const QString windowTitle = [currentTask]() {
++                QString title = geometrize::strings::Strings::getApplicationName()
++                        .append(" ").append(geometrize::version::getApplicationVersionString());
++                if(currentTask != nullptr) {
++                    title.append(" ").append(QString::fromStdString(currentTask->getDisplayName()));
++                }
++                return title;
++            }();
++            q->setWindowTitle(windowTitle);
++
++            if(currentTask != nullptr) {
++                const QPixmap target{image::createPixmap(m_task->getTarget())};
++                m_sceneManager.setTargetPixmap(target);
++            } else {
++                m_sceneManager.setTargetPixmap(QPixmap());
++            }
++
++            if(currentTask != nullptr) {
++                const auto getStartingColor = [this]() {
++                    const geometrize::preferences::GlobalPreferences& prefs{geometrize::preferences::getGlobalPreferences()};
++                    if(prefs.shouldUseCustomImageTaskBackgroundOverrideColor()) {
++                        const auto color = prefs.getCustomImageTaskBackgroundOverrideColor();
++                        return geometrize::rgba{ static_cast<std::uint8_t>(color[0]), static_cast<std::uint8_t>(color[1]), static_cast<std::uint8_t>(color[2]), static_cast<std::uint8_t>(color[3]) };
++                    }
++                    return geometrize::commonutil::getAverageImageColor(m_task->getTarget());
++                };
++                currentTask->drawBackgroundRectangle(getStartingColor());
++            }
++
++            if(currentTask != nullptr) {
++                ui->consoleWidget->setEngine(currentTask->getGeometrizer().getEngine());
++            } else {
++                ui->consoleWidget->setEngine(nullptr);
++            }
++
++            ui->imageTaskRunnerWidget->syncUserInterface();
++            ui->scriptsWidget->syncUserInterface();
++
++            if(currentTask != nullptr) {
++                ui->imageTaskImageWidget->setTargetImage(image::createImage(currentTask->getTarget()));
++            } else {
++                ui->imageTaskImageWidget->setTargetImage(QImage());
++            }
++
++            m_timeRunning = 0.0f;
++
++            #if defined DATASLINGER_INCLUDED
++            // Bind keyboard shortcuts, setup UI for sending images out over the network etc
++            geometrize::installImageSlingerUserInterface(q);
++            #endif
++
++            // As a final step, dispose of the old image task, if there was one
++            if(lastTask != nullptr) {
++                destroyTask(lastTask);
++            }
++        });
++
++        // Handle requested target image overlay opacity changes
++        connect(ui->imageTaskImageWidget, &ImageTaskImageWidget::targetImageOpacityChanged, [this](const unsigned int value) {
++            const float opacity{value * (1.0f / 255.0f)};
++            m_sceneManager.setTargetPixmapOpacity(opacity);
++        });
++
++        // Handle a request to change the target image
++        connect(ui->imageTaskImageWidget, &ImageTaskImageWidget::targetImageSelected, [this](const QImage& image) {
++            assert(!image.isNull());
++
++            // Validate the target image size
++            const geometrize::Bitmap& target{m_task->getTarget()};
++            const int targetWidth{static_cast<int>(target.getWidth())};
++            const int targetHeight{static_cast<int>(target.getHeight())};
++            if(targetWidth != image.width() || targetHeight != image.height()) {
++                const QString selectedImageSize(tr("%1x%2", "Dimensions of an image e.g. width-x-height, 1024x800").arg(QLocale().toString(image.width())).arg(QLocale().toString(image.height())));
++                const QString targetImageSize(tr("%1x%2", "Dimensions of an image e.g. width-x-height, 1024x800").arg(QLocale().toString(targetWidth)).arg(QLocale().toString(targetHeight)));
++                QMessageBox::warning(
++                            q,
++                            tr("Image has incorrect dimensions", "Title of an error dialog shown when the user selects an image that was the wrong resolution/size"),
++                            tr("Selected image must have the same dimensions as the current target image. Size was %1, but should have been %2",
++                               "Error message shown when the user selects an image that was the wrong resolution/size").arg(selectedImageSize).arg(targetImageSize));
++
++                return;
++            }
++
++            setTargetImage(image);
++        });
++
++        // Handle a request to change the target image that has passed size checks and validation
++        connect(ui->imageTaskImageWidget, &ImageTaskImageWidget::targetImageSet, [this](const QImage& image) {
++            // If the task is running then defer the target image change to the next step, else do it immediately
++            if(isRunning()) {
++                const QImage imageCopy{image.copy()};
++                addPostStepCb([this, imageCopy]() {
++                    Bitmap target = geometrize::image::createBitmap(imageCopy);
++                    switchTargetImage(target);
++                });
++            } else {
++                Bitmap target = geometrize::image::createBitmap(image);
++                switchTargetImage(target);
++            }
++        });
++
++        // Handle runner button presses
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::runStopButtonClicked, [this]() {
++            setShouldKeepStepping(!shouldKeepStepping());
++
++            // Request another image task step if user clicked start here
++            if(shouldKeepStepping()) {
++                stepModel();
++            }
++        });
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::stepButtonClicked, [this]() {
++            stepModel();
++        });
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::clearButtonClicked, [this]() {
++            clearModel();
++        });
++
++        connect(q, &ImageTaskWindow::didLoadSettingsTemplate, [this]() {
++            ui->imageTaskRunnerWidget->syncUserInterface();
++            ui->scriptsWidget->syncUserInterface();
++        });
++
++        // Track how long the task has been in the running state
++        connect(&m_timeRunningTimer, &QTimer::timeout, [this]() {
++            if(isRunning()) {
++                m_timeRunning += m_timeRunningTimerResolutionMs;
++                updateStats();
++            }
++        });
++
++        connect(&m_scriptEngineUpdateTimer, &QTimer::timeout, [this]() {
++            ui->scriptsWidget->evaluateOnTimedUpdateEventScripts();
++        });
++
++        // Before shapes are added, evaluate he pre-add shape callbacks
++        connect(&m_shapes, &geometrize::task::ShapeCollection::signal_beforeAppendShapes, [this](const std::vector<geometrize::ShapeResult>&) {
++            ui->scriptsWidget->evaluateBeforeAddShapeScripts();
++        });
++
++        // After shapes are added, evaluate the post-add shape callbacks and stop conditions
++        connect(&m_shapes, &geometrize::task::ShapeCollection::signal_afterAppendShapes, [this](const std::vector<geometrize::ShapeResult>&) {
++            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
++            engine->set_global(chaiscript::var(m_shapes.back().shape->clone()), "lastAddedShape");
++            engine->set_global(chaiscript::var(m_shapes.back().score), "lastAddedShapeScore");
++            engine->set_global(chaiscript::var(m_shapes.back().color), "lastAddedShapeColor");
++
++            ui->scriptsWidget->evaluateAfterAddShapeScripts();
++
++            if(!ui->scriptsWidget->evaluateStopConditionScripts()) {
++                return;
++            }
++            setShouldKeepStepping(false);
++            ui->scriptsWidget->evaluateOnStopConditionMetScripts();
++            //geometrize::dialog::showImageTaskStopConditionMetMessage(q); // Letting the scripts handle notifying the user
++        });
++
++        // Update the graphical image views after shapes are added.
++        // 节流合帧:高速步进时每步一次全图 Bitmap→QPixmap 上传代价高,改为 33ms 合并窗口,
++        // 到期时按"当时"的任务画面渲染一次,视觉上与逐步刷新无差。
++        // 注:Impl 非 QObject,不能用作 singleShot 的 context receiver;以 QPointer 守护窗口
++        // 存活,窗口销毁后待触发合帧自动失效。
++        connect(&m_shapes, &geometrize::task::ShapeCollection::signal_afterAppendShapes, [this](const std::vector<geometrize::ShapeResult>& shapes) {
++            // ShapeResult 成员为 const(不可赋值),只能追加构造:重建整个待渲染列表
++            m_pendingSceneShapes.reserve(m_pendingSceneShapes.size() + shapes.size());
++            for(const auto& shape : shapes) {
++                m_pendingSceneShapes.emplace_back(shape);
++            }
++            if(!m_sceneUpdatePending) {
++                m_sceneUpdatePending = true;
++                QPointer<ImageTaskWindow> guard{q};
++                QTimer::singleShot(33, [this, guard] {
++                    if(guard.isNull()) {
++                        return;
++                    }
++                    m_sceneUpdatePending = false;
++                    if(m_task == nullptr) {
++                        m_pendingSceneShapes.clear();
++                        return;
++                    }
++                    // 重放在途:此刻位图正被 worker 重写,不作废场景也不读位图,didReplay 会做权威刷新
++                    if(m_replayInFlight) {
++                        m_pendingSceneShapes.clear();
++                        return;
++                    }
++                    const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
++                    m_sceneManager.updateScenes(pixmap, m_pendingSceneShapes);
++                    m_pendingSceneShapes.clear();
++                });
++            }
++        });
++
++        #if defined DATASLINGER_INCLUDED
++        // Send the newly added SVG shape data out to listening clients
++        connect(&m_shapes, &geometrize::task::ShapeCollection::signal_afterAppendShapes, [](const std::vector<geometrize::ShapeResult>& shapes) {
++
++            // Exporting rotated ellipses as polygons, since OpenFL's SVG library can't handle regular rotated SVG ellipse or paths
++            geometrize::exporter::SVGExportOptions options;
++            options.rotatedEllipseExportMode = geometrize::exporter::RotatedEllipseSVGExportMode::POLYGON;
++
++            for(const auto& result : shapes) {
++                geometrize::sendSvgShapeData(geometrize::exporter::getSingleShapeSVGData(result.color, *result.shape, options));
++            }
++        });
++        #endif
++
++        // Update the graphical image views when the number of shapes changes (e.g. when cleared)
++        connect(&m_shapes, &geometrize::task::ShapeCollection::signal_sizeChanged, [this](const std::size_t size) {
++            if(size == 0) {
++                // 清空立即刷新并丢弃待合并帧,防残影
++                m_pendingSceneShapes.clear();
++                m_sceneManager.reset();
++            }
++        });
++
++        // Pass the latest mouse event info to the current image task's script engine
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageHoverMoveEvent, [this](double lastX, double lastY, double x, double y, bool /*ctrlModifier*/) {
++            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
++            engine->set_global(chaiscript::var(lastX), "targetImageLastMouseX");
++            engine->set_global(chaiscript::var(lastY), "targetImageLastMouseY");
++            engine->set_global(chaiscript::var(x), "targetImageMouseX");
++            engine->set_global(chaiscript::var(y), "targetImageMouseY");
++
++            ui->scriptsWidget->evaluateOnMouseMoveEventScripts();
++        });
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMousePressEvent, [this](double x, double y, bool ctrlModifier) {
++            // 区域选择模式:Ctrl+按下开始框选,不喂脚本引擎(旧行为在模式关闭时逐位保留)
++            if(m_regionSelectMode && ctrlModifier && m_task != nullptr && !m_task->isStepping()) {
++                m_regionDragStart = QPointF(x, y);
++                m_regionDragActive = true;
++                return;
++            }
++            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
++            engine->set_global(chaiscript::var(x), "targetImageLastMouseX");
++            engine->set_global(chaiscript::var(y), "targetImageLastMouseY");
++            engine->set_global(chaiscript::var(x), "targetImageMouseX");
++            engine->set_global(chaiscript::var(y), "targetImageMouseY");
++
++            ui->scriptsWidget->evaluateOnMouseDownEventScripts();
++        });
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMouseMoveEvent, [this](double lastX, double lastY, double x, double y, bool /*ctrlModifier*/) {
++            // 区域框选拖拽中:更新预览矩形,不喂脚本引擎
++            if(m_regionDragActive) {
++                m_sceneManager.setPriorityRegionPreviewRect(QRectF(m_regionDragStart, QPointF(x, y)).normalized());
++                return;
++            }
++            // NOTE not triggered currently, hover move events are used instead
++            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
++            engine->set_global(chaiscript::var(lastX), "targetImageLastMouseX");
++            engine->set_global(chaiscript::var(lastY), "targetImageLastMouseY");
++            engine->set_global(chaiscript::var(x), "targetImageMouseX");
++            engine->set_global(chaiscript::var(y), "targetImageMouseY");
++
++            ui->scriptsWidget->evaluateOnMouseMoveEventScripts();
++        });
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMouseReleaseEvent, [this](double x, double y, bool /*ctrlModifier*/) {
++            // 区域框选结束:有效矩形(宽高 > 2 场景px)且未超上限(16)时提交为百分比区域
++            if(m_regionDragActive) {
++                m_regionDragActive = false;
++                m_sceneManager.setPriorityRegionPreviewRect(QRectF()); // 隐藏预览
++                const QRectF rect{QRectF(m_regionDragStart, QPointF(x, y)).normalized()};
++                const auto task = m_task;
++                if(task != nullptr && rect.width() > 2.0 && rect.height() > 2.0) {
++                    auto regions{task->getPreferences().getImageRunnerOptions().priorityRegions};
++                    if(regions.size() < 16) {
++                        const std::uint32_t w{task->getWidth()};
++                        const std::uint32_t h{task->getHeight()};
++                        // 场景像素 → 百分比(与 mapShapeBoundsToImage 同款分母 dim-1)
++                        regions.push_back(geometrize::ImageRunnerPriorityRegionOptions{
++                            100.0 * rect.left() / static_cast<double>(w - 1),
++                            100.0 * rect.top() / static_cast<double>(h - 1),
++                            100.0 * rect.right() / static_cast<double>(w - 1),
++                            100.0 * rect.bottom() / static_cast<double>(h - 1)});
++                        task->getPreferences().setPriorityRegions(regions);
++                        refreshPriorityRegionOverlays();
++                        ui->imageTaskRunnerWidget->syncUserInterface();
++                    }
++                }
++                return;
++            }
++            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
++            engine->set_global(chaiscript::var(x), "targetImageLastMouseX");
++            engine->set_global(chaiscript::var(y), "targetImageLastMouseY");
++            engine->set_global(chaiscript::var(x), "targetImageMouseX");
++            engine->set_global(chaiscript::var(y), "targetImageMouseY");
++
++            ui->scriptsWidget->evaluateOnMouseUpEventScripts();
++        });
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageWheelEvent, [this](double x, double y, int amount, bool /*ctrlModifier*/) {
++            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
++            engine->set_global(chaiscript::var(x), "targetImageLastMouseX");
++            engine->set_global(chaiscript::var(y), "targetImageLastMouseY");
++            engine->set_global(chaiscript::var(x), "targetImageMouseX");
++            engine->set_global(chaiscript::var(y), "targetImageMouseY");
++            engine->set_global(chaiscript::var(amount), "targetImageWheelMoveAmount");
++
++            ui->scriptsWidget->evaluateOnMouseWheelEventScripts();
++        });
++
++        // Pass the latest key event info to the current image task's script engine
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageKeyPressEvent, [this](int key, bool ctrlModifier) {
++            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
++            const std::string keyString = QKeySequence(key).toString().toStdString();
++
++            // Update vars for pressed keys in the engine (cleared on key release)
++            engine->set_global(chaiscript::var(keyString), "targetImageLastKeyDown");
++            engine->set_global(chaiscript::var(true), "targetImageKeyDown_" + keyString);
++            engine->set_global(chaiscript::var(ctrlModifier), "targetImageControlModifierDown");
++
++            // Last pressed key in the engine, not cleared on key release
++            engine->set_global(chaiscript::var(keyString), "targetImageLastKeyDownPersistent");
++
++            ui->scriptsWidget->evaluateOnKeyDownEventScripts();
++        });
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageKeyReleaseEvent, [this](int key, bool ctrlModifier) {
++            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
++            const std::string keyString = QKeySequence(key).toString().toStdString();
++
++            // Update vars for pressed keys in the engine
++            engine->set_global(chaiscript::var(""), "targetImageLastKeyDown");
++            engine->set_global(chaiscript::var(false), "targetImageKeyDown_" + keyString);
++            engine->set_global(chaiscript::var(ctrlModifier), "targetImageControlModifierDown");
++
++            ui->scriptsWidget->evaluateOnKeyUpEventScripts();
++        });
++
++        // Pass the latest tablet event info to the current image task's script engine
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageTabletEvent, [this](const geometrize::scene::CustomTabletEvent& event) {
++            if(!m_task) {
++                return;
++            }
++
++            const geometrize::scene::TabletEventData data = event.getData();
++            chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
++            engine->set_global(chaiscript::var(data), "lastTabletEvent");
++
++            ui->scriptsWidget->evaluateOnPenInputEventScripts();
++
++            try {
++                std::shared_ptr<geometrize::Shape> aoiShape = engine->eval<std::shared_ptr<geometrize::Shape>>("aoi");
++                engine->set_global(chaiscript::var(aoiShape->clone()), "aoi"); // Work around fail to assign shape to shape in the script
++                m_sceneManager.setAreaOfInfluenceShape(*aoiShape);
++            } catch(...) {
++                // The pen input scripts should setup an area of influence shape
++            }
++        });
++
++        // Connect the global pen input proximity event filter signals
++        // Note these are separate from the other tablet events, since they are application-wide
++        // and proximity events don't seem to include useful data e.g. position etc
++        auto& sharedTabletProximityEventFilter = geometrize::getSharedTabletProximityEventFilterInstance();
++        connect(&sharedTabletProximityEventFilter, &geometrize::TabletProximityEventFilter::signal_onTabletEnterProximity, q, [this]() {
++            ui->scriptsWidget->evaluateOnPenProximityEnterEventScripts();
++        });
++        connect(&sharedTabletProximityEventFilter, &geometrize::TabletProximityEventFilter::signal_onTabletLeaveProximity, q, [this]() {
++            ui->scriptsWidget->evaluateOnPenProximityExitEventScripts();
++        });
++
++        /*
++        // TODO do stuff with the area of influence shape, or tell the script engine, when input happens
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onAreaOfInfluenceShapeHoverMoveEvent, [this](const int lastX, const int lastY, const int x, const int y, const bool ctrlModifier) {
++            if(!ctrlModifier) {
++                return;
++            }
++            //translateShape(x - lastX, y - lastY);
++        });
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onAreaOfInfluenceShapeMouseWheelEvent, [this](const int, const int, const double amount, const bool ctrlModifier) {
++            if(!ctrlModifier) {
++                return;
++            }
++            //scaleShape(amount > 0 ? 1.03f : 0.97f);
++        });
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onAreaOfInfluenceShapeKeyPressEvent, [this](const int key, const bool) {
++            if(key == Qt::Key_R) { // Rotate
++                //rotateShape(3);
++            }
++            if(key == Qt::Key_Q) { // Scale down
++                //scaleShape(0.97f);
++            }
++            if(key == Qt::Key_A) { // Scale up
++                //scaleShape(1.03f);
++            }
++        });
++        */
++
++        // Set initial target image opacity
++        const float initialTargetImageOpacity{0};
++        ui->imageTaskImageWidget->setTargetImageOpacity(static_cast<unsigned int>(initialTargetImageOpacity));
++
++        // Start the timer used to track how long the image task has been in the running state
++        m_timeRunningTimer.start(static_cast<int>(m_timeRunningTimerResolutionMs));
++
++        // Start the timer used to regularly update the associated image task's script engine (if any).
++        // 没有任何 timed-update 脚本时不启动轮询,避免空闲时 100ms 空转求值
++        if(ui->scriptsWidget->hasTimedUpdateScripts()) {
++            m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
++        }
++    }
++    ImageTaskWindowImpl& operator=(const ImageTaskWindowImpl&) = delete;
++    ImageTaskWindowImpl(const ImageTaskWindowImpl&) = delete;
++    ~ImageTaskWindowImpl()
++    {
++        // Sets the task in the UI etc to nothing (potentially autosaving stuff etc), then dispose of the task
++        task::ImageTask* lastTask = getImageTask();
++        setImageTask(nullptr);
++
++        if(lastTask != nullptr) {
++            destroyTask(lastTask);
++        }
++    }
++
++    static std::vector<ImageTaskWindow*> getExistingImageTaskWindows()
++    {
++        std::vector<ImageTaskWindow*> windows;
++        const QWidgetList allWidgets = QApplication::allWidgets();
++        for (QWidget* widget : allWidgets) {
++            if(ImageTaskWindow* w = dynamic_cast<ImageTaskWindow*>(widget)) {
++                windows.push_back(w);
++            }
++        }
++        return windows;
++    }
++
++    void close()
++    {
++        q->close();
++    }
++
++    task::ImageTask* getImageTask()
++    {
++        return m_task;
++    }
++
++    void setImageTask(task::ImageTask* task)
++    {
++        task::ImageTask* lastTask{m_task};
++        task::ImageTask* nextTask{task};
++        q->willSwitchImageTask(lastTask, nextTask);
++        m_task = nextTask;
++        q->didSwitchImageTask(lastTask, nextTask);
++    }
++
++    void revealLaunchWindow()
++    {
++        if(common::ui::isLaunchWindowOpen()) {
++            common::ui::bringLaunchWindowToFront();
++        } else {
++            common::ui::openLaunchWindow();
++        }
++    }
++
++    void setConsoleVisibility(const bool visible)
++    {
++        if(ui->actionScript_Console->isChecked() != visible) {
++            ui->actionScript_Console->setChecked(visible);
++        }
++        ui->consoleWidget->setVisible(visible);
++    }
++
++    void setPixmapViewVisibility(const bool visible)
++    {
++        if(ui->actionPixmap_Results_View->isChecked() != visible) {
++            ui->actionPixmap_Results_View->setChecked(visible);
++        }
++
++        m_pixmapView->setVisible(visible);
++        if(visible) {
++            m_sceneManager.fitPixmapSceneInView(*m_pixmapView);
++        }
++    }
++
++    void setVectorViewVisibility(const bool visible)
++    {
++        if(ui->actionVector_Results_View->isChecked() != visible) {
++            ui->actionVector_Results_View->setChecked(visible);
++        }
++
++        m_svgView->setVisible(visible);
++        if(visible) {
++            m_sceneManager.fitVectorSceneInView(*m_svgView);
++        }
++    }
++
++    void loadSettingsTemplate()
++    {
++        const QString path{common::ui::openLoadImageTaskSettingsDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++        loadSettingsTemplate(m_task, path.toStdString());
++    }
++
++    void loadSettingsTemplate(task::ImageTask* task, const std::string& path)
++    {
++        if(task == nullptr) {
++            return; // Can't load settings for a non-existent task
++        }
++        if(path.empty()) {
++            assert(0 && "Auto load path for image task file must not be empty");
++        }
++        task->getPreferences().load(path);
++        emit q->didLoadSettingsTemplate();
++    }
++
++    void saveSettingsTemplate() const
++    {
++        const QString path{common::ui::openSaveImageTaskSettingsDialog(q)};
++        if(path.isEmpty()) {
++            return;
++        }
++        saveSettingsTemplate(m_task, path.toStdString());
++    }
++
++    void saveSettingsTemplate(task::ImageTask* task, const std::string& path) const
++    {
++        if(task == nullptr) {
++            return; // Can't save settings for a non-existent task
++        }
++        if(path.empty()) {
++            assert(0 && "Auto save path for image task file must not be empty");
++        }
++        task->getPreferences().save(path);
++        emit q->didSaveSettingsTemplate();
++    }
++
++    void onLanguageChange()
++    {
++        ui->retranslateUi(q);
++        populateUi();
++    }
++
++    void handleCommand(const geometrize::script::Command& command)
++    {
++        const QString s = QString::fromStdString(command.getCommand());
++
++        if(s == "start") {
++            setShouldKeepStepping(true);
++            stepModel();
++        }
++        if(s == "stop") {
++            setShouldKeepStepping(false);
++        }
++
++        if(s == "click_start_stop_button") {
++            ui->imageTaskRunnerWidget->runStopButtonClicked();
++        }
++        if(s == "click_step_button") {
++            ui->imageTaskRunnerWidget->stepButtonClicked();
++        }
++        if(s == "click_clear_button") {
++            ui->imageTaskRunnerWidget->clearButtonClicked();
++        }
++        if(s == "undo") {
++            undoModel();
++        }
++        if(s == "redo") {
++            redoModel();
++        }
++
++        if(s == "toggle_script_console") {
++            ui->actionScript_Console->toggle();
++        }
++        if(s == "show_script_console") {
++            ui->actionScript_Console->setChecked(true);
++        }
++        if(s == "hide_script_console") {
++            ui->actionScript_Console->setChecked(false);
++        }
++
++        if(s == "toggle_pixmap_view") {
++            ui->actionPixmap_Results_View->toggle();
++        }
++        if(s == "show_pixmap_view") {
++            ui->actionPixmap_Results_View->setChecked(true);
++        }
++        if(s == "hide_pixmap_view") {
++            ui->actionPixmap_Results_View->setChecked(false);
++        }
++
++        if(s == "toggle_vector_view") {
++            ui->actionVector_Results_View->toggle();
++        }
++        if(s == "show_vector_view") {
++            ui->actionVector_Results_View->setChecked(true);
++        }
++        if(s == "hide_vector_view") {
++            ui->actionVector_Results_View->setChecked(false);
++        }
++    }
++
++    void setCommandHandlerName(const std::string& name)
++    {
++        q->setObjectName(QString::fromStdString(name));
++    }
++
++    std::string getCommandHandlerName() const
++    {
++        return q->objectName().toStdString();
++    }
++
++private:
++    void populateUi()
++    {
++        updateStartStopButtonText();
++        updateUndoRedoActions();
++        q->setWindowTitle(geometrize::strings::Strings::getApplicationName());
++    }
++
++    bool isRunning() const
++    {
++        if(!m_task) {
++            return false;
++        }
++        return m_task->isStepping();
++    }
++
++    bool shouldKeepStepping() const
++    {
++        return m_shouldKeepStepping;
++    }
++
++    void setShouldKeepStepping(const bool stepping)
++    {
++        m_shouldKeepStepping = stepping;
++        updateStartStopButtonText();
++        updateUndoRedoActions();
++    }
++
++    void updateStartStopButtonText()
++    {
++        if(!shouldKeepStepping()) {
++            ui->imageTaskRunnerWidget->setRunStopButtonText(tr("Start", "Text on a button that the user presses to make the app start/begin transforming an image into shapes"));
++        } else {
++            ui->imageTaskRunnerWidget->setRunStopButtonText(tr("Stop", "Text on a button that the user presses to make the app stop/pause transforming an image into shapes"));
++        }
++    }
++
++    void stepModel()
++    {
++        m_task->stepModel();
++    }
++
++    void clearModel()
++    {
++        auto task = new geometrize::task::ImageTask(m_task->getDisplayName(), m_task->getTargetMutable());
++        task->setPreferences(m_task->getPreferences());
++        setImageTask(task);
++    }
++
++    // 撤销下限 = 1:index 0 恒为背景矩形(afterAppendShapes 处理器无条件 back(),空列表是既有 UB 点)
++    bool canUndo() const
++    {
++        return m_task != nullptr && !m_task->isStepping() && !shouldKeepStepping()
++            && !m_replayInFlight && !m_redoInFlight && m_shapes.size() > 1;
++    }
++
++    bool canRedo() const
++    {
++        return m_task != nullptr && !m_task->isStepping() && !shouldKeepStepping()
++            && !m_replayInFlight && !m_redoInFlight && !m_redoStack.empty();
++    }
++
++    void undoModel()
++    {
++        if(!canUndo()) {
++            return;
++        }
++        // ShapeResult 含 shared_ptr,拷贝共享所有权零位图拷贝
++        m_redoStack.push_back(m_shapes.back());
++        m_shapes.truncate(m_shapes.size() - 1);
++        m_replayInFlight = true;
++        m_pendingSceneShapes.clear(); // 丢弃在途合帧残影,didReplay 权威刷新
++        updateStats();
++        updateUndoRedoActions();
++        m_task->replayShapes(m_shapes.getShapeVector(), getTaskStartingColor());
++    }
++
++    void redoModel()
++    {
++        if(!canRedo()) {
++            return;
++        }
++        // 走正常 drawShape 全协议:didStep 处理器完成 append/统计/合帧刷新,零新增刷新代码
++        m_redoInFlight = true;
++        m_lastRedrawnShape = m_redoStack.back().shape;
++        const geometrize::ShapeResult result = m_redoStack.back();
++        m_redoStack.pop_back();
++        m_task->drawShape(result.shape, result.color, result.segments);
++    }
++
++    geometrize::rgba getTaskStartingColor() const
++    {
++        const geometrize::preferences::GlobalPreferences& prefs{geometrize::preferences::getGlobalPreferences()};
++        if(prefs.shouldUseCustomImageTaskBackgroundOverrideColor()) {
++            const auto color = prefs.getCustomImageTaskBackgroundOverrideColor();
++            return geometrize::rgba{ static_cast<std::uint8_t>(color[0]), static_cast<std::uint8_t>(color[1]), static_cast<std::uint8_t>(color[2]), static_cast<std::uint8_t>(color[3]) };
++        }
++        return geometrize::commonutil::getAverageImageColor(m_task->getTarget());
++    }
++
++    void updateUndoRedoActions()
++    {
++        ui->actionUndo->setEnabled(canUndo());
++        ui->actionRedo->setEnabled(canRedo());
++        ui->imageTaskRunnerWidget->setUndoRedoButtonsEnabled(canUndo(), canRedo());
++    }
++
++    // 把当前任务的优先区域换算回场景像素坐标显示(pixmap/svg 双场景)
++    void refreshPriorityRegionOverlays()
++    {
++        std::vector<QRectF> rects;
++        if(m_task != nullptr) {
++            const std::uint32_t w{m_task->getWidth()};
++            const std::uint32_t h{m_task->getHeight()};
++            for(const auto& region : m_task->getPreferences().getImageRunnerOptions().priorityRegions) {
++                const double x1{region.xMinPercent / 100.0 * static_cast<double>(w - 1)};
++                const double y1{region.yMinPercent / 100.0 * static_cast<double>(h - 1)};
++                const double x2{region.xMaxPercent / 100.0 * static_cast<double>(w - 1)};
++                const double y2{region.yMaxPercent / 100.0 * static_cast<double>(h - 1)};
++                rects.push_back(QRectF(QPointF((std::min)(x1, x2), (std::min)(y1, y2)), QPointF((std::max)(x1, x2), (std::max)(y1, y2))));
++            }
++        }
++        m_sceneManager.setPriorityRegions(rects);
++    }
++
++    void switchTargetImage(Bitmap& bitmap)
++    {
++        Bitmap& targetBitmap{m_task->getTargetMutable()};
++        targetBitmap = bitmap;
++    }
++
++    void switchCurrentImage(Bitmap& bitmap)
++    {
++        Bitmap& currentBitmap{m_task->getCurrentMutable()};
++        currentBitmap = bitmap;
++    }
++
++    void updateStats()
++    {
++        ui->statsDockContents->setTaskId(m_task->getTaskId());
++        ui->statsDockContents->setImageDimensions(m_task->getWidth(), m_task->getHeight());
++
++        // Note this is "stopped" when !isRunning alone, but this prevents flashing while
++        // the user has it continually adding shapes
++        if(!isRunning() && !shouldKeepStepping()) {
++            ui->statsDockContents->setCurrentStatus(geometrize::dialog::ImageTaskStatsWidget::STOPPED);
++        }
++
++        ui->statsDockContents->setShapeCount(m_shapes.size());
++
++        if(!m_shapes.empty()) {
++            ui->statsDockContents->setSimilarity(m_shapes.back().score * 100.0f);
++        }
++
++        ui->statsDockContents->setTimeRunning(static_cast<int>(m_timeRunning / 1000.0f));
++    }
++
++    void disconnectTask()
++    {
++        if(m_taskPreferencesSetConnection) {
++            disconnect(m_taskPreferencesSetConnection);
++        }
++        if(m_taskWillStepConnection) {
++            disconnect(m_taskWillStepConnection);
++        }
++        if(m_taskDidStepConnection) {
++            disconnect(m_taskDidStepConnection);
++        }
++        if(m_taskDidReplayConnection) {
++            disconnect(m_taskDidReplayConnection);
++        }
++    }
++
++    void setTargetImage(const QImage& image)
++    {
++        ui->imageTaskImageWidget->setTargetImage(image);
++    }
++
++    void addPostStepCb(const std::function<void()>& f)
++    {
++        m_onPostStepCbs.push_back(f);
++    }
++
++    void clearPostStepCbs()
++    {
++        m_onPostStepCbs.clear();
++    }
++
++    void processPostStepCbs()
++    {
++        for(const auto& f : m_onPostStepCbs) {
++            f();
++        }
++        clearPostStepCbs();
++    }
++
++    std::unique_ptr<Ui::ImageTaskWindow> ui{nullptr};
++    ImageTaskWindow* q{nullptr};
++
++    task::ImageTask* m_task{nullptr}; ///> The image task currently set and manipulated via this window
++    QMetaObject::Connection m_taskPreferencesSetConnection{}; ///> Connection for telling the dialog when the image task preferences are set
++    QMetaObject::Connection m_taskWillStepConnection{}; ///> Connection for the window to do work just prior the image task starts a step
++    QMetaObject::Connection m_taskDidStepConnection{}; ///> Connection for the window to do work just after the image task finishes a step
++    QMetaObject::Connection m_taskDidReplayConnection{}; ///> Connection for the window to refresh after an undo replay finishes
++    std::vector<std::function<void()>> m_onPostStepCbs; ///> One-shot callbacks triggered when the image task finishes a step
++
++    // 撤销/重做状态:redo 栈存被撤销的形状(经典双栈语义);重放期间丢弃竞争步进与新渲染帧
++    std::vector<geometrize::ShapeResult> m_redoStack; ///> Shapes undone and available for redo (back = most recently undone)
++    std::shared_ptr<geometrize::Shape> m_lastRedrawnShape; ///> Identity of the shape a pending redo drawShape is drawing
++    bool m_replayInFlight{false}; ///> An undo replay has been dispatched and has not finished yet
++    bool m_redoInFlight{false}; ///> A redo drawShape has been dispatched and its didStep has not returned yet
++
++    // 区域优先(F3.2):Ctrl+拖拽框选状态机;模式勾选是会话操作态,不持久化
++    bool m_regionSelectMode{false}; ///> Whether Ctrl+Drag is currently routed to region selection
++    bool m_regionDragActive{false}; ///> A region drag is in progress
++    QPointF m_regionDragStart; ///> Scene-space start point of the active drag
++
++    geometrize::task::ShapeCollection m_shapes; ///> Collection of shapes added so far
++
++    geometrize::scene::ImageTaskSceneManager m_sceneManager; ///> Manager for scenes containing the pixmap/vector-based representations of the shapes etc
++    geometrize::scene::ImageTaskGraphicsView* m_pixmapView{nullptr}; ///> The view that holds the raster/pixel-based scene
++    geometrize::scene::ImageTaskGraphicsView* m_svgView{nullptr}; ///> The view that holds the vector-based scene
++
++    bool m_shouldKeepStepping{false}; ///> Whether to continually step i.e. whether to start another step after stepping once
++    QTimer m_timeRunningTimer; ///> Timer used to keep track of how long the image task has been in the "running" state
++    float m_timeRunning{0.0f}; ///> Total time that the image task has been in the "running" state
++    const float m_timeRunningTimerResolutionMs{100.0f}; ///> Resolution of the time running timer in milliseconds
++
++    QTimer m_scriptEngineUpdateTimer; ///> Timer used to call an update function on the script engine of the associated image task
++    float m_scriptEngineUpdateTimerResolution{100.0f}; ///> Resolution of the script update timer in milliseconds
++
++    // 场景刷新节流:33ms 合帧期内累积的新形状,到期一次性渲染(见 signal_afterAppendShapes 连接处)
++    bool m_sceneUpdatePending{false};
++    std::vector<geometrize::ShapeResult> m_pendingSceneShapes;
++};
++
++ImageTaskWindow::ImageTaskWindow() :
++    QMainWindow{nullptr},
++    d{std::make_unique<ImageTaskWindow::ImageTaskWindowImpl>(this)}
++{
++}
++
++ImageTaskWindow::~ImageTaskWindow()
++{
++}
++
++std::vector<ImageTaskWindow*> ImageTaskWindow::getExistingImageTaskWindows()
++{
++    return ImageTaskWindowImpl::getExistingImageTaskWindows();
++}
++
++void ImageTaskWindow::handleCommand(const geometrize::script::Command& command)
++{
++    d->handleCommand(command);
++}
++
++std::string ImageTaskWindow::getCommandHandlerName() const
++{
++    return d->getCommandHandlerName();
++}
++
++void ImageTaskWindow::setCommandHandlerName(const std::string& name)
++{
++    d->setCommandHandlerName(name);
++}
++
++task::ImageTask* ImageTaskWindow::getImageTask()
++{
++    return d->getImageTask();
++}
++
++void ImageTaskWindow::setImageTask(task::ImageTask* task)
++{
++    d->setImageTask(task);
++}
++
++void ImageTaskWindow::on_actionExit_triggered()
++{
++    d->close();
++}
++
++void ImageTaskWindow::on_actionLoad_Settings_Template_triggered()
++{
++    d->loadSettingsTemplate();
++}
++
++void ImageTaskWindow::on_actionSave_Settings_Template_triggered()
++{
++    d->saveSettingsTemplate();
++}
++
++void ImageTaskWindow::on_actionReveal_Launch_Window_triggered()
++{
++    d->revealLaunchWindow();
++}
++
++void ImageTaskWindow::changeEvent(QEvent* event)
++{
++    if (event->type() == QEvent::LanguageChange) {
++        d->onLanguageChange();
++    }
++    QMainWindow::changeEvent(event);
++}
++
++}
++
++}

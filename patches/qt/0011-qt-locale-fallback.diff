@@ -1,0 +1,37 @@
+--- upstream/geometrize-app/geometrize/localization/localization.cpp	2026-08-27 13:24:26.116577800 +0800
++++ src/improved-app/geometrize/localization/localization.cpp	2026-08-28 05:35:41.525244200 +0800
+@@ -84,15 +84,28 @@
+     // Remove and destroy old translators
+     purgeTranslators(application);
+ 
+-    // Install the new translators
+-    const auto loadAndAddTranslator = [&application](const QString& file, const QString& directory) {
++    // 组合 locale(如 zh_Latn_US)往往没有一一对应的翻译文件(实际只有 geometrize_zh.qm),
++    // 需自 language+script+country 逐级降级尝试到 language,取首个命中的候选。
++    QStringList localeCandidates{locale};
++    QStringList parts{locale.split("_", Qt::SkipEmptyParts)};
++    while(parts.size() > 1) {
++        parts.removeLast();
++        localeCandidates << parts.join("_");
++    }
++
++    // Install the new translators;每种翻译取降级链上第一个可加载的文件
++    const auto loadAndAddTranslator = [&application](const QStringList& candidates, const QString& prefix, const QString& directory) {
+         QTranslator* translator{new QTranslator()};
+-        translator->load(file, directory);
++        for(const QString& candidate : candidates) {
++            if(translator->load(prefix + candidate + geometrize::getBinaryTranslationFileExtension(), directory)) {
++                break;
++            }
++        }
+         installTranslator(application, translator);
+     };
+-    loadAndAddTranslator(qtTranslationFilePrefix + locale + geometrize::getBinaryTranslationFileExtension(), getQtTranslationResourceDirectory());
+-    loadAndAddTranslator(qtBaseTranslationFilePrefix + locale + geometrize::getBinaryTranslationFileExtension(), getQtTranslationResourceDirectory());
+-    loadAndAddTranslator(geometrizeTranslationFilePrefix + locale + geometrize::getBinaryTranslationFileExtension(), getAppTranslationResourceDirectory());
++    loadAndAddTranslator(localeCandidates, qtTranslationFilePrefix, getQtTranslationResourceDirectory());
++    loadAndAddTranslator(localeCandidates, qtBaseTranslationFilePrefix, getQtTranslationResourceDirectory());
++    loadAndAddTranslator(localeCandidates, geometrizeTranslationFilePrefix, getAppTranslationResourceDirectory());
+ }
+ 
+ QIcon getFlagIconForLocaleCode(const QString& localeCode)

@@ -1,0 +1,38 @@
+--- src/baseline-lib/geometrize/geometrize/shape/shape.h	2026-08-27 13:24:27.423665200 +0800
++++ src/improved-lib/geometrize/geometrize/shape/shape.h	2026-08-27 16:02:01.572974600 +0800
+@@ -2,6 +2,7 @@
+ 
+ #include <functional>
+ #include <memory>
++#include <stdexcept>
+ #include <vector>
+ 
+ #include "../rasterizer/scanline.h"
+@@ -25,6 +26,9 @@
+     std::function<void(geometrize::Shape&)> setup;
+     std::function<void(geometrize::Shape&)> mutate;
+     std::function<std::vector<geometrize::Scanline>(const geometrize::Shape&)> rasterize;
++    // 可选的复用版光栅化:结果写入调用方向量(热路径消堆分配)。未设置时走 rasterize。
++    // 保持独立成员而非改 rasterize 签名,脚本绑定与外部调用方语义零扰动。
++    std::function<void(const geometrize::Shape&, std::vector<geometrize::Scanline>&)> rasterizeInto;
+ 
+     /**
+      * @brief clone Clones the shape, a virtual copy constructor.
+@@ -32,7 +36,7 @@
+      */
+     virtual std::shared_ptr<geometrize::Shape> clone() const
+     {
+-        throw "Unimplemented"; // NOTE not pure virtual because it breaks simple upcast in Chaiscript (and can't see how else to do it)
++        throw std::logic_error("Unimplemented"); // NOTE not pure virtual because it breaks simple upcast in Chaiscript (and can't see how else to do it)
+     }
+ 
+     /**
+@@ -41,7 +45,7 @@
+      */
+     virtual geometrize::ShapeTypes getType() const
+     {
+-        throw "Unimplemented";
++        throw std::logic_error("Unimplemented");
+     }
+ };
+ 

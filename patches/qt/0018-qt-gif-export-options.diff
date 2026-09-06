@@ -1,0 +1,213 @@
+--- upstream/geometrize-app/geometrize/dialog/imagetaskexportwidget.ui	2026-08-27 13:24:25.874542900 +0800
++++ src/improved-app/geometrize/dialog/imagetaskexportwidget.ui	2026-08-29 16:29:57.169960800 +0800
+@@ -72,6 +72,99 @@
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_4">
+       <item>
++       <layout class="QFormLayout" name="gifOptionsFormLayout">
++        <item row="0" column="0">
++         <widget class="QLabel" name="frameStepLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls how many shapes are added between frames of the GIF animation">Shapes Per Frame</string>
++          </property>
++         </widget>
++        </item>
++        <item row="0" column="1">
++         <widget class="QSpinBox" name="frameStepSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>20</number>
++          </property>
++          <property name="value">
++           <number>2</number>
++          </property>
++          <property name="toolTip">
++           <string>Take one animation frame for every N shapes. Higher values make smaller, faster animations.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="0">
++         <widget class="QLabel" name="frameRateLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the playback speed of the GIF animation">Frame Rate (FPS)</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="1">
++         <widget class="QSpinBox" name="frameRateSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>50</number>
++          </property>
++          <property name="value">
++           <number>10</number>
++          </property>
++          <property name="toolTip">
++           <string>Playback speed of the animation in frames per second.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="2" column="0">
++         <widget class="QLabel" name="scaleFactorLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the output resolution multiplier of the GIF animation">Output Scale</string>
++          </property>
++         </widget>
++        </item>
++        <item row="2" column="1">
++         <widget class="QSpinBox" name="scaleFactorSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>8</number>
++          </property>
++          <property name="value">
++           <number>3</number>
++          </property>
++          <property name="toolTip">
++           <string>Output resolution multiplier. Higher values render smoother shapes but export slower.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="3" column="0" colspan="2">
++         <widget class="QCheckBox" name="loopGifCheckbox">
++          <property name="text">
++           <string extracomment="Checkbox that controls whether the GIF animation loops forever">Loop Forever</string>
++          </property>
++          <property name="checked">
++           <bool>true</bool>
++          </property>
++         </widget>
++        </item>
++        <item row="4" column="0" colspan="2">
++         <widget class="QCheckBox" name="endPauseCheckbox">
++          <property name="text">
++           <string extracomment="Checkbox that controls whether the last frame of the GIF animation pauses for two seconds">Pause at End</string>
++          </property>
++          <property name="checked">
++           <bool>true</bool>
++          </property>
++         </widget>
++        </item>
++       </layout>
++      </item>
++      <item>
+        <widget class="QPushButton" name="saveGIFButton">
+         <property name="text">
+          <string extracomment="Text on a button that opens a dialog that allows a user to save a GIF animation image file">Save GIF</string>
+--- upstream/geometrize-app/geometrize/dialog/imagetaskexportwidget.cpp	2026-08-27 13:24:25.933775900 +0800
++++ src/improved-app/geometrize/dialog/imagetaskexportwidget.cpp	2026-08-29 16:32:10.503017800 +0800
+@@ -1,6 +1,7 @@
+ #include "imagetaskexportwidget.h"
+ #include "ui_imagetaskexportwidget.h"
+ 
++#include <algorithm>
+ #include <memory>
+ #include <vector>
+ 
+@@ -145,16 +146,18 @@
+             return;
+         }
+ 
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
++        // 参数与默认值对齐旧行为:每 2 shape 一帧、动态延迟、x3 输出、无限循环、末帧 2 秒
++        const std::size_t frameStep{static_cast<std::size_t>(std::max(1, ui->frameStepSpinBox->value()))};
++        const std::uint32_t frameDelayMs{static_cast<std::uint32_t>(1000 / std::max(1, ui->frameRateSpinBox->value()))};
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->scaleFactorSpinBox->value()))};
++        const std::uint32_t loopCount{ui->loopGifCheckbox->isChecked() ? 0U : 1U};
++        const std::uint32_t endPauseMs{ui->endPauseCheckbox->isChecked() ? 2000U : 0U};
++
+         const std::uint32_t width{m_task->getCurrent().getWidth()};
+         const std::uint32_t height{m_task->getCurrent().getHeight()};
+ 
+-        auto frameSkipPredicate = [](const std::size_t frameIdx) {
+-            if(frameIdx % 2 == 0) {
+-                return true;
+-            }
+-            return false;
++        auto frameSkipPredicate = [frameStep](const std::size_t frameIdx) {
++            return frameIdx % frameStep != 0; // 保留每第 N 个形状处取帧
+         };
+ 
+         geometrize::exporter::exportGIF(
+@@ -164,7 +167,10 @@
+             width * scaleFactor,
+             height * scaleFactor,
+             frameSkipPredicate,
+-            path.toStdString());
++            path.toStdString(),
++            frameDelayMs,
++            loopCount,
++            endPauseMs);
+     }
+ 
+     void saveHTML5WebpageButton() const
+--- upstream/geometrize-app/geometrize/exporter/gifexporter.h	2026-08-27 13:24:26.030146000 +0800
++++ src/improved-app/geometrize/exporter/gifexporter.h	2026-08-29 16:30:43.521828200 +0800
+@@ -25,7 +25,12 @@
+  * @param inputHeight The height of the canvas each frame will be rendered to.
+  * @param outputWidth The width of the image each frame will be rasterized into.
+  * @param outputHeight The height of the image each frame will be rasterized into.
++ * @param frameSkipPredicate Returns true if the frame at the given index should be skipped.
+  * @param filePath The full path to the GIF image file target (include the filename and .gif extension).
++ * @param frameDelayMs Fixed delay between frames in milliseconds; 0 keeps the legacy dynamic
++ * curve (1000/(i+1), floored at 20ms — more shapes means faster playback).
++ * @param loopCount How many times the animation loops before stopping; 0 loops forever.
++ * @param endPauseMs Extra delay on the final frame in milliseconds; 0 adds no pause.
+  * @return True if the GIF was saved, else false.
+  */
+ bool exportGIF(
+@@ -35,7 +40,10 @@
+         std::uint32_t outputWidth,
+         std::uint32_t outputHeight,
+         const std::function<bool(std::size_t)>& frameSkipPredicate,
+-        const std::string& filePath);
++        const std::string& filePath,
++        std::uint32_t frameDelayMs = 0,
++        std::uint32_t loopCount = 0,
++        std::uint32_t endPauseMs = 2000);
+ 
+ }
+ 
+--- upstream/geometrize-app/geometrize/exporter/gifexporter.cpp	2026-08-27 13:24:26.036701800 +0800
++++ src/improved-app/geometrize/exporter/gifexporter.cpp	2026-08-29 16:31:16.787048200 +0800
+@@ -84,10 +84,14 @@
+         std::uint32_t outputWidth,
+         std::uint32_t outputHeight,
+         const std::function<bool(std::size_t)>& frameSkipPredicate,
+-        const std::string& filePath)
++        const std::string& filePath,
++        const std::uint32_t frameDelayMs,
++        const std::uint32_t loopCount,
++        const std::uint32_t endPauseMs)
+ {
++    // loopCount=0 为 GIF 语义的无限循环,BurstLinker 直接透传
+     blk::BurstLinker gif;
+-    if(!gif.init(filePath.c_str(), outputWidth, outputHeight, 0, std::max(1U, std::thread::hardware_concurrency()))) {
++    if(!gif.init(filePath.c_str(), outputWidth, outputHeight, loopCount, std::max(1U, std::thread::hardware_concurrency()))) {
+         assert(0 && "Failed to initialize BurstLinker GIF export");
+         return false;
+     }
+@@ -100,9 +104,13 @@
+             continue;
+         }
+ 
+-        std::uint32_t delayMs = i == 0 ? 0 : std::max(20, static_cast<std::int32_t>(1000 / (i + 1)));
+-        if(i == data.size() - 1U) {
+-            delayMs = 2000; // Extra delay at end of animation
++        // 固定帧率模式:统一延迟(下限 20ms,GIF 播放器对更短延迟的兼容性差);
++        // frameDelayMs=0 保持动态曲线旧行为(帧序号越大延迟越短)
++        std::uint32_t delayMs = (frameDelayMs > 0)
++            ? std::max(20U, frameDelayMs)
++            : (i == 0 ? 0U : std::max(20, static_cast<std::int32_t>(1000 / (i + 1))));
++        if(endPauseMs > 0 && i == data.size() - 1U) {
++            delayMs = endPauseMs; // Extra delay at end of animation
+         }
+ 
+         const std::vector<geometrize::ShapeResult> shapes(data.begin(), data.begin() + i);

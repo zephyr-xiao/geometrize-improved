@@ -1,0 +1,51 @@
+@@ -1,4 +1,7 @@
+ #include "commonutil.h"
++
++#include "core/errorweightmap.h"
++#include "runner/imagerunneroptions.h"
+ 
+ #include <algorithm>
+ #include <cassert>
+@@ -63,7 +66,8 @@
+ {
+     const auto& trimmedScanlines = geometrize::trimScanlines(scanlines, 0, 0, image.getWidth(), image.getHeight());
+     for(const geometrize::Scanline& scanline : trimmedScanlines) {
+-        for(int x = scanline.x1; x < scanline.x2; x++) {
++        // 闭区间遍历与库内其余扫描线遍历一致(上游 x < x2 漏检末像素)
++        for(int x = scanline.x1; x <= scanline.x2; x++) {
+             if(image.getPixel(x, scanline.y).a < minAlpha) {
+                 return true;
+             }
+@@ -101,7 +105,32 @@
+     return std::make_tuple(xMin, yMin, xMax, yMax);
+ }
+ 
++std::vector<geometrize::core::RegionRect> mapPriorityRegionsToImage(const std::vector<geometrize::ImageRunnerPriorityRegionOptions>& regions, const geometrize::Bitmap& image)
++{
++    std::vector<geometrize::core::RegionRect> mapped;
++    mapped.reserve(regions.size());
++    for(const geometrize::ImageRunnerPriorityRegionOptions& region : regions) {
++        const double xMinPx = region.xMinPercent / 100.0 * static_cast<double>(image.getWidth() - 1);
++        const double yMinPx = region.yMinPercent / 100.0 * static_cast<double>(image.getHeight() - 1);
++        const double xMaxPx = region.xMaxPercent / 100.0 * static_cast<double>(image.getWidth() - 1);
++        const double yMaxPx = region.yMaxPercent / 100.0 * static_cast<double>(image.getHeight() - 1);
++
++        // min/max 归一化(用户可能反着拖)+ clamp 图界,公式与 mapShapeBoundsToImage 同款
++        const std::int32_t xMin = commonutil::clamp(static_cast<std::int32_t>(std::round((std::min)(xMinPx, xMaxPx))), 0, static_cast<std::int32_t>(image.getWidth() - 1));
++        const std::int32_t yMin = commonutil::clamp(static_cast<std::int32_t>(std::round((std::min)(yMinPx, yMaxPx))), 0, static_cast<std::int32_t>(image.getHeight() - 1));
++        const std::int32_t xMax = commonutil::clamp(static_cast<std::int32_t>(std::round((std::max)(xMinPx, xMaxPx))), 0, static_cast<std::int32_t>(image.getWidth() - 1));
++        const std::int32_t yMax = commonutil::clamp(static_cast<std::int32_t>(std::round((std::max)(yMinPx, yMaxPx))), 0, static_cast<std::int32_t>(image.getHeight() - 1));
++
++        // 退化矩形(映射后不足 2px)跳过:无引导价值还占配额
++        if(xMax - xMin < 1 || yMax - yMin < 1) {
++            continue;
++        }
++        mapped.push_back(geometrize::core::RegionRect{ xMin, yMin, xMax, yMax });
++    }
++    return mapped;
+ }
+ 
+ }
+ 
++}
++

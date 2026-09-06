@@ -1,0 +1,818 @@
+@@ -1,4 +1,5 @@
+-<TS language="zh" version="2.1">
++<?xml version='1.0' encoding='utf-8'?>
++<TS version="2.1" language="zh">
+ <context>
+     <name>AboutDialog</name>
+     <message>
+@@ -59,19 +60,6 @@
+     </message>
+ </context>
+ <context>
+-    <name>FolderSelectionWidget</name>
+-    <message>
+-        <source>Folder Name</source>
+-        <extracomment>A text label next to a button that opens a dialog which allows the user to select a folder</extracomment>
+-        <translation>文件夹名称</translation>
+-    </message>
+-    <message>
+-        <source>Select Folder</source>
+-        <extracomment>Text on a button that opens a folder selection dialog</extracomment>
+-        <translation>选择文件夹</translation>
+-    </message>
+-</context>
+-<context>
+     <name>GlobalPreferencesDialog</name>
+     <message>
+         <source>Global Preferences</source>
+@@ -150,7 +138,9 @@
+     </message>
+     <message>
+         <source>Image Geometrizer Settings</source>
+-        <extracomment>Title for the app settings section that contains options that affect the area of the app that turns images into shapes (the image geometrizer)</extracomment>
++        <extracomment>Title for the image geometrize settings section. Settings in this section are used when a task for transforming an image into shapes is created
++----------
++Title for the app settings section that contains options that affect the area of the app that turns images into shapes (the image geometrizer)</extracomment>
+         <translation>图像几何化设置</translation>
+     </message>
+     <message>
+@@ -183,6 +173,44 @@
+         <extracomment>A text label next to a value that describes the maximum number of CPU threads the computer can use when recreating an image using shapes</extracomment>
+         <translation>每张图像最大线程</translation>
+     </message>
++    <message>
++        <source>Loading &amp; Saving</source>
++        <translation>加载与保存</translation>
++    </message>
++    <message>
++        <source>Use custom starting background color for image</source>
++        <extracomment>Label text for a checkbox option that controls whether a custom background color (e.g. red, yellow, blue) is set when initially opening an image task</extracomment>
++        <translation>为图像使用自定义初始背景色</translation>
++    </message>
++    <message>
++        <source>Replace alpha channel in target images</source>
++        <extracomment>Label text for a checkbox option that controls whether a custom color (e.g. red, yellow, blue) is used to replace the alpha channel of the target image when opening an image task</extracomment>
++        <translation>替换目标图像的 alpha 通道</translation>
++    </message>
++    <message>
++        <source>Autoloading &amp; Autosaving</source>
++        <extracomment>Title text for a section of app settings relating to automatic loading/saving of preferences</extracomment>
++        <translation>自动加载与自动保存</translation>
++    </message>
++    <message>
++        <source>Autoloading</source>
++        <extracomment>Title for the on startup section of app settings. Settings in this section are applied when the app launches or first starts up</extracomment>
++        <translation>自动加载</translation>
++    </message>
++    <message>
++        <source>Automatically restore saved image task settings</source>
++        <extracomment>Label text for a checkbox option that controls whether the application automatically restores saved settings when opening a task for geometrizing an image</extracomment>
++        <translation>自动恢复已保存的图像任务设置</translation>
++    </message>
++    <message>
++        <source>Autosaving</source>
++        <translation>自动保存</translation>
++    </message>
++    <message>
++        <source>Automatically save image task settings</source>
++        <extracomment>Label text for a checkbox option that controls whether the application automatically saves settings when closing a task for geometrizing an image (ready to restore the settings later)</extracomment>
++        <translation>自动保存图像任务设置</translation>
++    </message>
+ </context>
+ <context>
+     <name>ImageTaskExportWidget</name>
+@@ -192,6 +220,46 @@
+         <translation>导出图像</translation>
+     </message>
+     <message>
++        <source>Shapes Per Frame</source>
++        <extracomment>Label for the spinner that controls how many shapes are added between frames of the GIF animation</extracomment>
++        <translation>每帧形状数</translation>
++    </message>
++    <message>
++        <source>Frame Rate (FPS)</source>
++        <extracomment>Label for the spinner that controls the playback speed of the GIF animation</extracomment>
++        <translation>帧率 (FPS)</translation>
++    </message>
++    <message>
++        <source>Output Scale</source>
++        <extracomment>Label for the spinner that controls the output resolution multiplier of the GIF animation</extracomment>
++        <translation>输出倍率</translation>
++    </message>
++    <message>
++        <source>Loop Forever</source>
++        <extracomment>Checkbox that controls whether the GIF animation loops forever</extracomment>
++        <translation>循环播放</translation>
++    </message>
++    <message>
++        <source>Pause at End</source>
++        <extracomment>Checkbox that controls whether the last frame of the GIF animation pauses for two seconds</extracomment>
++        <translation>末帧停顿</translation>
++    </message>
++    <message>
++        <source>Take one animation frame for every N shapes. Higher values make smaller, faster animations.</source>
++        <extracomment>Tooltip for the shapes per frame spinner</extracomment>
++        <translation>每添加 N 个形状取一帧。数值越大,动画越小、导出越快。</translation>
++    </message>
++    <message>
++        <source>Playback speed of the animation in frames per second.</source>
++        <extracomment>Tooltip for the frame rate spinner</extracomment>
++        <translation>动画播放速度(帧每秒)。</translation>
++    </message>
++    <message>
++        <source>Output resolution multiplier. Higher values render smoother shapes but export slower.</source>
++        <extracomment>Tooltip for the output scale spinner</extracomment>
++        <translation>输出分辨率倍率。数值越大形状边缘越平滑,但导出更慢。</translation>
++    </message>
++    <message>
+         <source>Save Image</source>
+         <extracomment>Text on a button that opens a dialog that allows the user to save an image file</extracomment>
+         <translation>保存图像</translation>
+@@ -341,19 +409,172 @@
+         <source>Clear</source>
+         <extracomment>Text on a button that clears/resets the results of a task back to a starting value when pressed</extracomment>
+         <translation>清除</translation>
+-    </message>
+-</context>
+-<context>
+-    <name>ImageTaskScriptPanel</name>
+-    <message>
+-        <source>Script Editor</source>
++    </message>    <message>
++        <source>Undo</source>
++        <extracomment>Text on a button that removes the most recently added shape from the task when pressed</extracomment>
++        <translation>撤销</translation>
++    </message>
++    <message>
++        <source>Redo</source>
++        <extracomment>Text on a button that re-adds the most recently undone shape to the task when pressed</extracomment>
++        <translation>重做</translation>
++    </message>
++
++    <message>
++        <source>Use Shape Bounding Area</source>
++        <translation>使用形状包围区域</translation>
++    </message>
++    <message>
++        <source>Pyramid Search (Fast)</source>
++        <extracomment>Algorithm enhancement toggle: hill-climb evaluation on a half-resolution image</extracomment>
++        <translation>金字塔搜索(快速)</translation>
++    </message>
++    <message>
++        <source>Adaptive Mutation Step</source>
++        <extracomment>Algorithm enhancement toggle: 1/5 success rule step size adaptation</extracomment>
++        <translation>自适应变异步长</translation>
++    </message>
++    <message>
++        <source>Per-Shape Alpha Search</source>
++        <extracomment>Algorithm enhancement toggle: search several opacity levels per shape</extracomment>
++        <translation>逐形状透明度搜索</translation>
++    </message>
++    <message>
++        <source>Evaluate hill-climbing candidates on a half-resolution image. Much faster on large images, output differs from the standard search.</source>
++        <extracomment>Tooltip for the pyramid search toggle</extracomment>
++        <translation>在半分辨率图上评估爬山候选。大图上大幅提速,输出与标准搜索不同。</translation>
++    </message>
++    <message>
++        <source>Shrink the mutation step when candidates keep failing, grow it back on successes (1/5 success rule). Better quality per step, slower.</source>
++        <extracomment>Tooltip for the adaptive step toggle</extracomment>
++        <translation>变异连续失败时收缩步长、连续成功时回升(1/5 成功法则)。同步数质量更好,速度更慢。</translation>
++    </message>
++    <message>
++        <source>Try several opacity levels per shape and keep the best. Better quality per step, much slower.</source>
++        <extracomment>Tooltip for the alpha search toggle</extracomment>
++        <translation>对每个形状尝试多个透明度档位并取最优。同步数质量更好,速度明显更慢。</translation>
++    </message>
++    <message>
++        <source>Error-Guided Shape Placement</source>
++        <extracomment>Algorithm enhancement toggle: sample new shape centers from the error map</extracomment>
++        <translation>误差图引导形状放置</translation>
++    </message>
++    <message>
++        <source>Place new shapes where the error is highest instead of uniformly at random. Helps most with low budgets (few candidates or mutations).</source>
++        <extracomment>Tooltip for the error guide toggle</extracomment>
++        <translation>新形状优先放置在误差最高处而非均匀随机。低预算(少候选/少变异)时收益最大。</translation>
++    </message>
++</context>
++<context>
++    <name>ImageTaskScriptingWidget</name>
++    <message>
++        <source>Form</source>
++        <translation>窗体</translation>
++    </message>
++    <message>
++        <source>Edit Shape Creation/Mutation Scripts</source>
++        <translation>编辑形状生成/变异脚本</translation>
++    </message>
++    <message>
++        <source>Add And Edit Custom Scripts</source>
++        <translation>添加并编辑自定义脚本</translation>
++    </message>
++    <message>
++        <source>Before Step</source>
++        <translation>步进前</translation>
++    </message>
++    <message>
++        <source>After Step</source>
++        <translation>步进后</translation>
++    </message>
++    <message>
++        <source>Stop Condition</source>
++        <translation>停止条件</translation>
++    </message>
++    <message>
++        <source>On Stop Condition Met</source>
++        <translation>停止条件达成时</translation>
++    </message>
++    <message>
++        <source>Add Shape Precondition</source>
++        <translation>添加形状前条件</translation>
++    </message>
++    <message>
++        <source>Before Add Shape</source>
++        <translation>添加形状前</translation>
++    </message>
++    <message>
++        <source>After Add Shape</source>
++        <translation>添加形状后</translation>
++    </message>
++    <message>
++        <source>On Scene Pen Input</source>
++        <translation>场景手写笔输入时</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Enter</source>
++        <translation>手写笔临近进入时</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Exit</source>
++        <translation>手写笔临近离开时</translation>
++    </message>
++    <message>
++        <source>On Key Down</source>
++        <translation>按键按下时</translation>
++    </message>
++    <message>
++        <source>On Key Up</source>
++        <translation>按键抬起时</translation>
++    </message>
++    <message>
++        <source>On Mouse Down</source>
++        <translation>鼠标按下时</translation>
++    </message>
++    <message>
++        <source>On Mouse Up</source>
++        <translation>鼠标抬起时</translation>
++    </message>
++    <message>
++        <source>On Mouse Move</source>
++        <translation>鼠标移动时</translation>
++    </message>
++    <message>
++        <source>On Mouse Wheel</source>
++        <translation>鼠标滚轮时</translation>
++    </message>
++    <message>
++        <source>On Update</source>
++        <translation>定时更新时</translation>
++    </message>
++    <message>
++        <source>Rescan Scripts</source>
++        <translation>重新扫描脚本</translation>
++    </message>
++    <message>
++        <source>Clear Scripts</source>
++        <translation>清空脚本</translation>
++    </message>
++</context>
++<context>
++    <name>ImageTaskShapeScriptingPanel</name>
++    <message>
++        <source>Shape Script Editor</source>
+         <extracomment>Title of a window containing text editor panels for editing scripts. Scripts are pieces of code that are used to control how the app turns images into shapes</extracomment>
+-        <translation>脚本编辑器</translation>
++        <translation>形状脚本编辑器</translation>
+     </message>
+     <message>
+         <source>Scripting Engine Enabled</source>
+         <extracomment>Text next to a checkbox that enables or disables the scripting engine when pressed</extracomment>
+-        <translation>脚本引擎已启动</translation>
++        <translation>启用脚本引擎</translation>
++    </message>
++    <message>
++        <source>Preset Scripts</source>
++        <translation>预设脚本</translation>
++    </message>
++    <message>
++        <source>Rescan Custom Scripts</source>
++        <translation>重新扫描自定义脚本</translation>
+     </message>
+     <message>
+         <source>Reset Scripting Engine</source>
+@@ -397,6 +618,21 @@
+ <context>
+     <name>ImageTaskWindow</name>
+     <message>
++        <source>Edit</source>
++        <extracomment>The title of the Edit menu that contains commands relating to editing the task, such as undo and redo</extracomment>
++        <translation>编辑</translation>
++    </message>
++    <message>
++        <source>Undo</source>
++        <extracomment>Text on a menu item that removes the most recently added shape from the task when pressed</extracomment>
++        <translation>撤销</translation>
++    </message>
++    <message>
++        <source>Redo</source>
++        <extracomment>Text on a menu item that re-adds the most recently undone shape to the task when pressed</extracomment>
++        <translation>重做</translation>
++    </message>
++    <message>
+         <source>File</source>
+         <extracomment>The title of the File menu that contains commands relating to the handling of files, such as open, save, print, etc</extracomment>
+         <translation>文件</translation>
+@@ -466,6 +702,10 @@
+         <extracomment>Text on a menu item that shows or hides a window containing a vector-based (SVG) graphic of the shapes the app has created</extracomment>
+         <translation>矢量图形视图</translation>
+     </message>
++    <message>
++        <source>Scripts</source>
++        <translation>脚本</translation>
++    </message>
+ </context>
+ <context>
+     <name>LanguageSelectWidget</name>
+@@ -488,6 +728,16 @@
+         <translation>打开图像</translation>
+     </message>
+     <message>
++        <source>Processing Resolution</source>
++        <extracomment>Label next to a combo box that selects the maximum processing resolution for opened images. Images larger than the limit are proportionally downscaled (uic retranslateUi uses this plain-class-name context)</extracomment>
++        <translation>处理分辨率上限</translation>
++    </message>
++    <message>
++        <source>Images with a side longer than the selected limit are proportionally downscaled before processing</source>
++        <extracomment>Tooltip explaining that images with a side longer than the selected limit are proportionally downscaled before processing</extracomment>
++        <translation>单边超过所选上限的图像,会在处理前按比例缩小到限内</translation>
++    </message>
++    <message>
+         <source>Open Link</source>
+         <extracomment>Text on a button that opens a dialog that allows the user to enter a website link, which is then downloaded</extracomment>
+         <translation>打开链接</translation>
+@@ -498,6 +748,10 @@
+         <translation>运行脚本</translation>
+     </message>
+     <message>
++        <source>Open Task Queue</source>
++        <translation>打开任务队列</translation>
++    </message>
++    <message>
+         <source>Recent</source>
+         <extracomment>Title of a section that contains a list of files and items the user recently opened</extracomment>
+         <translation>最近</translation>
+@@ -580,6 +834,10 @@
+         <extracomment>Title of the window that contains legal/license information about the software</extracomment>
+         <translation>许可信息</translation>
+     </message>
++    <message>
++        <source>RangeSlider</source>
++        <translation>范围滑块</translation>
++    </message>
+ </context>
+ <context>
+     <name>OpenUrlDialog</name>
+@@ -595,6 +853,17 @@
+     </message>
+ </context>
+ <context>
++    <name>QObject</name>
++    <message>
++        <source>Stop Condition Met</source>
++        <translation>停止条件已达成</translation>
++    </message>
++    <message>
++        <source>Stop condition for geometrizing was met</source>
++        <translation>几何化的停止条件已达成</translation>
++    </message>
++</context>
++<context>
+     <name>QWidget</name>
+     <message>
+         <source>Open Image</source>
+@@ -696,6 +965,11 @@
+         <comment>Title on a dialog that allows the user to select an image file</comment>
+         <translation>选择图像</translation>
+     </message>
++    <message>
++        <source>Select Folder</source>
++        <comment>Title on a dialog that allows the user to select a folder</comment>
++        <translation>选择文件夹</translation>
++    </message>
+ </context>
+ <context>
+     <name>RunScriptDialog</name>
+@@ -747,17 +1021,98 @@
+ <context>
+     <name>ScriptEditorWidget</name>
+     <message>
+-        <source>Apply</source>
+-        <extracomment>Text on a button that applies an app settings change when pressed</extracomment>
+-        <translation>应用</translation>
+-    </message>
+-    <message>
+         <source>Reset</source>
+         <extracomment>Text on a button that resets an app setting to a default value when pressed</extracomment>
+         <translation>重设</translation>
+     </message>
+ </context>
+ <context>
++    <name>TaskQueueWindow</name>
++    <message>
++        <source>Drop image files onto the area below to batch process them via a script</source>
++        <extracomment>Instructions to the user explaining how to add items to the task queue list, by dragging items into a list below this text</extracomment>
++        <translation>将图像文件拖放到下方区域,通过脚本批量处理</translation>
++    </message>
++    <message>
++        <source>Run All</source>
++        <extracomment>Text on a button that starts running the tasks from the task queue when pressed</extracomment>
++        <translation>全部运行</translation>
++    </message>
++    <message>
++        <source>Clear</source>
++        <extracomment>Text on a button that removes any queued up tasks from the task queue in the user interface</extracomment>
++        <translation>清空</translation>
++    </message>
++    <message>
++        <source>Close Open Windows</source>
++        <translation>关闭已打开的窗口</translation>
++    </message>
++    <message>
++        <source>Select Script</source>
++        <translation>选择脚本</translation>
++    </message>
++    <message>
++        <source>File</source>
++        <extracomment>The title of the File menu that contains commands relating to the handling of files, such as open, save, print, etc</extracomment>
++        <translation>文件</translation>
++    </message>
++    <message>
++        <source>Clear Recent Items</source>
++        <extracomment>Text on a menu item that clears a list of recently loaded files when pressed</extracomment>
++        <translation>清空最近项目</translation>
++    </message>
++    <message>
++        <source>Exit</source>
++        <extracomment>Text on a menu item that closes the window when pressed</extracomment>
++        <translation>退出</translation>
++    </message>
++    <message>
++        <source>Tutorials</source>
++        <extracomment>Text on a menu item that opens the tutorials page when pressed</extracomment>
++        <translation>教程</translation>
++    </message>
++    <message>
++        <source>Support</source>
++        <extracomment>Text on a menu item that opens the customer support/help page when pressed</extracomment>
++        <translation>支持</translation>
++    </message>
++    <message>
++        <source>About</source>
++        <extracomment>Text on a menu item that opens the About page with information about the app when pressed</extracomment>
++        <translation>关于</translation>
++    </message>
++    <message>
++        <source>Script Console</source>
++        <extracomment>Text on a menu item that shows or hides the script console when pressed</extracomment>
++        <translation>脚本控制台</translation>
++    </message>
++    <message>
++        <source>Global Preferences</source>
++        <extracomment>Text on a menu item that opens the application-wide/global preferences page</extracomment>
++        <translation>全局偏好设置</translation>
++    </message>
++    <message>
++        <source>Load Global Preferences</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to load a file containing application-wide/global preferences page</extracomment>
++        <translation>加载全局偏好设置</translation>
++    </message>
++    <message>
++        <source>Save Global Preferences</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to save a file containing the current application-wide/global preferences page</extracomment>
++        <translation>保存全局偏好设置</translation>
++    </message>
++    <message>
++        <source>Load Task Queue Settings</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to load a file containing settings instructing the computer how to geometrize a group of queued up images</extracomment>
++        <translation>加载任务队列设置</translation>
++    </message>
++    <message>
++        <source>Save Task Queue Settings</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to save a file containing settings instructing the computer how to geometrize a group of queued up images</extracomment>
++        <translation>保存任务队列设置</translation>
++    </message>
++</context>
++<context>
+     <name>WelcomeWindow</name>
+     <message>
+         <source>Welcome to Geometrize. Watch the video tutorials below to learn the basics.</source>
+@@ -807,6 +1162,13 @@
+     </message>
+ </context>
+ <context>
++    <name>geometrize::dialog::GlobalPreferencesDialog</name>
++    <message>
++        <source>Color Picker</source>
++        <translation>取色器</translation>
++    </message>
++</context>
++<context>
+     <name>geometrize::dialog::ImageTaskExportWidget</name>
+     <message>
+         <source>Failed to run exporter</source>
+@@ -820,6 +1182,88 @@
+     </message>
+ </context>
+ <context>
++    <name>geometrize::dialog::ImageTaskScriptingWidget</name>
++    <message>
++        <source>Before Step Callback</source>
++        <translation>步进前回调</translation>
++    </message>
++    <message>
++        <source>After Step Callback</source>
++        <translation>步进后回调</translation>
++    </message>
++    <message>
++        <source>Custom Stop Condition</source>
++        <translation>自定义停止条件</translation>
++    </message>
++    <message>
++        <source>On Stop Condition Met Callback</source>
++        <translation>停止条件达成时回调</translation>
++    </message>
++    <message>
++        <source>Add Shape Precondition</source>
++        <translation>添加形状前条件</translation>
++    </message>
++    <message>
++        <source>Before Add Shape Callback</source>
++        <translation>添加形状前回调</translation>
++    </message>
++    <message>
++        <source>After Add Shape Callback</source>
++        <translation>添加形状后回调</translation>
++    </message>
++    <message>
++        <source>On Pen Input Callback</source>
++        <translation>手写笔输入回调</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Enter Callback</source>
++        <translation>手写笔临近进入回调</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Exit Callback</source>
++        <translation>手写笔临近离开回调</translation>
++    </message>
++    <message>
++        <source>On Key Down Callback</source>
++        <translation>按键按下回调</translation>
++    </message>
++    <message>
++        <source>On Key Up Callback</source>
++        <translation>按键抬起回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Down Callback</source>
++        <translation>鼠标按下回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Up Callback</source>
++        <translation>鼠标抬起回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Move Callback</source>
++        <translation>鼠标移动回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Wheel Callback</source>
++        <translation>鼠标滚轮回调</translation>
++    </message>
++    <message>
++        <source>On Timed Update Callback</source>
++        <translation>定时更新回调</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::ImageTaskShapeScriptingPanel</name>
++    <message>
++        <source>Default Scripts</source>
++        <translation>默认脚本</translation>
++    </message>
++    <message>
++        <source>Area Focus Scripts</source>
++        <translation>区域聚焦脚本</translation>
++    </message>
++</context>
++<context>
+     <name>geometrize::dialog::ImageTaskStatsWidget</name>
+     <message>
+         <source>Idle</source>
+@@ -868,6 +1312,56 @@
+ <context>
+     <name>geometrize::dialog::LaunchWindow</name>
+     <message>
++        <source>Processing Resolution</source>
++        <extracomment>Label next to a combo box that selects the maximum processing resolution for opened images. Images larger than the limit are proportionally downscaled</extracomment>
++        <translation>处理分辨率上限</translation>
++    </message>
++    <message>
++        <source>Images with a side longer than the selected limit are proportionally downscaled before processing</source>
++        <extracomment>Tooltip explaining that images with a side longer than the selected limit are proportionally downscaled before processing</extracomment>
++        <translation>单边超过所选上限的图像,会在处理前按比例缩小到限内</translation>
++    </message>
++    <message>
++        <source>Suitable for high-resolution sources, but each step is significantly slower and memory usage is higher</source>
++        <extracomment>Tooltip for the 4096 resolution option, warning about slower processing and higher memory usage</extracomment>
++        <translation>适合高分辨率原图,但单步明显更慢、内存占用更高</translation>
++    </message>
++    <message>
++        <source>Process images at their original size</source>
++        <extracomment>Tooltip for the unlimited resolution option</extracomment>
++        <translation>按原图尺寸处理,不做缩放</translation>
++    </message>
++    <message>
++        <source>Unlimited</source>
++        <extracomment>Combo box item that disables resolution capping, processing images at their original size</extracomment>
++        <translation>无限制</translation>
++    </message>
++    <message>
++        <source>Custom</source>
++        <extracomment>Combo box item shown when the current resolution limit does not match any preset, e.g. set via the global preferences dialog</extracomment>
++        <translation>自定义</translation>
++    </message>
++    <message>
++        <source>256 × 256</source>
++        <translation>256 × 256</translation>
++    </message>
++    <message>
++        <source>512 × 512</source>
++        <translation>512 × 512</translation>
++    </message>
++    <message>
++        <source>1024 × 1024</source>
++        <translation>1024 × 1024</translation>
++    </message>
++    <message>
++        <source>2048 × 2048</source>
++        <translation>2048 × 2048</translation>
++    </message>
++    <message>
++        <source>4096 × 4096</source>
++        <translation>4096 × 4096</translation>
++    </message>
++    <message>
+         <source>Get more online</source>
+         <comment>Text on a button the user presses to open a page containing more resources for using the app, such as extra images, information and help</comment>
+         <translation>在线获取更多</translation>
+@@ -884,7 +1378,19 @@
+     </message>
+ </context>
+ <context>
+-    <name>geometrize::dialog::RecentItemWidget</name>
++    <name>geometrize::dialog::ScriptConsole</name>
++    <message>
++        <source>Type 'help' in console for a list of commands</source>
++        <comment>Instructional text shown in the command/scripting console. The 'help' string should not be translated</comment>
++        <translation>在控制台中输入“help”以获取命令列表</translation>
++    </message>
++    <message>
++        <source>No script engine is set up on this console, commands won't be handled</source>
++        <translation>此控制台未设置脚本引擎,命令将不会被处理</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::TaskItemWidget</name>
+     <message>
+         <source>Open</source>
+         <comment>Text on a menu item the user presses to open a file/image</comment>
+@@ -893,7 +1399,47 @@
+     <message>
+         <source>Open in viewer</source>
+         <comment>Text on a menu item the user presses to open an image/piece of media in a viewer</comment>
+-        <translation>在视图中打开</translation>
++        <translation>在查看器中打开</translation>
++    </message>
++    <message>
++        <source>Reveal in file explorer</source>
++        <comment>Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer</comment>
++        <translation>在文件资源管理器中显示</translation>
++    </message>
++    <message>
++        <source>Copy file path to clipboard</source>
++        <comment>Text on a menu item the user selects to copy a file path to the copy-paste clipboard</comment>
++        <translation>复制文件路径到剪贴板</translation>
++    </message>
++    <message>
++        <source>Remove from list</source>
++        <comment>Text on a menu item the user presses to remove an item from a list of items</comment>
++        <translation>从列表移除</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::TaskQueueWindow</name>
++    <message>
++        <source>Script Editor</source>
++        <translation>脚本编辑器</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::TemplateButton</name>
++    <message>
++        <source>Name: %1</source>
++        <comment>Text on a label containing the name of an item, usually an image e.g. Name: The Mona Lisa</comment>
++        <translation>名称：%1</translation>
++    </message>
++    <message>
++        <source>License: %2</source>
++        <comment>Text on a label containing the legal license a piece of media is under, usually an image e.g. License: Public Domain</comment>
++        <translation>许可：%2</translation>
++    </message>
++    <message>
++        <source>Open</source>
++        <comment>Text on a menu item the user presses to open a file/image</comment>
++        <translation>打开</translation>
+     </message>
+     <message>
+         <source>Reveal in file explorer</source>
+@@ -901,45 +1447,8 @@
+         <translation>在文件导出程序中显示</translation>
+     </message>
+     <message>
+-        <source>Copy file path to clipboard</source>
+-        <comment>Text on a menu item the user selects to copy a file path to the copy-paste clipboard</comment>
+-        <translation>复制文件路径到剪贴板</translation>
+-    </message>
+-    <message>
+-        <source>Remove from list</source>
+-        <comment>Text on a menu item the user presses to remove an item from a list of items</comment>
+-        <translation>从列表中移除</translation>
+-    </message>
+-</context>
+-<context>
+-    <name>geometrize::dialog::ScriptConsole</name>
+-    <message>
+-        <source>Type 'help' in console for a list of commands</source>
+-        <comment>Instructional text shown in the command/scripting console. The 'help' string should not be translated</comment>
+-        <translation>在控制台中输入“help”以获取命令列表</translation>
+-    </message>
+-</context>
+-<context>
+-    <name>geometrize::dialog::TemplateButton</name>
+-    <message>
+-        <source>Name: %1</source>
+-        <comment>Text on a label containing the name of an item, usually an image e.g. Name: The Mona Lisa</comment>
+-        <translation>名称：%1</translation>
+-    </message>
+-    <message>
+-        <source>License: %2</source>
+-        <comment>Text on a label containing the legal license a piece of media is under, usually an image e.g. License: Public Domain</comment>
+-        <translation>许可：%2</translation>
+-    </message>
+-    <message>
+-        <source>Open</source>
+-        <comment>Text on a menu item the user presses to open a file/image</comment>
+-        <translation>打开</translation>
+-    </message>
+-    <message>
+-        <source>Reveal in file explorer</source>
+-        <comment>Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer</comment>
+-        <translation>在文件导出程序中显示</translation>
++        <source>Drag and drop template contents</source>
++        <translation>拖放模板内容</translation>
+     </message>
+ </context>
+ <context>
+@@ -963,11 +1472,6 @@
+         <translation>Geometrize 使用简单的几何形状重新创建照片，将其转换为独特的艺术作品。</translation>
+     </message>
+     <message>
+-        <source>Copyright 2015-2017 Sam Twidale</source>
+-        <comment>This is the copyright notice of the application.</comment>
+-        <translation>版权 2015-2017 Sam Twidale</translation>
+-    </message>
+-    <message>
+         <source>Rectangles</source>
+         <comment>Plural form of rectangle geometric shape</comment>
+         <translation>矩形</translation>
+@@ -1017,5 +1521,10 @@
+         <comment>Plural form of an unknown type of shapes</comment>
+         <translation>未知形状</translation>
+     </message>
++    <message>
++        <source>Copyright 2015-2021 Sam Twidale</source>
++        <comment>This is the copyright notice of the application.</comment>
++        <translation>版权所有 2015-2021 Sam Twidale</translation>
++    </message>
+ </context>
+ </TS>

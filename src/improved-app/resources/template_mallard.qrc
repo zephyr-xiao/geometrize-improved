@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/mallard/mallard.jpg</file>
+        <file>templates/templates/mallard/manifest.json</file>
+        <file>templates/templates/mallard/settings.json</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,38 @@
+--- src/baseline-lib/geometrize/geometrize/core.h	2026-08-27 13:24:27.364137300 +0800
++++ src/improved-lib/geometrize/geometrize/core.h	2026-08-29 09:04:49.235126800 +0800
+@@ -124,6 +124,35 @@
+         double lastScore,
+         const EnergyFunction& customEnergyFunction = nullptr);
+ 
++/**
++ * @brief bestHillClimbStatePyramid 金字塔搜索变体:候选生成与爬山评估在半分辨率图上进行,
++ * 形状坐标始终留在全分辨率空间(scanline 层投影,不做几何缩放)。RNG 消费序列与
++ * bestHillClimbState 完全一致,两模式可逐候选对照。搜索启发式轨道,输出与全分辨率
++ * 搜索不必相同属预期;最终接受判定由调用方在全分辨率进行。
++ * @param shapeCreator A function that will create the shapes that will be chosen from.
++ * @param alpha The opacity of the shape.
++ * @param n The number of random states to generate.
++ * @param age The number of hillclimbing steps.
++ * @param target The half-resolution target bitmap.
++ * @param current The half-resolution current bitmap.
++ * @param buffer The half-resolution buffer bitmap (private to the calling task).
++ * @param lastScore The last full-resolution score (all in-step evaluations share this constant baseline).
++ * @param halfWidth The width of the half-resolution bitmaps.
++ * @param halfHeight The height of the half-resolution bitmaps.
++ * @return The best state acquired from hill climbing i.e. the one with the lowest energy.
++ */
++geometrize::State bestHillClimbStatePyramid(
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        std::uint32_t alpha,
++        std::uint32_t n,
++        std::uint32_t age,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        double lastScore,
++        std::int32_t halfWidth,
++        std::int32_t halfHeight);
++
+ }
+ 
+ }

@@ -1,0 +1,30 @@
+@@ -11,7 +11,12 @@
+ {
+ class Bitmap;
+ class Scanline;
++namespace core
++{
++struct RegionRect;
++}
+ struct ImageRunnerShapeBoundsOptions;
++struct ImageRunnerPriorityRegionOptions;
+ }
+ 
+ namespace geometrize
+@@ -71,6 +76,16 @@
+  */
+ std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image);
+ 
++/**
++ * @brief mapPriorityRegionsToImage Converts priority region rectangles from percentages (0-100%) to
++ * whole-image pixel coordinates (closed intervals, clamped to the image). Degenerate rectangles
++ * (smaller than 2px in either dimension after mapping) are skipped.
++ * @param regions The percentage-based region list.
++ * @param image The image the regions refer to.
++ * @return Pixel-coordinate region rectangles.
++ */
++std::vector<geometrize::core::RegionRect> mapPriorityRegionsToImage(const std::vector<geometrize::ImageRunnerPriorityRegionOptions>& regions, const geometrize::Bitmap& image);
++
+ }
+ 
+ }

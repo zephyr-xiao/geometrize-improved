@@ -1,0 +1,2 @@
+﻿"case","img","steps","threads","types","verdict","sha_match","fingerprint_match","self_consistent","base_ms","fast_ms","speedup","note"
+"polygon_mix","triangles_512.png","80","8","rellipse,tri,rrect","PASS","True","True","True","8130","4172","1.949","压 polygon 扁平化"

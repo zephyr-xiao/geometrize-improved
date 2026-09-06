@@ -1,0 +1,44 @@
+# A2.4 分段颜色(第八批,2026-08-30)—— 补丁定位说明
+# 与 0012-0015 同款口径:baseline 侧 = 纯上游快照,+ 侧 = 改进库累积态(含 0001-0015 全部差异)。
+# 本组补丁覆盖 A2.4 触碰的文件;检阅本批增量请与 0015 交付态对照。
+# 触碰文件:shaperesult.h(ScanlineColor+segments)、core.h/cpp(segmentColors 开关 +
+#   computeSegmentColors + isLineLikeShape + defaultEnergyFunctionSegmented + 接入三元)、
+#   rasterizer.h/cpp(drawLinesSegmented)、model.h/cpp(useEnhanced 第四开关 + 分段落画 +
+#   collectAndDrawWithUndoSegmented + drawShape 三参重载)、svgexporter.h/cpp(色带组导出)、
+#   shapejsonexporter.cpp(可选 segments 数组)。
+# 双轨制:segmentColors 默认关,12 个 bit-exact 门禁不破;开启走增强轨道(run_ab segment_color_* 3 例锁定)。
+# 注意:本补丁含非 ASCII(UTF-8 中文注释);应用时保持 /utf-8。
+
+--- src/baseline-lib/geometrize/geometrize/exporter/shapejsonexporter.cpp	2026-08-27 13:24:27.381495000 +0800
++++ src/improved-lib/geometrize/geometrize/exporter/shapejsonexporter.cpp	2026-08-30 20:19:00.397026000 +0800
+@@ -36,7 +36,29 @@
+             }
+         }
+         stream << "],\"color\":[" << static_cast<std::uint32_t>(color.r) << "," << static_cast<std::uint32_t>(color.g) << "," << static_cast<std::uint32_t>(color.b) << "," << static_cast<std::uint32_t>(color.a) << "],";
+-        stream << "\"score\":" << score << "}";
++        stream << "\"score\":" << score;
++
++        // A2.4:可选分段颜色数组(旧消费者忽略未知字段;线型/开关关时字段不出现)。
++        // 每段 {"y","x1","x2","color"},区间语义与库内 Scanline 一致(闭区间)。
++        if(!s.segments.empty()) {
++            stream << ",\"segments\":[";
++            for(std::size_t k = 0; k < s.segments.size(); k++) {
++                const geometrize::ScanlineColor& seg(s.segments[k]);
++                stream << "{\"y\":" << seg.y
++                       << ",\"x1\":" << seg.x1
++                       << ",\"x2\":" << seg.x2
++                       << ",\"color\":[" << static_cast<std::uint32_t>(seg.color.r)
++                       << "," << static_cast<std::uint32_t>(seg.color.g)
++                       << "," << static_cast<std::uint32_t>(seg.color.b)
++                       << "," << static_cast<std::uint32_t>(seg.color.a) << "]}";
++                if(k <= s.segments.size() - 2) {
++                    stream << ",";
++                }
++            }
++            stream << "]";
++        }
++
++        stream << "}";
+ 
+         if(i <= data.size() - 2) {
+             stream << ",\n";

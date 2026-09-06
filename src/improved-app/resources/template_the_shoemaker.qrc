@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/the_shoemaker/manifest.json</file>
+        <file>templates/templates/the_shoemaker/settings.json</file>
+        <file>templates/templates/the_shoemaker/the_shoemaker.jpg</file>
+    </qresource>
+</RCC>

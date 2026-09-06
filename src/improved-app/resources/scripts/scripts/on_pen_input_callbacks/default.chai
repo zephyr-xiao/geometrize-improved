@@ -1,0 +1,13 @@
+printToAllScriptConsoleWidgets(customTabletEventDataToString(lastTabletEvent));
+
+{
+    var penSensitivity = 120;
+    var lastPressure = lastTabletEvent.pressure;
+    var brushSize = lastPressure * penSensitivity;
+    var minBrushSize = 5;
+    if(brushSize >= minBrushSize) {
+        var circle = Circle(lastTabletEvent.xScenePos, lastTabletEvent.yScenePos, brushSize);
+        global aoi := circle.clone();
+        global aoiPixels = shapeToPixels(aoi, xMin, yMin, xMax, yMax); // Used by the area of influence shape mutators
+    }
+}

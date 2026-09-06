@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/giraffe/giraffe.jpg</file>
+        <file>templates/templates/giraffe/manifest.json</file>
+        <file>templates/templates/giraffe/settings.json</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,16 @@
+--- src/baseline-lib/geometrize/geometrize/state.h	2026-08-27 13:24:27.427668900 +0800
++++ src/improved-lib/geometrize/geometrize/state.h	2026-08-29 12:53:42.623121800 +0800
+@@ -38,6 +38,13 @@
+      */
+     geometrize::State mutate();
+ 
++    /**
++     * @brief mutate 带步长的变异重载(自适应步长轨道专用)。
++     * @param stepShift 步长移位数:0=基准步长,1=1/2,2=1/4...。形状未设置 mutateScaled 时回退普通 mutate。
++     * @return The old state, useful for undoing the mutation or keeping track of previous states.
++     */
++    geometrize::State mutate(std::int32_t stepShift);
++
+     double m_score; ///< The score of the state, a measure of the improvement applying the state to the current bitmap will have.
+     std::uint8_t m_alpha; ///< The alpha of the shape.
+     std::shared_ptr<geometrize::Shape> m_shape; ///< The geometric primitive owned by the state.

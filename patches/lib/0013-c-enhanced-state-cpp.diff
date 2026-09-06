@@ -1,0 +1,20 @@
+--- src/baseline-lib/geometrize/geometrize/state.cpp	2026-08-27 13:24:27.426669700 +0800
++++ src/improved-lib/geometrize/geometrize/state.cpp	2026-08-29 12:54:19.623280700 +0800
+@@ -38,4 +38,17 @@
+     return oldState;
+ }
+ 
++geometrize::State State::mutate(const std::int32_t stepShift)
++{
++    geometrize::State oldState(*this);
++    // 优雅降级:外部自设形状(测试/脚本)未绑定 mutateScaled 时退回普通变异
++    if(m_shape->mutateScaled) {
++        m_shape->mutateScaled(*m_shape, stepShift);
++    } else {
++        m_shape->mutate(*m_shape);
++    }
++    m_score = -1;
++    return oldState;
++}
++
+ }

@@ -1,0 +1,122 @@
+--- src/baseline-lib/geometrize/geometrize/bitmap/bitmap.h	2026-08-27 13:24:27.433669300 +0800
++++ src/improved-lib/geometrize/geometrize/bitmap/bitmap.h	2026-08-28 02:23:33.916258200 +0800
+@@ -1,6 +1,8 @@
+ #pragma once
+ 
++#include <cassert>
+ #include <cstdint>
++#include <utility>
+ #include <vector>
+ 
+ #include "rgba.h"
+@@ -31,6 +33,14 @@
+      */
+     Bitmap(std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& data);
+ 
++    /**
++     * @brief Bitmap move 版本:直接接管外部数据,避免宿主侧加载路径的二次深拷。
++     */
++    Bitmap(std::uint32_t width, std::uint32_t height, std::vector<std::uint8_t>&& data) : m_width{width}, m_height{height}, m_data{std::move(data)}
++    {
++        assert((static_cast<std::size_t>(width) * height * 4U) == m_data.size());
++    }
++
+     ~Bitmap() = default;
+     Bitmap& operator=(const geometrize::Bitmap&) = default;
+     Bitmap(const geometrize::Bitmap&) = default;
+@@ -38,24 +48,46 @@
+     /**
+      * @brief getWidth Gets the width of the bitmap.
+      */
+-    std::uint32_t getWidth() const;
++    std::uint32_t getWidth() const
++    {
++        return m_width;
++    }
+ 
+     /**
+      * @brief getHeight Gets the height of the bitmap.
+      */
+-    std::uint32_t getHeight() const;
++    std::uint32_t getHeight() const
++    {
++        return m_height;
++    }
+ 
+     /**
+      * @brief copyData Gets a copy of the raw bitmap data.
+      * @return The bitmap data.
+      */
+-    std::vector<std::uint8_t> copyData() const;
++    std::vector<std::uint8_t> copyData() const
++    {
++        return m_data;
++    }
+ 
+     /**
+      * @brief getDataRef Gets a reference to the raw bitmap data.
+      * @return The bitmap data.
+      */
+-    const std::vector<std::uint8_t>& getDataRef() const;
++    const std::vector<std::uint8_t>& getDataRef() const
++    {
++        return m_data;
++    }
++
++    /**
++     * @brief getDataRefMut Gets a mutable reference to the raw bitmap data.
++     * 供热循环直接以裸指针读写,替代逐像素 setPixel 的函数调用税。
++     * @return The mutable bitmap data.
++     */
++    std::vector<std::uint8_t>& getDataRefMut()
++    {
++        return m_data;
++    }
+ 
+     /**
+      * @brief getPixel Gets a pixel color value.
+@@ -63,7 +95,12 @@
+      * @param y The y-coordinate of the pixel.
+      * @return The pixel RGBA color value.
+      */
+-    geometrize::rgba getPixel(std::uint32_t x, std::uint32_t y) const;
++    geometrize::rgba getPixel(std::uint32_t x, std::uint32_t y) const
++    {
++        // 64 位索引防大图时 width*y 溢出 int32(常规尺寸下数值与 32 位式恒等)
++        const std::size_t index{(static_cast<std::size_t>(m_width) * y + x) * 4U};
++        return geometrize::rgba{m_data[index], m_data[index + 1U], m_data[index + 2U], m_data[index + 3U]};
++    }
+ 
+     /**
+      * @brief setPixel Sets a pixel color value.
+@@ -71,13 +108,28 @@
+      * @param y The y-coordinate of the pixel.
+      * @param color The pixel RGBA color value.
+      */
+-    void setPixel(std::uint32_t x, std::uint32_t y, geometrize::rgba color);
++    void setPixel(std::uint32_t x, std::uint32_t y, geometrize::rgba color)
++    {
++        const std::size_t index{(static_cast<std::size_t>(m_width) * y + x) * 4U};
++        m_data[index] = color.r;
++        m_data[index + 1U] = color.g;
++        m_data[index + 2U] = color.b;
++        m_data[index + 3U] = color.a;
++    }
+ 
+     /**
+      * @brief fill Fills the bitmap with the given color.
+      * @param color The color to fill the bitmap with.
+      */
+-    void fill(geometrize::rgba color);
++    void fill(geometrize::rgba color)
++    {
++        for(std::size_t i = 0; i < m_data.size(); i += 4U) {
++            m_data[i] = color.r;
++            m_data[i + 1U] = color.g;
++            m_data[i + 2U] = color.b;
++            m_data[i + 3U] = color.a;
++        }
++    }
+ 
+ private:
+     std::uint32_t m_width; ///< The width of the bitmap.

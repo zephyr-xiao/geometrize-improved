@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/stanczyk/manifest.json</file>
+        <file>templates/templates/stanczyk/settings.json</file>
+        <file>templates/templates/stanczyk/stanczyk.jpg</file>
+    </qresource>
+</RCC>

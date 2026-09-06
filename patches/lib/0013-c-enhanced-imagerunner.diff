@@ -1,0 +1,11 @@
+--- src/baseline-lib/geometrize/geometrize/runner/imagerunner.cpp	2026-08-27 13:24:27.395657500 +0800
++++ src/improved-lib/geometrize/geometrize/runner/imagerunner.cpp	2026-08-29 13:04:08.522314800 +0800
+@@ -38,7 +38,7 @@
+         }
+ 
+         m_model.setSeed(options.seed);
+-        return m_model.step(shapeCreator, options.alpha, options.shapeCount, options.maxShapeMutations, options.maxThreads, energyFunction, addShapePrecondition);
++        return m_model.step(shapeCreator, options.alpha, options.shapeCount, options.maxShapeMutations, options.maxThreads, energyFunction, addShapePrecondition, options.pyramidSearch, options.enhancements);
+     }
+ 
+     geometrize::Bitmap& getCurrent()

@@ -1,0 +1,21 @@
+--- src/baseline-lib/geometrize/geometrize/runner/imagerunneroptions.h	2026-08-27 13:24:27.396655400 +0800
++++ src/improved-lib/geometrize/geometrize/runner/imagerunneroptions.h	2026-08-29 13:03:50.374430300 +0800
+@@ -1,7 +1,9 @@
+ #pragma once
+ 
+ #include <cstdint>
++#include <vector>
+ 
++#include "../core.h"
+ #include "../shape/shapetypes.h"
+ 
+ namespace geometrize
+@@ -33,6 +35,8 @@
+     std::uint32_t maxShapeMutations = 100U; ///< The maximum number of times each candidate shape will be modified to attempt to find a better fit.
+     std::uint32_t seed = 9001U; ///< The seed for the random number generators used by the image runner.
+     std::uint32_t maxThreads = 0; ///< The maximum number of separate threads for the implementation to use. 0 lets the implementation choose a reasonable number.
++    bool pyramidSearch = false; ///< 金字塔搜索:hill-climb 评估在半分辨率图上进行(算法增强轨道,输出与全分辨率搜索不同属预期)。自定义 energyFunction 存在时被忽略。
++    core::HillClimbEnhancements enhancements{}; ///< 增强爬山开关集(自适应步长/alpha 档位搜索,算法增强轨道,默认全关)。
+     ImageRunnerShapeBoundsOptions shapeBounds{}; ///< If zero or do not form a rectangle, the entire target image is used i.e. (0, 0, imageWidth, imageHeight)
+ };
+ 

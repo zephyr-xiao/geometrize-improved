@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/making_a_salad/making_a_salad.jpg</file>
+        <file>templates/templates/making_a_salad/manifest.json</file>
+        <file>templates/templates/making_a_salad/settings.json</file>
+    </qresource>
+</RCC>

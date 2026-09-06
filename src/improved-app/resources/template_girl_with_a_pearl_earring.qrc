@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/girl_with_a_pearl_earring/girl_with_a_pearl_earring.jpg</file>
+        <file>templates/templates/girl_with_a_pearl_earring/manifest.json</file>
+        <file>templates/templates/girl_with_a_pearl_earring/settings.json</file>
+    </qresource>
+</RCC>

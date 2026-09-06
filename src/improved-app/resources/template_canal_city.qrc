@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/canal_city/canal_city.jpg</file>
+        <file>templates/templates/canal_city/manifest.json</file>
+        <file>templates/templates/canal_city/settings.json</file>
+    </qresource>
+</RCC>

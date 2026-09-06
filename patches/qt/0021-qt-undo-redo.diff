@@ -1,0 +1,842 @@
+@@ -36,6 +36,14 @@
+ 
+     geometrize::ShapeResult& back();
+ 
++    /**
++     * @brief truncate Removes shapes from the end of the collection, keeping the first newSize results.
++     * Used for undo: shape results are immutable (const members), so the list is rebuilt as a prefix
++     * rather than edited in place.
++     * @param newSize The number of shapes to keep. Must not exceed the current size.
++     */
++    void truncate(std::size_t newSize);
++
+ signals:
+     void signal_beforeAppendShapes(const std::vector<geometrize::ShapeResult>&);
+     void signal_sizeChanged(std::size_t to);
+@@ -1,5 +1,6 @@
+ #include "shapecollection.h"
+ 
++#include <cassert>
+ #include <vector>
+ 
+ #include "geometrize/shaperesult.h"
+@@ -44,6 +45,18 @@
+     return m_shapes.back();
+ }
+ 
++void ShapeCollection::truncate(const std::size_t newSize)
++{
++    assert(newSize <= m_shapes.size() && "Cannot truncate to more shapes than the collection holds");
++    if(newSize >= m_shapes.size()) {
++        return;
++    }
++    // ShapeResult 成员 const、赋值被删除:区间构造(仅拷贝构造)+ swap,全程无元素赋值
++    std::vector<geometrize::ShapeResult> kept(m_shapes.begin(), m_shapes.begin() + static_cast<std::ptrdiff_t>(newSize));
++    m_shapes.swap(kept);
++    emit signal_sizeChanged(m_shapes.size());
++}
++
+ }
+ }
+ 
+@@ -57,6 +57,15 @@
+     void drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color);
+ 
+     /**
++     * @brief replayShapes Rebuilds the model state by resetting to the given background color and
++     * redrawing the given shapes in order. Used for undo: one willStep/didReplay bracket covers the
++     * whole batch, so queued steps stay serialized with the replay on the worker event queue.
++     * @param shapes The shapes to redraw, in original order.
++     * @param resetColor The background color the model is reset to before replaying.
++     */
++    void replayShapes(std::vector<geometrize::ShapeResult> shapes, geometrize::rgba resetColor);
++
++    /**
+      * @brief getCurrent Gets the current working bitmap.
+      * @return The current working bitmap.
+      */
+@@ -85,6 +94,7 @@
+ signals:
+     void signal_willStep();
+     void signal_didStep(std::vector<geometrize::ShapeResult> shapes);
++    void signal_didReplay(std::vector<geometrize::ShapeResult> shapes);
+ 
+ private:
+     ImageRunner m_runner;
+@@ -46,6 +46,20 @@
+     emit signal_didStep({ result });
+ }
+ 
++void ImageTaskWorker::replayShapes(std::vector<geometrize::ShapeResult> shapes, const geometrize::rgba resetColor)
++{
++    emit signal_willStep();
++    m_working = true;
++    geometrize::Model& model{m_runner.getModel()};
++    model.reset(resetColor);
++    // drawShape 无条件绘制且不消费 RNG:重放后的位图/分数链与原轨迹逐位一致
++    for(const geometrize::ShapeResult& result : shapes) {
++        model.drawShape(result.shape, result.color);
++    }
++    m_working = false;
++    emit signal_didReplay(shapes);
++}
++
+ geometrize::Bitmap& ImageTaskWorker::getCurrent()
+ {
+     return m_runner.getCurrent();
+@@ -140,6 +140,16 @@
+       */
+      void drawBackgroundRectangle(geometrize::rgba color);
+ 
++    /**
++     * @brief replayShapes Rebuilds the task model by resetting it to the given background color and
++     * redrawing the given shapes in order (undo support). A single willStep bracket covers the batch;
++     * on completion signal_modelDidReplay is emitted (not signal_modelDidStep, so replaying does not
++     * re-trigger shape-added hooks or chained stepping).
++     * @param shapes The shapes to redraw, in original order.
++     * @param resetColor The background color to reset the model to first.
++     */
++    void replayShapes(const std::vector<geometrize::ShapeResult>& shapes, geometrize::rgba resetColor);
++
+      /**
+       * @brief getPreferences Gets a reference to the current preferences of this task.
+       * @return A reference to the current preferences of this task.
+@@ -177,6 +187,17 @@
+      void signal_modelDidStep(std::vector<geometrize::ShapeResult> shapes);
+ 
+      /**
++      * @brief signal_replayShapes Internal signal that makes the worker rebuild the model state (undo support).
++      */
++     void signal_replayShapes(std::vector<geometrize::ShapeResult> shapes, geometrize::rgba resetColor);
++
++     /**
++      * @brief signal_modelDidReplay Signal that is emitted when a replayShapes batch has finished applying.
++      * @param shapes The shapes that are now present in the model.
++      */
++     void signal_modelDidReplay(std::vector<geometrize::ShapeResult> shapes);
++
++     /**
+       * @brief signal_preferencesSet Signal that is emitted immediately after the image task preferences are set.
+       */
+      void signal_preferencesSet();
+@@ -184,6 +205,7 @@
+ private:
+     void modelWillStep();
+     void modelDidStep(std::vector<geometrize::ShapeResult> shapes);
++    void modelDidReplay(std::vector<geometrize::ShapeResult> shapes);
+ 
+     class ImageTaskImpl;
+     std::unique_ptr<ImageTaskImpl> d;
+@@ -7,6 +7,7 @@
+ #include <vector>
+ 
+ #include <QThread>
++#include <cstdio>
+ 
+ #include "geometrize/commonutil.h"
+ #include "geometrize/bitmap/bitmap.h"
+@@ -112,7 +113,7 @@
+     void stepModel()
+     {
+         const bool isScriptModeEnabled = m_preferences.isScriptModeEnabled();
+-        const auto imageRunnerOptions = m_preferences.getImageRunnerOptions();
++        auto imageRunnerOptions = m_preferences.getImageRunnerOptions();
+ 
+         // Install the scripts that are required for the geometrization process
+         m_geometrizer.installScripts(m_preferences.getScripts());
+@@ -124,6 +125,7 @@
+                 addShapePreconditionScripts.push_back(std::make_pair(script.first, script.second));
+             }
+         }
++        m_preconditionScriptsActive = !addShapePreconditionScripts.empty();
+ 
+         const auto addShapePreconditionFunction =
+                 [this](const std::vector<std::pair<std::string, std::string>>& scripts)
+@@ -133,6 +135,9 @@
+                 return nullptr;
+             }
+ 
++            // 前条件脚本直接跑在主脚本引擎上,而库会在多个 hill-climb 线程并发调它 ——
++            // 与引擎逐线程克隆的设计冲突,构成数据竞争。启用时强制本步单线程恢复正确性
++            // (m_preconditionScriptsActive 已在上方按脚本清单置位)。
+             const geometrize::ShapeAcceptancePreconditionFunction g = [this, scripts](double lastScore,
+                  double newScore,
+                  const geometrize::Shape& shape,
+@@ -164,6 +169,11 @@
+             return g;
+         }(addShapePreconditionScripts);
+ 
++        // 前条件脚本在主引擎上求值,不支持并发 —— 启用时本步强制单线程(正确性优先于吞吐)
++        if(m_preconditionScriptsActive) {
++            imageRunnerOptions.maxThreads = 1;
++        }
++
+         // Opt out of the multithreaded scripts if the engine is disabled (use the default/C++ implementations)
+         if(!isScriptModeEnabled) {
+             emit q->signal_step(imageRunnerOptions, nullptr, nullptr, addShapePreconditionFunction);
+@@ -204,6 +214,11 @@
+         emit q->signal_drawShape(shape, color);
+     }
+ 
++    void replayShapes(const std::vector<geometrize::ShapeResult>& shapes, const geometrize::rgba resetColor)
++    {
++        emit q->signal_replayShapes(shapes, resetColor);
++    }
++
+     void drawBackgroundRectangle(const geometrize::rgba color)
+     {
+         const std::int32_t w = m_worker.getTarget().getWidth();
+@@ -222,6 +237,11 @@
+     void modelDidStep(const std::vector<geometrize::ShapeResult> shapes)
+     {
+         emit q->signal_modelDidStep(shapes);
++    }
++
++    void modelDidReplay(const std::vector<geometrize::ShapeResult> shapes)
++    {
++        emit q->signal_modelDidReplay(shapes);
+     }
+ 
+     preferences::ImageTaskPreferences& getPreferences()
+@@ -274,16 +294,20 @@
+     {
+         q->connect(q, &ImageTask::signal_step, &m_worker, &ImageTaskWorker::step, connectionType);
+         q->connect(q, &ImageTask::signal_drawShape, &m_worker, &ImageTaskWorker::drawShape, connectionType);
++        q->connect(q, &ImageTask::signal_replayShapes, &m_worker, &ImageTaskWorker::replayShapes, connectionType);
+         q->connect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep, Qt::BlockingQueuedConnection);
+         q->connect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep, Qt::BlockingQueuedConnection);
++        q->connect(&m_worker, &ImageTaskWorker::signal_didReplay, q, &ImageTask::modelDidReplay, Qt::BlockingQueuedConnection);
+     }
+ 
+     void disconnectAll()
+     {
+         q->disconnect(q, &ImageTask::signal_step, &m_worker, &ImageTaskWorker::step);
+         q->disconnect(q, &ImageTask::signal_drawShape, &m_worker, &ImageTaskWorker::drawShape);
++        q->disconnect(q, &ImageTask::signal_replayShapes, &m_worker, &ImageTaskWorker::replayShapes);
+         q->disconnect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep);
+         q->disconnect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep);
++        q->disconnect(&m_worker, &ImageTaskWorker::signal_didReplay, q, &ImageTask::modelDidReplay);
+     }
+ 
+     ImageTask* q;
+@@ -293,6 +317,7 @@
+     QThread m_workerThread; ///> Thread that the image task worker runs on.
+     ImageTaskWorker m_worker; ///> The image task worker.
+     geometrize::script::GeometrizerEngine m_geometrizer; ///> The script-based geometrizer for the image task.
++    bool m_preconditionScriptsActive{false}; ///> Whether add-shape precondition scripts are installed this step (forces single-threaded stepping for engine safety).
+ };
+ 
+ ImageTask::ImageTask(Bitmap& target, Qt::ConnectionType workerConnectionType) : QObject(),
+@@ -379,6 +404,11 @@
+     d->drawBackgroundRectangle(color);
+ }
+ 
++void ImageTask::replayShapes(const std::vector<geometrize::ShapeResult>& shapes, const geometrize::rgba resetColor)
++{
++    d->replayShapes(shapes, resetColor);
++}
++
+ void ImageTask::modelWillStep()
+ {
+     d->modelWillStep();
+@@ -389,6 +419,11 @@
+     d->modelDidStep(shapes);
+ }
+ 
++void ImageTask::modelDidReplay(std::vector<geometrize::ShapeResult> shapes)
++{
++    d->modelDidReplay(shapes);
++}
++
+ preferences::ImageTaskPreferences& ImageTask::getPreferences()
+ {
+     return d->getPreferences();
+
+@@ -14,6 +14,7 @@
+ #include <QLocale>
+ #include <QMessageBox>
+ #include <QPixmap>
++#include <QPointer>
+ #include <QRectF>
+ #include <QTimer>
+ 
+@@ -64,6 +65,10 @@
+             task->disconnect();
+             task->deleteLater();
+         });
++        task->connect(task, &geometrize::task::ImageTask::signal_modelDidReplay, [task](std::vector<geometrize::ShapeResult>) {
++            task->disconnect();
++            task->deleteLater();
++        });
+     } else {
+         task->disconnect();
+         task->deleteLater();
+@@ -94,6 +99,22 @@
+         q->tabifyDockWidget(ui->runnerSettingsDock, ui->exporterDock);
+ 
+         ui->runnerSettingsDock->raise(); // Make sure runner settings dock is selected
++
++        // 撤销/重做:按钮信号与菜单 action 汇合同一实现;快捷键挂 QAction(窗口级作用域)
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::undoButtonClicked, [this]() {
++            undoModel();
++        });
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::redoButtonClicked, [this]() {
++            redoModel();
++        });
++        connect(ui->actionUndo, &QAction::triggered, [this]() {
++            undoModel();
++        });
++        connect(ui->actionRedo, &QAction::triggered, [this]() {
++            redoModel();
++        });
++        ui->actionUndo->setShortcuts({QKeySequence::Undo}); // Ctrl+Z
++        ui->actionRedo->setShortcuts({QKeySequence("Ctrl+Shift+Z"), QKeySequence("Ctrl+Y")});
+ 
+         ui->consoleWidget->setVisible(false); // Make sure console widget is hidden by default
+ 
+@@ -129,6 +150,11 @@
+             disconnectTask();
+ 
+             m_shapes.clear();
++            // 任务切换:撤销/重做状态整体作废(旧任务的 redo 项不适用新任务)
++            m_redoStack.clear();
++            m_replayInFlight = false;
++            m_redoInFlight = false;
++            m_lastRedrawnShape = nullptr;
+             ui->imageTaskRunnerWidget->setImageTask(nextTask);
+             ui->scriptsWidget->setImageTask(nextTask);
+             ui->imageTaskExportWidget->setImageTask(nextTask, &m_shapes.getShapeVector());
+@@ -165,6 +191,7 @@
+             if(currentTask == nullptr) {
+                 m_taskPreferencesSetConnection = QMetaObject::Connection{};
+                 m_taskWillStepConnection = QMetaObject::Connection{};
++                m_taskDidReplayConnection = QMetaObject::Connection{};
+                 return; // Don't try to connect if we're setting the current task to nothing/nullptr
+             }
+ 
+@@ -175,6 +202,7 @@
+ 
+             m_taskWillStepConnection = connect(currentTask, &task::ImageTask::signal_modelWillStep, [this]() {
+                 ui->statsDockContents->setCurrentStatus(geometrize::dialog::ImageTaskStatsWidget::RUNNING);
++                updateUndoRedoActions(); // 步进/重放开始即禁用(守卫的 isStepping 分支同时兜底)
+ 
+                 // Apply the latest scripts and engine state prior to stepping
+                 auto& geometrizer = m_task->getGeometrizer();
+@@ -189,6 +217,20 @@
+ 
+             m_taskDidStepConnection = connect(currentTask, &task::ImageTask::signal_modelDidStep, [this](std::vector<geometrize::ShapeResult> shapes) {
+                 processPostStepCbs();
++
++                // 撤销重放在途:丢弃竞争步进的结果(经典编辑器语义——在途编辑被丢弃),不进 append/脚本/链式步进
++                if(m_replayInFlight) {
++                    updateStats();
++                    updateUndoRedoActions();
++                    return;
++                }
++
++                // redo 自身的 drawShape 产物:不清 redo 栈;其余任何来源的新形状都使 redo 失效
++                if(m_redoInFlight && !shapes.empty() && shapes.back().shape == m_lastRedrawnShape) {
++                    m_redoInFlight = false;
++                } else if(!shapes.empty() && !m_redoStack.empty()) {
++                    m_redoStack.clear();
++                }
+ 
+                 // If the first shape added background rectangle then fit the scenes to it
+                 if(m_shapes.empty()) {
+@@ -203,6 +245,21 @@
+                 if(shouldKeepStepping()) {
+                     stepModel();
+                 }
++            });
++
++            m_taskDidReplayConnection = connect(currentTask, &task::ImageTask::signal_modelDidReplay, [this](std::vector<geometrize::ShapeResult> shapes) {
++                m_replayInFlight = false;
++                // 防御对账:worker 重放以列表为权威,列表若因竞争步进被丢弃不会小于此处
++                if(m_shapes.size() > shapes.size()) {
++                    m_shapes.truncate(shapes.size());
++                }
++                updateStats();
++                m_pendingSceneShapes.clear();
++                // 此时 worker 已空闲,读位图安全;pixmap 全量重传 + SVG 场景整体重建
++                const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
++                m_sceneManager.reset();
++                m_sceneManager.updateScenes(pixmap, shapes);
++                updateUndoRedoActions();
+             });
+ 
+             const QString windowTitle = [currentTask]() {
+@@ -361,10 +418,39 @@
+             //geometrize::dialog::showImageTaskStopConditionMetMessage(q); // Letting the scripts handle notifying the user
+         });
+ 
+-        // Update the graphical image views after shapes are added
++        // Update the graphical image views after shapes are added.
++        // 节流合帧:高速步进时每步一次全图 Bitmap→QPixmap 上传代价高,改为 33ms 合并窗口,
++        // 到期时按"当时"的任务画面渲染一次,视觉上与逐步刷新无差。
++        // 注:Impl 非 QObject,不能用作 singleShot 的 context receiver;以 QPointer 守护窗口
++        // 存活,窗口销毁后待触发合帧自动失效。
+         connect(&m_shapes, &geometrize::task::ShapeCollection::signal_afterAppendShapes, [this](const std::vector<geometrize::ShapeResult>& shapes) {
+-            const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
+-            m_sceneManager.updateScenes(pixmap, shapes);
++            // ShapeResult 成员为 const(不可赋值),只能追加构造:重建整个待渲染列表
++            m_pendingSceneShapes.reserve(m_pendingSceneShapes.size() + shapes.size());
++            for(const auto& shape : shapes) {
++                m_pendingSceneShapes.emplace_back(shape);
++            }
++            if(!m_sceneUpdatePending) {
++                m_sceneUpdatePending = true;
++                QPointer<ImageTaskWindow> guard{q};
++                QTimer::singleShot(33, [this, guard] {
++                    if(guard.isNull()) {
++                        return;
++                    }
++                    m_sceneUpdatePending = false;
++                    if(m_task == nullptr) {
++                        m_pendingSceneShapes.clear();
++                        return;
++                    }
++                    // 重放在途:此刻位图正被 worker 重写,不作废场景也不读位图,didReplay 会做权威刷新
++                    if(m_replayInFlight) {
++                        m_pendingSceneShapes.clear();
++                        return;
++                    }
++                    const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
++                    m_sceneManager.updateScenes(pixmap, m_pendingSceneShapes);
++                    m_pendingSceneShapes.clear();
++                });
++            }
+         });
+ 
+         #if defined DATASLINGER_INCLUDED
+@@ -384,6 +470,8 @@
+         // Update the graphical image views when the number of shapes changes (e.g. when cleared)
+         connect(&m_shapes, &geometrize::task::ShapeCollection::signal_sizeChanged, [this](const std::size_t size) {
+             if(size == 0) {
++                // 清空立即刷新并丢弃待合并帧,防残影
++                m_pendingSceneShapes.clear();
+                 m_sceneManager.reset();
+             }
+         });
+@@ -530,8 +618,11 @@
+         // Start the timer used to track how long the image task has been in the running state
+         m_timeRunningTimer.start(static_cast<int>(m_timeRunningTimerResolutionMs));
+ 
+-        // Start the timer used to regularly update the associated image task's script engine (if any)
+-        m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
++        // Start the timer used to regularly update the associated image task's script engine (if any).
++        // 没有任何 timed-update 脚本时不启动轮询,避免空闲时 100ms 空转求值
++        if(ui->scriptsWidget->hasTimedUpdateScripts()) {
++            m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
++        }
+     }
+     ImageTaskWindowImpl& operator=(const ImageTaskWindowImpl&) = delete;
+     ImageTaskWindowImpl(const ImageTaskWindowImpl&) = delete;
+@@ -687,6 +778,12 @@
+         if(s == "click_clear_button") {
+             ui->imageTaskRunnerWidget->clearButtonClicked();
+         }
++        if(s == "undo") {
++            undoModel();
++        }
++        if(s == "redo") {
++            redoModel();
++        }
+ 
+         if(s == "toggle_script_console") {
+             ui->actionScript_Console->toggle();
+@@ -733,6 +830,7 @@
+     void populateUi()
+     {
+         updateStartStopButtonText();
++        updateUndoRedoActions();
+         q->setWindowTitle(geometrize::strings::Strings::getApplicationName());
+     }
+ 
+@@ -753,6 +851,7 @@
+     {
+         m_shouldKeepStepping = stepping;
+         updateStartStopButtonText();
++        updateUndoRedoActions();
+     }
+ 
+     void updateStartStopButtonText()
+@@ -776,6 +875,64 @@
+         setImageTask(task);
+     }
+ 
++    // 撤销下限 = 1:index 0 恒为背景矩形(afterAppendShapes 处理器无条件 back(),空列表是既有 UB 点)
++    bool canUndo() const
++    {
++        return m_task != nullptr && !m_task->isStepping() && !shouldKeepStepping()
++            && !m_replayInFlight && !m_redoInFlight && m_shapes.size() > 1;
++    }
++
++    bool canRedo() const
++    {
++        return m_task != nullptr && !m_task->isStepping() && !shouldKeepStepping()
++            && !m_replayInFlight && !m_redoInFlight && !m_redoStack.empty();
++    }
++
++    void undoModel()
++    {
++        if(!canUndo()) {
++            return;
++        }
++        // ShapeResult 含 shared_ptr,拷贝共享所有权零位图拷贝
++        m_redoStack.push_back(m_shapes.back());
++        m_shapes.truncate(m_shapes.size() - 1);
++        m_replayInFlight = true;
++        m_pendingSceneShapes.clear(); // 丢弃在途合帧残影,didReplay 权威刷新
++        updateStats();
++        updateUndoRedoActions();
++        m_task->replayShapes(m_shapes.getShapeVector(), getTaskStartingColor());
++    }
++
++    void redoModel()
++    {
++        if(!canRedo()) {
++            return;
++        }
++        // 走正常 drawShape 全协议:didStep 处理器完成 append/统计/合帧刷新,零新增刷新代码
++        m_redoInFlight = true;
++        m_lastRedrawnShape = m_redoStack.back().shape;
++        const geometrize::ShapeResult result = m_redoStack.back();
++        m_redoStack.pop_back();
++        m_task->drawShape(result.shape, result.color);
++    }
++
++    geometrize::rgba getTaskStartingColor() const
++    {
++        const geometrize::preferences::GlobalPreferences& prefs{geometrize::preferences::getGlobalPreferences()};
++        if(prefs.shouldUseCustomImageTaskBackgroundOverrideColor()) {
++            const auto color = prefs.getCustomImageTaskBackgroundOverrideColor();
++            return geometrize::rgba{ static_cast<std::uint8_t>(color[0]), static_cast<std::uint8_t>(color[1]), static_cast<std::uint8_t>(color[2]), static_cast<std::uint8_t>(color[3]) };
++        }
++        return geometrize::commonutil::getAverageImageColor(m_task->getTarget());
++    }
++
++    void updateUndoRedoActions()
++    {
++        ui->actionUndo->setEnabled(canUndo());
++        ui->actionRedo->setEnabled(canRedo());
++        ui->imageTaskRunnerWidget->setUndoRedoButtonsEnabled(canUndo(), canRedo());
++    }
++
+     void switchTargetImage(Bitmap& bitmap)
+     {
+         Bitmap& targetBitmap{m_task->getTargetMutable()};
+@@ -819,6 +976,9 @@
+         if(m_taskDidStepConnection) {
+             disconnect(m_taskDidStepConnection);
+         }
++        if(m_taskDidReplayConnection) {
++            disconnect(m_taskDidReplayConnection);
++        }
+     }
+ 
+     void setTargetImage(const QImage& image)
+@@ -851,7 +1011,14 @@
+     QMetaObject::Connection m_taskPreferencesSetConnection{}; ///> Connection for telling the dialog when the image task preferences are set
+     QMetaObject::Connection m_taskWillStepConnection{}; ///> Connection for the window to do work just prior the image task starts a step
+     QMetaObject::Connection m_taskDidStepConnection{}; ///> Connection for the window to do work just after the image task finishes a step
++    QMetaObject::Connection m_taskDidReplayConnection{}; ///> Connection for the window to refresh after an undo replay finishes
+     std::vector<std::function<void()>> m_onPostStepCbs; ///> One-shot callbacks triggered when the image task finishes a step
++
++    // 撤销/重做状态:redo 栈存被撤销的形状(经典双栈语义);重放期间丢弃竞争步进与新渲染帧
++    std::vector<geometrize::ShapeResult> m_redoStack; ///> Shapes undone and available for redo (back = most recently undone)
++    std::shared_ptr<geometrize::Shape> m_lastRedrawnShape; ///> Identity of the shape a pending redo drawShape is drawing
++    bool m_replayInFlight{false}; ///> An undo replay has been dispatched and has not finished yet
++    bool m_redoInFlight{false}; ///> A redo drawShape has been dispatched and its didStep has not returned yet
+ 
+     geometrize::task::ShapeCollection m_shapes; ///> Collection of shapes added so far
+ 
+@@ -866,6 +1033,10 @@
+ 
+     QTimer m_scriptEngineUpdateTimer; ///> Timer used to call an update function on the script engine of the associated image task
+     float m_scriptEngineUpdateTimerResolution{100.0f}; ///> Resolution of the script update timer in milliseconds
++
++    // 场景刷新节流:33ms 合帧期内累积的新形状,到期一次性渲染(见 signal_afterAppendShapes 连接处)
++    bool m_sceneUpdatePending{false};
++    std::vector<geometrize::ShapeResult> m_pendingSceneShapes;
+ };
+ 
+ ImageTaskWindow::ImageTaskWindow() :
+@@ -47,6 +47,13 @@
+     void setRunStopButtonText(const QString& text);
+ 
+     /**
++     * @brief setUndoRedoButtonsEnabled Sets whether the undo/redo buttons are enabled.
++     * @param undoEnabled True to enable the undo button.
++     * @param redoEnabled True to enable the redo button.
++     */
++    void setUndoRedoButtonsEnabled(bool undoEnabled, bool redoEnabled);
++
++    /**
+      * @brief syncUserInterface Syncs the user interface with the current image task.
+      * This should be called after setting a new image task, or new task settings.
+      * Note this does not change the run/stop button text.
+@@ -57,6 +64,8 @@
+     void runStopButtonClicked();
+     void stepButtonClicked();
+     void clearButtonClicked();
++    void undoButtonClicked();
++    void redoButtonClicked();
+     void shapeBoundsSliderMoved();
+ 
+ protected:
+@@ -66,6 +75,8 @@
+     void on_runStopButton_clicked();
+     void on_stepButton_clicked();
+     void on_clearButton_clicked();
++    void on_undoButton_clicked();
++    void on_redoButton_clicked();
+ 
+     void on_usesRectangles_clicked(bool checked);
+     void on_usesRotatedRectangles_clicked(bool checked);
+@@ -2,6 +2,8 @@
+ #include "ui_imagetaskrunnerwidget.h"
+ 
+ #include <memory>
++#include <algorithm>
++#include <thread>
+ 
+ #include <QEvent>
+ #include <QLocale>
+@@ -50,6 +52,20 @@
+             m_task->getPreferences().setShapeBoundsEnabled(state != Qt::Unchecked);
+         });
+ 
++        // 算法增强轨道开关:勾选即写任务偏好(每步 stepModel 组装 options 时透传到库)
++        connect(ui->pyramidSearchCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setPyramidSearch(checked);
++        });
++        connect(ui->adaptiveStepCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setAdaptiveStep(checked);
++        });
++        connect(ui->alphaSearchCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setAlphaSearch(checked);
++        });
++        connect(ui->errorGuideCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setErrorGuide(checked);
++        });
++
+         connect(m_hBoundsSlider, &geometrize::dialog::RangeSlider::lowerValueChanged, [this](const int value) {
+             m_task->getPreferences().setShapeBoundsXMinPercent(static_cast<double>(value));
+             emit q->shapeBoundsSliderMoved();
+@@ -73,6 +89,8 @@
+         runnerButtonsLayout->addWidget(ui->runStopButton);
+         runnerButtonsLayout->addWidget(ui->stepButton);
+         runnerButtonsLayout->addWidget(ui->clearButton);
++        runnerButtonsLayout->addWidget(ui->undoButton);
++        runnerButtonsLayout->addWidget(ui->redoButton);
+ 
+         ui->bottomButtonsContainer->setLayout(runnerButtonsLayout);
+ 
+@@ -122,16 +140,43 @@
+         ui->mutationsPerCandidateShapeSlider->setValue(opts.maxShapeMutations);
+         ui->randomSeedSpinBox->setValue(opts.seed);
+ 
+-        // Constrain max threads based on global settings
+-        ui->maxThreadsSpinBox->setMaximum(geometrize::preferences::getGlobalPreferences().getImageTaskMaxThreads());
+-
+-        ui->maxThreadsSpinBox->setValue(opts.maxThreads);
++        // 最大线程数完全按 CPU 动态适配:
++        // - 上限 = 硬件线程数(hardware_concurrency;查询失败时退回全局偏好值)
++        // - 全局偏好的旧值不参与封顶(避免历史持久化值把多核机器压回小数字)
++        // - 新任务的初始值 = min(任务偏好已有值, 硬件线程数);全局偏好值大于硬件线程数时
++        //   视为用户"想吃满全部线程",直接用硬件线程数
++        const std::uint32_t globalMaxThreads{geometrize::preferences::getGlobalPreferences().getImageTaskMaxThreads()};
++        std::uint32_t hardwareThreads{std::thread::hardware_concurrency()};
++        if(hardwareThreads == 0) {
++            hardwareThreads = (globalMaxThreads > 0) ? globalMaxThreads : 4U;
++        }
++        ui->maxThreadsSpinBox->setMaximum(static_cast<int>(hardwareThreads));
++
++        std::uint32_t initialThreads{opts.maxThreads};
++        if(initialThreads == 0 || initialThreads > hardwareThreads) {
++            initialThreads = hardwareThreads; // 默认吃满 CPU
++        }
++        ui->maxThreadsSpinBox->setValue(static_cast<int>(initialThreads));
+ 
+         ui->useBoundsCheckbox->setChecked(opts.shapeBounds.enabled);
+         m_hBoundsSlider->setLowerValue(opts.shapeBounds.xMinPercent);
+         m_hBoundsSlider->setUpperValue(opts.shapeBounds.xMaxPercent);
+         m_vBoundsSlider->setLowerValue(opts.shapeBounds.yMinPercent);
+         m_vBoundsSlider->setUpperValue(opts.shapeBounds.yMaxPercent);
++
++        // 增强开关回填:先阻塞信号再 setChecked,避免回填动作反写偏好(与 load 时序无关,纯防御)
++        ui->pyramidSearchCheckbox->blockSignals(true);
++        ui->adaptiveStepCheckbox->blockSignals(true);
++        ui->alphaSearchCheckbox->blockSignals(true);
++        ui->errorGuideCheckbox->blockSignals(true);
++        ui->pyramidSearchCheckbox->setChecked(opts.pyramidSearch);
++        ui->adaptiveStepCheckbox->setChecked(opts.enhancements.adaptiveStep);
++        ui->alphaSearchCheckbox->setChecked(opts.enhancements.alphaSearch);
++        ui->errorGuideCheckbox->setChecked(opts.enhancements.errorGuide);
++        ui->pyramidSearchCheckbox->blockSignals(false);
++        ui->adaptiveStepCheckbox->blockSignals(false);
++        ui->alphaSearchCheckbox->blockSignals(false);
++        ui->errorGuideCheckbox->blockSignals(false);
+     }
+ 
+     void toggleRunning()
+@@ -142,6 +187,22 @@
+     void stepModel()
+     {
+         emit q->stepButtonClicked();
++    }
++
++    void undoModel()
++    {
++        emit q->undoButtonClicked();
++    }
++
++    void redoModel()
++    {
++        emit q->redoButtonClicked();
++    }
++
++    void setUndoRedoButtonsEnabled(bool undoEnabled, bool redoEnabled)
++    {
++        ui->undoButton->setEnabled(undoEnabled);
++        ui->redoButton->setEnabled(redoEnabled);
+     }
+ 
+     void clearModel()
+@@ -228,6 +289,11 @@
+     d->setRunStopButtonText(text);
+ }
+ 
++void ImageTaskRunnerWidget::setUndoRedoButtonsEnabled(bool undoEnabled, bool redoEnabled)
++{
++    d->setUndoRedoButtonsEnabled(undoEnabled, redoEnabled);
++}
++
+ void ImageTaskRunnerWidget::syncUserInterface()
+ {
+     d->syncUserInterface();
+@@ -246,6 +312,16 @@
+ void ImageTaskRunnerWidget::on_clearButton_clicked()
+ {
+     d->clearModel();
++}
++
++void ImageTaskRunnerWidget::on_undoButton_clicked()
++{
++    d->undoModel();
++}
++
++void ImageTaskRunnerWidget::on_redoButton_clicked()
++{
++    d->redoModel();
+ }
+ 
+ void ImageTaskRunnerWidget::on_usesRectangles_clicked(bool checked)
+@@ -409,6 +409,57 @@
+     </layout>
+    </item>
+    <item>
++    <widget class="Line" name="enhancementsSeparator">
++     <property name="orientation">
++      <enum>Qt::Horizontal</enum>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <layout class="QVBoxLayout" name="enhancementsLayout">
++     <item>
++      <widget class="QCheckBox" name="pyramidSearchCheckbox">
++       <property name="toolTip">
++        <string>Evaluate hill-climbing candidates on a half-resolution image. Much faster on large images, output differs from the standard search.</string>
++       </property>
++       <property name="text">
++        <string>Pyramid Search (Fast)</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="adaptiveStepCheckbox">
++       <property name="toolTip">
++        <string>Shrink the mutation step when candidates keep failing, grow it back on successes (1/5 success rule). Better quality per step, slower.</string>
++       </property>
++       <property name="text">
++        <string>Adaptive Mutation Step</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="alphaSearchCheckbox">
++       <property name="toolTip">
++        <string>Try several opacity levels per shape and keep the best. Better quality per step, much slower.</string>
++       </property>
++       <property name="text">
++        <string>Per-Shape Alpha Search</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="errorGuideCheckbox">
++       <property name="toolTip">
++        <string>Place new shapes where the error is highest instead of uniformly at random. Helps most with low budgets (few candidates or mutations).</string>
++       </property>
++       <property name="text">
++        <string>Error-Guided Shape Placement</string>
++       </property>
++      </widget>
++     </item>
++    </layout>
++   </item>
++   <item>
+     <spacer name="verticalSpacer_2">
+      <property name="orientation">
+       <enum>Qt::Vertical</enum>
+@@ -471,6 +522,32 @@
+     </widget>
+    </item>
+    <item>
++    <widget class="QPushButton" name="undoButton">
++     <property name="sizePolicy">
++      <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
++       <horstretch>0</horstretch>
++       <verstretch>0</verstretch>
++      </sizepolicy>
++     </property>
++     <property name="text">
++      <string extracomment="Text on a button that removes the most recently added shape from the task when pressed">Undo</string>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <widget class="QPushButton" name="redoButton">
++     <property name="sizePolicy">
++      <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
++       <horstretch>0</horstretch>
++       <verstretch>0</verstretch>
++      </sizepolicy>
++     </property>
++     <property name="text">
++      <string extracomment="Text on a button that re-adds the most recently undone shape to the task when pressed">Redo</string>
++     </property>
++    </widget>
++   </item>
++   <item>
+     <widget class="QWidget" name="bottomButtonsContainer" native="true"/>
+    </item>
+   </layout>
+@@ -421,6 +421,16 @@
+   <action name="actionExit">
+    <property name="text">
+     <string extracomment="Text on a menu item that closes the window when pressed">Close</string>
++   </property>
++  </action>
++  <action name="actionUndo">
++   <property name="text">
++    <string extracomment="Text on a menu item that removes the most recently added shape from the task when pressed">Undo</string>
++   </property>
++  </action>
++  <action name="actionRedo">
++   <property name="text">
++    <string extracomment="Text on a menu item that re-adds the most recently undone shape to the task when pressed">Redo</string>
+    </property>
+   </action>
+   <action name="actionSave_Settings_Template">

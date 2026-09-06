@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/glass_of_lemon_juice/glass_of_lemon_juice.jpg</file>
+        <file>templates/templates/glass_of_lemon_juice/manifest.json</file>
+        <file>templates/templates/glass_of_lemon_juice/settings.json</file>
+    </qresource>
+</RCC>

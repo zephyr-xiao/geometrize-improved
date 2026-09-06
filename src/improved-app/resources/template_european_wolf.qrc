@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/european_wolf/european_wolf.jpg</file>
+        <file>templates/templates/european_wolf/manifest.json</file>
+        <file>templates/templates/european_wolf/settings.json</file>
+    </qresource>
+</RCC>

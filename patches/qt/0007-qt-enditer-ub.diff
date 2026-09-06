@@ -1,0 +1,13 @@
+--- upstream/geometrize-app/geometrize/script/geometrizerengine.h	2026-08-27 13:24:26.069703600 +0800
++++ src/improved-app/geometrize/script/geometrizerengine.h	2026-08-28 04:39:34.169724400 +0800
+@@ -191,7 +191,9 @@
+     {
+         try {
+             const auto it{scripts.find(functionName)};
+-            assert(it != scripts.end());
++            if(it == scripts.end()) {
++                return; // 该名下没有脚本(如 logo 任务走默认 C++ 实现),跳过安装
++            }
+             m_engine->eval(it->second);
+         } catch(...) {
+             // Either syntax error or the function was already defined

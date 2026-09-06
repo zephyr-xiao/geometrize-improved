@@ -1,0 +1,24 @@
+--- src/baseline-lib/geometrize/geometrize/model.h
++++ src/improved-lib/geometrize/geometrize/model.h
+@@ -91,6 +91,10 @@
+      * @param maxThreads The maximum number of threads to use during this step.
+      * @param energyFunction An optional function to calculate the energy (if unspecified a default implementation is used).
+      * @param addShapePrecondition An optional function to determine whether to accept a shape (if unspecified a default implementation is used).
++     * @param pyramidSearch 金字塔搜索开关:hill-climb 评估在半分辨率图上进行(算法增强轨道,默认关)。
++     * 自定义 energyFunction 存在时被忽略(自定义回调语义按全分辨率位图约定)。
++     * @param enhancements 增强爬山开关集(自适应步长/alpha 搜索/误差图引导;默认全关,经典路径零参与)。
++     * 误差图引导开启时 Model 自动维护权重表(提交前重建、任务期只读),自定义 energyFunction 与其并存时同样被忽略(增强轨道既有语义)。
+      * @return A vector containing data about the shapes added to the model in this step. This may be empty if no shape that improved the image could be found.
+      */
+     std::vector<geometrize::ShapeResult> step(
+@@ -100,7 +104,9 @@
+             std::uint32_t maxShapeMutations,
+             std::uint32_t maxThreads,
+             const geometrize::core::EnergyFunction& energyFunction = nullptr,
+-            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition = nullptr);
++            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition = nullptr,
++            bool pyramidSearch = false,
++            const geometrize::core::HillClimbEnhancements& enhancements = {});
+ 
+     /**
+      * @brief drawShape Draws a shape on the model. Typically used when to manually add a shape to the image (e.g. when setting an initial background).

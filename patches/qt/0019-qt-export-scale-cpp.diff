@@ -1,0 +1,68 @@
+@@ -1,6 +1,7 @@
+ #include "imagetaskexportwidget.h"
+ #include "ui_imagetaskexportwidget.h"
+ 
++#include <algorithm>
+ #include <memory>
+ #include <vector>
+ 
+@@ -70,8 +71,8 @@
+             return;
+         }
+ 
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
++        // 按用户倍率在放大画布上重放形状矢量:形状坐标不变,放大由 SVG viewBox→输出尺寸映射完成
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
+         const std::uint32_t width{m_task->getCurrent().getWidth()};
+         const std::uint32_t height{m_task->getCurrent().getHeight()};
+         geometrize::exporter::exportRasterizedSvg(
+@@ -95,8 +96,8 @@
+             return;
+         }
+ 
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
++        // 按用户倍率在放大画布上重放形状矢量,逐步前缀各存一帧
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
+         const std::uint32_t width{m_task->getCurrent().getWidth()};
+         const std::uint32_t height{m_task->getCurrent().getHeight()};
+         geometrize::exporter::exportRasterizedSvgs(
+@@ -145,16 +146,18 @@
+             return;
+         }
+ 
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
++        // 参数与默认值对齐旧行为:每 2 shape 一帧、动态延迟、x3 输出、无限循环、末帧 2 秒
++        const std::size_t frameStep{static_cast<std::size_t>(std::max(1, ui->frameStepSpinBox->value()))};
++        const std::uint32_t frameDelayMs{static_cast<std::uint32_t>(1000 / std::max(1, ui->frameRateSpinBox->value()))};
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->scaleFactorSpinBox->value()))};
++        const std::uint32_t loopCount{ui->loopGifCheckbox->isChecked() ? 0U : 1U};
++        const std::uint32_t endPauseMs{ui->endPauseCheckbox->isChecked() ? 2000U : 0U};
++
+         const std::uint32_t width{m_task->getCurrent().getWidth()};
+         const std::uint32_t height{m_task->getCurrent().getHeight()};
+ 
+-        auto frameSkipPredicate = [](const std::size_t frameIdx) {
+-            if(frameIdx % 2 == 0) {
+-                return true;
+-            }
+-            return false;
++        auto frameSkipPredicate = [frameStep](const std::size_t frameIdx) {
++            return frameIdx % frameStep != 0; // 保留每第 N 个形状处取帧
+         };
+ 
+         geometrize::exporter::exportGIF(
+@@ -164,7 +167,10 @@
+             width * scaleFactor,
+             height * scaleFactor,
+             frameSkipPredicate,
+-            path.toStdString());
++            path.toStdString(),
++            frameDelayMs,
++            loopCount,
++            endPauseMs);
+     }
+ 
+     void saveHTML5WebpageButton() const

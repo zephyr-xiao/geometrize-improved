@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/deer/deer.jpg</file>
+        <file>templates/templates/deer/manifest.json</file>
+        <file>templates/templates/deer/settings.json</file>
+    </qresource>
+</RCC>

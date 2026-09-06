@@ -1,0 +1,2 @@
+﻿"case","img","steps","threads","types","fastExtra","verdict","sha_match","fingerprint_match","self_consistent","expect_diff","base_ms","fast_ms","speedup","note"
+"enhanced_combo_fork","gradnoise_512.png","40","8","ellipse","--adaptive-step --alpha-search","FAIL","True","True","True","True","20311","7539","2.694","EXPECTED_DIFF:增强组合分叉锁定"

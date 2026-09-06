@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/daisy_yet_another/daisy_blooming.jpg</file>
+        <file>templates/templates/daisy_yet_another/manifest.json</file>
+        <file>templates/templates/daisy_yet_another/settings.json</file>
+    </qresource>
+</RCC>

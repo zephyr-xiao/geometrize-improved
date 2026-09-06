@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/chomsky/chomsky.jpg</file>
+        <file>templates/templates/chomsky/manifest.json</file>
+        <file>templates/templates/chomsky/settings.json</file>
+    </qresource>
+</RCC>

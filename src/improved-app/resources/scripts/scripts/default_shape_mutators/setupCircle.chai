@@ -1,0 +1,5 @@
+def setupCircle(shape) {
+    shape.m_x = randomInRange(xMin, xMax);
+    shape.m_y = randomInRange(yMin, yMax);
+    shape.m_r = randomInRange(1, 32);
+}

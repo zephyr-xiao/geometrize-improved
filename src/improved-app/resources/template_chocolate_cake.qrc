@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/chocolate_cake/chocolate_cake.jpg</file>
+        <file>templates/templates/chocolate_cake/manifest.json</file>
+        <file>templates/templates/chocolate_cake/settings.json</file>
+    </qresource>
+</RCC>

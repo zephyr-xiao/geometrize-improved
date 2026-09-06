@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/fish/fish.jpg</file>
+        <file>templates/templates/fish/manifest.json</file>
+        <file>templates/templates/fish/settings.json</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,155 @@
+#pragma once
+
+#include <cassert>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+#include "rgba.h"
+
+namespace geometrize
+{
+
+/**
+ * @brief The Bitmap class is a helper class for working with bitmap data.
+ * @author Sam Twidale (https://samcodes.co.uk/)
+ */
+class Bitmap
+{
+public:
+    /**
+     * @brief Bitmap Creates an empty 0x0 bitmap (placeholder for lazy initialization).
+     */
+    Bitmap() : m_width{0}, m_height{0} {}
+
+    /**
+     * @brief Bitmap Creates a new bitmap.
+     * @param width The width of the bitmap.
+     * @param height The height of the bitmap.
+     * @param color The starting color of the bitmap (RGBA format).
+     */
+    Bitmap(std::uint32_t width, std::uint32_t height, geometrize::rgba color);
+
+    /**
+     * @brief Bitmap Creates a new bitmap from the supplied byte data.
+     * @param width The width of the bitmap.
+     * @param height The height of the bitmap.
+     * @param data The byte data to fill the bitmap with, must be width * height * depth (4) long.
+     */
+    Bitmap(std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& data);
+
+    /**
+     * @brief Bitmap move 版本:直接接管外部数据,避免宿主侧加载路径的二次深拷。
+     */
+    Bitmap(std::uint32_t width, std::uint32_t height, std::vector<std::uint8_t>&& data) : m_width{width}, m_height{height}, m_data{std::move(data)}
+    {
+        assert((static_cast<std::size_t>(width) * height * 4U) == m_data.size());
+    }
+
+    ~Bitmap() = default;
+    Bitmap& operator=(const geometrize::Bitmap&) = default;
+    Bitmap(const geometrize::Bitmap&) = default;
+
+    /**
+     * @brief getWidth Gets the width of the bitmap.
+     */
+    std::uint32_t getWidth() const
+    {
+        return m_width;
+    }
+
+    /**
+     * @brief getHeight Gets the height of the bitmap.
+     */
+    std::uint32_t getHeight() const
+    {
+        return m_height;
+    }
+
+    /**
+     * @brief copyData Gets a copy of the raw bitmap data.
+     * @return The bitmap data.
+     */
+    std::vector<std::uint8_t> copyData() const
+    {
+        return m_data;
+    }
+
+    /**
+     * @brief getDataRef Gets a reference to the raw bitmap data.
+     * @return The bitmap data.
+     */
+    const std::vector<std::uint8_t>& getDataRef() const
+    {
+        return m_data;
+    }
+
+    /**
+     * @brief getDataRefMut Gets a mutable reference to the raw bitmap data.
+     * 供热循环直接以裸指针读写,替代逐像素 setPixel 的函数调用税。
+     * @return The mutable bitmap data.
+     */
+    std::vector<std::uint8_t>& getDataRefMut()
+    {
+        return m_data;
+    }
+
+    /**
+     * @brief getPixel Gets a pixel color value.
+     * @param x The x-coordinate of the pixel.
+     * @param y The y-coordinate of the pixel.
+     * @return The pixel RGBA color value.
+     */
+    geometrize::rgba getPixel(std::uint32_t x, std::uint32_t y) const
+    {
+        // 64 位索引防大图时 width*y 溢出 int32(常规尺寸下数值与 32 位式恒等)
+        const std::size_t index{(static_cast<std::size_t>(m_width) * y + x) * 4U};
+        return geometrize::rgba{m_data[index], m_data[index + 1U], m_data[index + 2U], m_data[index + 3U]};
+    }
+
+    /**
+     * @brief setPixel Sets a pixel color value.
+     * @param x The x-coordinate of the pixel.
+     * @param y The y-coordinate of the pixel.
+     * @param color The pixel RGBA color value.
+     */
+    void setPixel(std::uint32_t x, std::uint32_t y, geometrize::rgba color)
+    {
+        const std::size_t index{(static_cast<std::size_t>(m_width) * y + x) * 4U};
+        m_data[index] = color.r;
+        m_data[index + 1U] = color.g;
+        m_data[index + 2U] = color.b;
+        m_data[index + 3U] = color.a;
+    }
+
+    /**
+     * @brief fill Fills the bitmap with the given color.
+     * @param color The color to fill the bitmap with.
+     */
+    void fill(geometrize::rgba color)
+    {
+        for(std::size_t i = 0; i < m_data.size(); i += 4U) {
+            m_data[i] = color.r;
+            m_data[i + 1U] = color.g;
+            m_data[i + 2U] = color.b;
+            m_data[i + 3U] = color.a;
+        }
+    }
+
+private:
+    std::uint32_t m_width; ///< The width of the bitmap.
+    std::uint32_t m_height; ///< The height of the bitmap.
+    std::vector<std::uint8_t> m_data; ///< The bitmap data.
+};
+
+/**
+ * @brief downsampleHalf 2×2 box 整数下采样,输出 ceil(宽/2)×ceil(高/2) 的位图。
+ * 金字塔搜索轨道专用:半分辨率目标图/当前图由此生成。纯整数运算(每像素
+ * count∈{4,2,1} 求和后 (sum + count/2) / count 四舍五入),不引入浮点参与点。
+ * 坐标映射约定为 floor:x → x/2,奇数末行/列由 ceil 尺寸兜住,无像素盲区。
+ * @param image The source bitmap.
+ * @return The downsampled bitmap (dimensions ceil(width/2) × ceil(height/2)).
+ */
+geometrize::Bitmap downsampleHalf(const geometrize::Bitmap& image);
+
+}

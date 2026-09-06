@@ -1,0 +1,12 @@
+--- upstream/geometrize-app/geometrize/dialog/globalpreferencesdialog.ui	2026-08-27 13:24:25.932273700 +0800
++++ src/improved-app/geometrize/dialog/globalpreferencesdialog.ui	2026-08-28 09:58:06.619758700 +0800
+@@ -644,6 +644,9 @@
+                    </item>
+                    <item>
+                     <widget class="QSpinBox" name="maxThreadsPerImageTask">
++                     <property name="toolTip">
++                      <string extracomment="Hint explaining that 0 means auto-match CPU thread count, and a positive value caps threads per image task">0 = auto-match CPU threads. A positive value caps the max threads each image task can use</string>
++                     </property>
+                      <property name="maximum">
+                       <number>128</number>
+                      </property>

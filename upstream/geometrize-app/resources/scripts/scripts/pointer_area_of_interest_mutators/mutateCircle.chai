@@ -1,0 +1,16 @@
+def mutateCircle(shape) {
+    var r = randomInRange(0, 1);
+    
+    switch(r) {
+        case (0) {
+            var v = randomInVector(aoiPixels);
+            shape.m_x = v.first;
+            shape.m_y = v.second;
+            break;
+        }
+        case (1) {
+            shape.m_r = clamp(shape.m_r + randomInRange(-16, 16), 1, xMax - 1);
+            break;
+        }
+    }
+}

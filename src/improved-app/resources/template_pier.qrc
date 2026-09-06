@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/pier/manifest.json</file>
+        <file>templates/templates/pier/pier.jpg</file>
+        <file>templates/templates/pier/settings.json</file>
+    </qresource>
+</RCC>

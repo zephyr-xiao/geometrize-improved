@@ -1,0 +1,38 @@
+--- upstream/geometrize-app/geometrize/dialog/imagetaskrunnerwidget.cpp	2026-08-27 13:24:25.937779000 +0800
++++ src/improved-app/geometrize/dialog/imagetaskrunnerwidget.cpp	2026-08-28 09:33:26.390952700 +0800
+@@ -2,6 +2,8 @@
+ #include "ui_imagetaskrunnerwidget.h"
+ 
+ #include <memory>
++#include <algorithm>
++#include <thread>
+ 
+ #include <QEvent>
+ #include <QLocale>
+@@ -122,10 +124,23 @@
+         ui->mutationsPerCandidateShapeSlider->setValue(opts.maxShapeMutations);
+         ui->randomSeedSpinBox->setValue(opts.seed);
+ 
+-        // Constrain max threads based on global settings
+-        ui->maxThreadsSpinBox->setMaximum(geometrize::preferences::getGlobalPreferences().getImageTaskMaxThreads());
++        // 最大线程数完全按 CPU 动态适配:
++        // - 上限 = 硬件线程数(hardware_concurrency;查询失败时退回全局偏好值)
++        // - 全局偏好的旧值不参与封顶(避免历史持久化值把多核机器压回小数字)
++        // - 新任务的初始值 = min(任务偏好已有值, 硬件线程数);全局偏好值大于硬件线程数时
++        //   视为用户"想吃满全部线程",直接用硬件线程数
++        const std::uint32_t globalMaxThreads{geometrize::preferences::getGlobalPreferences().getImageTaskMaxThreads()};
++        std::uint32_t hardwareThreads{std::thread::hardware_concurrency()};
++        if(hardwareThreads == 0) {
++            hardwareThreads = (globalMaxThreads > 0) ? globalMaxThreads : 4U;
++        }
++        ui->maxThreadsSpinBox->setMaximum(static_cast<int>(hardwareThreads));
+ 
+-        ui->maxThreadsSpinBox->setValue(opts.maxThreads);
++        std::uint32_t initialThreads{opts.maxThreads};
++        if(initialThreads == 0 || initialThreads > hardwareThreads) {
++            initialThreads = hardwareThreads; // 默认吃满 CPU
++        }
++        ui->maxThreadsSpinBox->setValue(static_cast<int>(initialThreads));
+ 
+         ui->useBoundsCheckbox->setChecked(opts.shapeBounds.enabled);
+         m_hBoundsSlider->setLowerValue(opts.shapeBounds.xMinPercent);

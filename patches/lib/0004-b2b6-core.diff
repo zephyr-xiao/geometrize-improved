@@ -1,0 +1,259 @@
+--- src/baseline-lib/geometrize/geometrize/core.cpp	2026-08-27 13:24:27.362629300 +0800
++++ src/improved-lib/geometrize/geometrize/core.cpp	2026-08-28 00:35:40.304926300 +0800
+@@ -18,24 +18,29 @@
+ namespace
+ {
+ 
+-/**
+-* @brief hillClimb Hill climbing optimization algorithm, attempts to minimize energy (the error/difference).
+-* @param state The state to optimize.
+-* @param maxAge The maximum age.
+-* @param target The target bitmap.
+-* @param current The current bitmap.
+-* @param buffer The buffer bitmap.
+-* @param lastScore The last score.
+-* @return The best state found from hillclimbing.
+-*/
+-geometrize::State hillClimb(
++// rasterizeInto 辅助:优先走形状的复用入口,未设置时回退传统路径(保持所有调用方行为一致)
++void rasterizeIntoVector(const geometrize::Shape& shape, std::vector<geometrize::Scanline>& lines)
++{
++    if(shape.rasterizeInto) {
++        shape.rasterizeInto(shape, lines);
++    } else {
++        lines = shape.rasterize(shape);
++    }
++}
++
++// B6 scratch 复用:光栅化结果写入调用方提供的向量,消除爬山循环里每 age 一次的堆分配往返。
++// 能量函数签名吃 const 引用,值内容与新建向量完全一致。
++
++/// hillClimb 的 scratch 版本,行为与上游逐位一致(仅容器复用差异)
++geometrize::State hillClimbScratch(
+         const geometrize::State& state,
+         const std::uint32_t maxAge,
+         const geometrize::Bitmap& target,
+         const geometrize::Bitmap& current,
+         geometrize::Bitmap& buffer,
+         const double lastScore,
+-        const geometrize::core::EnergyFunction& energyFunction)
++        const geometrize::core::EnergyFunction& energyFunction,
++        std::vector<geometrize::Scanline>& lines)
+ {
+     geometrize::State s(state);
+     geometrize::State bestState(state);
+@@ -44,7 +49,8 @@
+     std::uint32_t age{0};
+     while(age < maxAge) {
+         const geometrize::State undo{s.mutate()};
+-        s.m_score = energyFunction(s.m_shape->rasterize(*s.m_shape), s.m_alpha, target, current, buffer, lastScore);
++        rasterizeIntoVector(*s.m_shape, lines);
++        s.m_score = energyFunction(lines, s.m_alpha, target, current, buffer, lastScore);
+         const double energy = s.m_score;
+         if(energy >= bestEnergy) {
+             s = undo;
+@@ -59,18 +65,8 @@
+     return bestState;
+ }
+ 
+-/**
+-* @brief bestRandomState Gets the best state using a random algorithm.
+-* @param shapeCreator A function that will create the shapes that will be chosen from.
+-* @param alpha The opacity of the shape.
+-* @param n The number of states to try.
+-* @param target The target bitmap.
+-* @param current The current bitmap.
+-* @param buffer The buffer bitmap.
+-* @param lastScore The last score.
+-* @return The best random state i.e. the one with the lowest energy.
+-*/
+-geometrize::State bestRandomState(
++/// bestRandomState 的 scratch 版本,off-by-one 怪癖(RNG 消费 n+2 次)原样保留
++geometrize::State bestRandomStateScratch(
+         const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
+         const std::uint32_t alpha,
+         const std::uint32_t n,
+@@ -78,15 +74,33 @@
+         const geometrize::Bitmap& current,
+         geometrize::Bitmap& buffer,
+         const double lastScore,
+-        const geometrize::core::EnergyFunction& energyFunction)
++        const geometrize::core::EnergyFunction& energyFunction,
++        std::vector<geometrize::Scanline>& lines)
+ {
+-    geometrize::State bestState(shapeCreator(), alpha);
+-    bestState.m_score = energyFunction(bestState.m_shape->rasterize(*bestState.m_shape), bestState.m_alpha, target, current, buffer, lastScore);
++    // 上游语义:State 构造时恰好 setup 一次(shapeCreator 的建形不含 setup)。
++    // 本函数手动 setup 一次后以裸 State 装配,避免 State 构造函数二次 setup 消耗双倍 RNG。
++    const auto makeState = [alpha](std::shared_ptr<geometrize::Shape> shape) {
++        geometrize::State state;
++        state.m_alpha = alpha;
++        state.m_score = -1.0;
++        state.m_shape = std::move(shape);
++        return state;
++    };
++
++    std::shared_ptr<geometrize::Shape> firstShape{shapeCreator()};
++    firstShape->setup(*firstShape);
++    rasterizeIntoVector(*firstShape, lines);
++    geometrize::State bestState = makeState(firstShape);
++    bestState.m_score = energyFunction(lines, bestState.m_alpha, target, current, buffer, lastScore);
+     double bestEnergy = bestState.m_score;
+ 
+     for(std::uint32_t i = 0; i <= n; i++) {
+-        geometrize::State state(shapeCreator(), alpha);
+-        state.m_score = energyFunction(state.m_shape->rasterize(*state.m_shape), state.m_alpha, target, current, buffer, lastScore);
++        std::shared_ptr<geometrize::Shape> shape{shapeCreator()};
++        shape->setup(*shape);
++        rasterizeIntoVector(*shape, lines);
++
++        geometrize::State state = makeState(shape);
++        state.m_score = energyFunction(lines, state.m_alpha, target, current, buffer, lastScore);
+         const double energy = state.m_score;
+         if(i == 0 || energy < bestEnergy) {
+             bestEnergy = energy;
+@@ -134,27 +148,33 @@
+     std::int64_t totalGreen{0};
+     std::int64_t totalBlue{0};
+     std::int64_t count{0};
++    // 注意:此浮点表达式是全管线唯一的浮点参与点,float 截断行为是可观察输出的一部分,必须原样保留
+     const std::int32_t a{static_cast<std::int32_t>(257.0f * 255.0f / static_cast<float>(alpha))};
+ 
++    if(target.getDataRef().empty() || current.getDataRef().empty()) {
++        return geometrize::rgba{0, 0, 0, 0};
++    }
++
++    // 裸指针行游标:混色公式与求和次序逐像素保持
++    const auto* targetData = target.getDataRef().data();
++    const auto* currentData = current.getDataRef().data();
++    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
++
+     // For each scanline
+     for(const geometrize::Scanline& line : lines) {
+-        const std::int32_t y{line.y};
++        if(line.y < 0) {
++            continue;
++        }
++        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
++        const auto* cRow = currentData + rowStride * static_cast<std::size_t>(line.y);
++
+         for(std::int32_t x = line.x1; x <= line.x2; x++) {
+-            // Get the overlapping target and current colors
+-            const geometrize::rgba t(target.getPixel(x, y));
+-            const geometrize::rgba c(current.getPixel(x, y));
+-
+-            const std::int32_t tr{t.r};
+-            const std::int32_t tg{t.g};
+-            const std::int32_t tb{t.b};
+-            const std::int32_t cr{c.r};
+-            const std::int32_t cg{c.g};
+-            const std::int32_t cb{c.b};
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
+ 
+             // Mix the red, green and blue components, blending by the given alpha value
+-            totalRed += static_cast<std::int64_t>((tr - cr) * a + cr * 257);
+-            totalGreen += static_cast<std::int64_t>((tg - cg) * a + cg * 257);
+-            totalBlue += static_cast<std::int64_t>((tb - cb) * a + cb * 257);
++            totalRed += static_cast<std::int64_t>((tRow[offset] - cRow[offset]) * a + cRow[offset] * 257);
++            totalGreen += static_cast<std::int64_t>((tRow[offset + 1U] - cRow[offset + 1U]) * a + cRow[offset + 1U] * 257);
++            totalBlue += static_cast<std::int64_t>((tRow[offset + 2U] - cRow[offset + 2U]) * a + cRow[offset + 2U] * 257);
+             count++;
+         }
+     }
+@@ -180,15 +200,21 @@
+     const std::size_t height{first.getHeight()};
+     std::uint64_t total{0};
+ 
++    // 裸指针行游标:公式与累加次序逐像素保持
++    const auto* firstData = first.getDataRef().data();
++    const auto* secondData = second.getDataRef().data();
++    const std::size_t rowStride{width * 4U};
++
+     for(std::size_t y = 0; y < height; y++) {
++        const auto* fRow = firstData + rowStride * y;
++        const auto* sRow = secondData + rowStride * y;
+         for(std::size_t x = 0; x < width; x++) {
+-            const geometrize::rgba f(first.getPixel(x, y));
+-            const geometrize::rgba s(second.getPixel(x, y));
++            const std::size_t offset{x * 4U};
+ 
+-            const std::int32_t dr = {static_cast<std::int32_t>(f.r) - static_cast<std::int32_t>(s.r)};
+-            const std::int32_t dg = {static_cast<std::int32_t>(f.g) - static_cast<std::int32_t>(s.g)};
+-            const std::int32_t db = {static_cast<std::int32_t>(f.b) - static_cast<std::int32_t>(s.b)};
+-            const std::int32_t da = {static_cast<std::int32_t>(f.a) - static_cast<std::int32_t>(s.a)};
++            const std::int32_t dr = {static_cast<std::int32_t>(fRow[offset]) - static_cast<std::int32_t>(sRow[offset])};
++            const std::int32_t dg = {static_cast<std::int32_t>(fRow[offset + 1U]) - static_cast<std::int32_t>(sRow[offset + 1U])};
++            const std::int32_t db = {static_cast<std::int32_t>(fRow[offset + 2U]) - static_cast<std::int32_t>(sRow[offset + 2U])};
++            const std::int32_t da = {static_cast<std::int32_t>(fRow[offset + 3U]) - static_cast<std::int32_t>(sRow[offset + 3U])};
+             total += (dr * dr + dg * dg + db * db + da * da);
+         }
+     }
+@@ -202,24 +228,39 @@
+         const double score,
+         const std::vector<Scanline>& lines)
+ {
+-    const std::uint64_t rgbaCount{target.getWidth() * target.getHeight() * 4U};
+-    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * rgbaCount)};
++    const std::uint64_t rgbaCount{static_cast<std::uint64_t>(target.getWidth()) * target.getHeight() * 4U};
++    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * static_cast<double>(rgbaCount))};
++
++    if(target.getDataRef().empty() || before.getDataRef().empty() || after.getDataRef().empty()) {
++        return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
++    }
++
++    // 裸指针行游标:差分公式与累加次序逐像素保持
++    const auto* targetData = target.getDataRef().data();
++    const auto* beforeData = before.getDataRef().data();
++    const auto* afterData = after.getDataRef().data();
++    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
++
+     for(const geometrize::Scanline& line : lines) {
+-        const std::int32_t y{line.y};
++        if(line.y < 0) {
++            continue;
++        }
++        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
++        const auto* bRow = beforeData + rowStride * static_cast<std::size_t>(line.y);
++        const auto* aRow = afterData + rowStride * static_cast<std::size_t>(line.y);
++
+         for(std::int32_t x = line.x1; x <= line.x2; x++) {
+-            const geometrize::rgba t(target.getPixel(x, y));
+-            const geometrize::rgba b(before.getPixel(x, y));
+-            const geometrize::rgba a(after.getPixel(x, y));
+-
+-            const std::int32_t dtbr{static_cast<std::int32_t>(t.r) - static_cast<std::int32_t>(b.r)};
+-            const std::int32_t dtbg{static_cast<std::int32_t>(t.g) - static_cast<std::int32_t>(b.g)};
+-            const std::int32_t dtbb{static_cast<std::int32_t>(t.b) - static_cast<std::int32_t>(b.b)};
+-            const std::int32_t dtba{static_cast<std::int32_t>(t.a) - static_cast<std::int32_t>(b.a)};
+-
+-            const std::int32_t dtar{static_cast<std::int32_t>(t.r) - static_cast<std::int32_t>(a.r)};
+-            const std::int32_t dtag{static_cast<std::int32_t>(t.g) - static_cast<std::int32_t>(a.g)};
+-            const std::int32_t dtab{static_cast<std::int32_t>(t.b) - static_cast<std::int32_t>(a.b)};
+-            const std::int32_t dtaa{static_cast<std::int32_t>(t.a) - static_cast<std::int32_t>(a.a)};
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
++
++            const std::int32_t dtbr{static_cast<std::int32_t>(tRow[offset]) - static_cast<std::int32_t>(bRow[offset])};
++            const std::int32_t dtbg{static_cast<std::int32_t>(tRow[offset + 1U]) - static_cast<std::int32_t>(bRow[offset + 1U])};
++            const std::int32_t dtbb{static_cast<std::int32_t>(tRow[offset + 2U]) - static_cast<std::int32_t>(bRow[offset + 2U])};
++            const std::int32_t dtba{static_cast<std::int32_t>(tRow[offset + 3U]) - static_cast<std::int32_t>(bRow[offset + 3U])};
++
++            const std::int32_t dtar{static_cast<std::int32_t>(tRow[offset]) - static_cast<std::int32_t>(aRow[offset])};
++            const std::int32_t dtag{static_cast<std::int32_t>(tRow[offset + 1U]) - static_cast<std::int32_t>(aRow[offset + 1U])};
++            const std::int32_t dtab{static_cast<std::int32_t>(tRow[offset + 2U]) - static_cast<std::int32_t>(aRow[offset + 2U])};
++            const std::int32_t dtaa{static_cast<std::int32_t>(tRow[offset + 3U]) - static_cast<std::int32_t>(aRow[offset + 3U])};
+ 
+             total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
+             total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
+@@ -243,8 +284,10 @@
+ {
+     const EnergyFunction& e = customEnergyFunction ? customEnergyFunction : geometrize::core::defaultEnergyFunction;
+ 
+-    const geometrize::State state{bestRandomState(shapeCreator, alpha, n, target, current, buffer, lastScore, e)};
+-    return ::hillClimb(state, age, target, current, buffer, lastScore, e);
++    // B6:lines 向量跨 bestRandomState/hillClimb 全程复用,值行为与上游逐位一致
++    std::vector<geometrize::Scanline> lines;
++    const geometrize::State state{bestRandomStateScratch(shapeCreator, alpha, n, target, current, buffer, lastScore, e, lines)};
++    return ::hillClimbScratch(state, age, target, current, buffer, lastScore, e, lines);
+ }
+ 
+ }

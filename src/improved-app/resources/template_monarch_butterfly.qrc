@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/monarch_butterfly/manifest.json</file>
+        <file>templates/templates/monarch_butterfly/monarch_butterfly.jpg</file>
+        <file>templates/templates/monarch_butterfly/settings.json</file>
+    </qresource>
+</RCC>

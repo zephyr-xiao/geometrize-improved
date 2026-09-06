@@ -1,0 +1,2 @@
+﻿"case","img","steps","threads","types","verdict","sha_match","fingerprint_match","self_consistent","expect_diff","base_ms","fast_ms","speedup","note"
+"flat_reject","flat_512.png","40","8","rect","PASS","True","True","True","False","204","58","3.517","高拒绝率回滚路径"

@@ -1,0 +1,2 @@
+﻿"case","img","steps","threads","types","fastExtra","verdict","sha_match","fingerprint_match","self_consistent","expect_diff","base_ms","fast_ms","speedup","note"
+"alpha_search_fork","gradnoise_512.png","40","8","ellipse,tri","--alpha-search","PASS","False","False","True","True","18092","20033","0.903","EXPECTED_DIFF:A2.3 alpha 档位搜索分叉锁定"

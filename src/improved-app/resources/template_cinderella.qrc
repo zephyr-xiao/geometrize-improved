@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/cinderella/cinderella.jpg</file>
+        <file>templates/templates/cinderella/manifest.json</file>
+        <file>templates/templates/cinderella/settings.json</file>
+    </qresource>
+</RCC>

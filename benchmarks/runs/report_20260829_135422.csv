@@ -1,0 +1,3 @@
+﻿"case","img","steps","threads","types","fastExtra","verdict","sha_match","fingerprint_match","self_consistent","expect_diff","base_ms","fast_ms","speedup","note"
+"adaptive_step_fork","gradnoise_512.png","40","8","ellipse,rect","--adaptive-step","PASS","False","False","True","True","18969","20301","0.934","EXPECTED_DIFF:A2.2 自适应步长分叉锁定,增强开关失效(输出变同)即红"
+"adaptive_step_threads1","tree_under_clouds.png","30","1","ellipse","--adaptive-step","PASS","False","False","True","True","4442","8179","0.543","EXPECTED_DIFF:单线程下自适应步长分叉锁定"

@@ -1,0 +1,163 @@
+--- src/baseline-lib/geometrize/geometrize/rasterizer/rasterizer.cpp	2026-08-27 13:24:27.393651900 +0800
++++ src/improved-lib/geometrize/geometrize/rasterizer/rasterizer.cpp	2026-08-27 15:40:54.601177000 +0800
+@@ -5,6 +5,7 @@
+ #include <cmath>
+ #include <cstdint>
+ #include <cstdlib>
++#include <cstring>
+ #include <map>
+ #include <set>
+ #include <utility>
+@@ -93,29 +94,56 @@
+     const std::uint32_t m{UINT16_MAX};
+     const std::uint32_t aa{(m - sa) * 257U};
+ 
++    if(image.getDataRef().empty()) {
++        return;
++    }
++
++    // 裸指针行游标:公式与舍入次序逐像素保持,仅消除逐像素函数调用与索引重算
++    auto* data = image.getDataRefMut().data();
++    const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
++
+     for(const geometrize::Scanline& line : lines) {
+-        const std::int32_t y{line.y};
++        if(line.y < 0) {
++            continue;
++        }
++        auto* row = data + rowStride * static_cast<std::size_t>(line.y);
+ 
+         for(std::int32_t x = line.x1; x <= line.x2; x++) {
+-            const geometrize::rgba d(image.getPixel(x, y));
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
+ 
+-            const std::uint8_t r{static_cast<std::uint8_t>(((d.r * aa + sr * m) / m) >> 8)};
+-            const std::uint8_t g{static_cast<std::uint8_t>(((d.g * aa + sg * m) / m) >> 8)};
+-            const std::uint8_t b{static_cast<std::uint8_t>(((d.b * aa + sb * m) / m) >> 8)};
+-            const std::uint8_t a{static_cast<std::uint8_t>(((d.a * aa + sa * m) / m) >> 8)};
+-
+-            image.setPixel(x, y, geometrize::rgba{r, g, b, a});
++            const std::uint32_t d_r{row[offset]};
++            const std::uint32_t d_g{row[offset + 1U]};
++            const std::uint32_t d_b{row[offset + 2U]};
++            const std::uint32_t d_a{row[offset + 3U]};
++
++            row[offset]     = static_cast<std::uint8_t>(((d_r * aa + sr * m) / m) >> 8);
++            row[offset + 1U] = static_cast<std::uint8_t>(((d_g * aa + sg * m) / m) >> 8);
++            row[offset + 2U] = static_cast<std::uint8_t>(((d_b * aa + sb * m) / m) >> 8);
++            row[offset + 3U] = static_cast<std::uint8_t>(((d_a * aa + sa * m) / m) >> 8);
+         }
+     }
+ }
+ 
+ void copyLines(geometrize::Bitmap& destination, const geometrize::Bitmap& source, const std::vector<geometrize::Scanline>& lines)
+ {
++    if(destination.getDataRef().empty() || source.getDataRef().empty()) {
++        return;
++    }
++
++    // 行段连续区直接 memcpy;数据布局行宽恰为 width*4 无 padding,行内 [x1,x2] 对应连续 4*(x2-x1+1) 字节。
++    auto* dstData = destination.getDataRefMut().data();
++    const auto* srcData = source.getDataRef().data();
++    const std::size_t rowStride{static_cast<std::size_t>(destination.getWidth()) * 4U};
++
+     for(const geometrize::Scanline& line : lines) {
+-        const std::int32_t y{line.y};
+-        for(std::int32_t x = line.x1; x <= line.x2; x++) {
+-            destination.setPixel(x, y, source.getPixel(x, y));
++        if(line.y < 0 || line.x1 > line.x2) {
++            continue;
+         }
++        const std::size_t startOffset{static_cast<std::size_t>(line.x1) * 4U};
++        const std::size_t lengthBytes{static_cast<std::size_t>(line.x2 - line.x1 + 1) * 4U};
++        std::memcpy(dstData + rowStride * static_cast<std::size_t>(line.y) + startOffset,
++                    srcData + rowStride * static_cast<std::size_t>(line.y) + startOffset,
++                    lengthBytes);
+     }
+ }
+ 
+@@ -176,16 +204,24 @@
+         edges.insert(edges.end(), p1p2.begin(), p1p2.end());
+     }
+ 
+-    // Convert outline to scanlines
+-    std::map<std::int32_t, std::set<std::int32_t>> yToXs;
+-    for(std::pair<std::int32_t, std::int32_t> point : edges) {
+-        yToXs[point.second].insert(point.first);
+-    }
+-    for(const auto& it : yToXs) {
+-        const geometrize::Scanline scanline(it.first,
+-        *(std::min_element(it.second.begin(), it.second.end())),
+-        *(std::max_element(it.second.begin(), it.second.end())));
+-        lines.push_back(scanline);
++    // Convert outline to scanlines.
++    // 扁平化等价实现:map<,set<>> 的键升序 ↔ sort 后 y 升序;set 的 min/max ↔ 每 y 组内线性扫描。
++    // sort 是值排序且 (y,x) 全序确定,输出 Scanline 序列与原 map/set 路径一一对应。
++    std::sort(edges.begin(), edges.end(), [](const std::pair<std::int32_t, std::int32_t>& lhs, const std::pair<std::int32_t, std::int32_t>& rhs) {
++        return (lhs.second < rhs.second) || (lhs.second == rhs.second && lhs.first < rhs.first);
++    });
++
++    for(std::size_t i = 0; i < edges.size();) {
++        const std::int32_t y{edges[i].second};
++        const std::int32_t xMinOfRow{edges[i].first};
++        std::size_t j{i};
++        std::int32_t xMaxOfRow{xMinOfRow};
++        while(j < edges.size() && edges[j].second == y) {
++            xMaxOfRow = edges[j].first; // 同 y 组内 x 升序,末个即 max
++            j++;
++        }
++        lines.push_back(geometrize::Scanline(y, xMinOfRow, xMaxOfRow));
++        i = j;
+     }
+ 
+     return lines;
+@@ -223,20 +259,29 @@
+     std::vector<geometrize::Scanline> lines;
+ 
+     const std::int32_t r{static_cast<std::int32_t>(s.m_r)};
++
++    // O(r) 化:整数 x 满足 x²+y²≤r² ⟺ |x| ≤ ⌊√(r²−y²)⌋,
++    // 判定域关于 x=0 对称故原实现的 front/back 恒为 [−half,+half],与逐点扫描取端点等价。
++    // y∈[−r,r] 时 r²−y²≥0 恒成立(含 r=0 的单像素行),与原版"空行分支不可达"的行为一致。
++    const std::int64_t rr2{static_cast<std::int64_t>(r) * r};
+     for(std::int32_t y = -r; y <= r; y++) {
+-        std::vector<std::int32_t> xScan;
+-        for(std::int32_t x = -r; x <= r; x++) {
+-            if(x * x + y * y <= r * r) {
+-                xScan.push_back(x);
+-            }
++        const std::int64_t rem{rr2 - static_cast<std::int64_t>(y) * y};
++        if(rem < 0) {
++            continue; // 不可达分支,防御性保留以对齐原版空行语义
+         }
+-
+-        if(!xScan.empty()) {
+-            const std::int32_t fy{static_cast<std::int32_t>(s.m_y) + y};
+-            const std::int32_t x1{commonutil::clamp(static_cast<std::int32_t>(s.m_x) + xScan.front(), xMin, xMax - 1)};
+-            const std::int32_t x2{commonutil::clamp(static_cast<std::int32_t>(s.m_x) + xScan.back(), xMin, xMax - 1)};
+-            lines.push_back(geometrize::Scanline(fy, x1, x2));
++        // isqrt:浮点初值 + 校正循环,uint64 全程防溢出且精确
++        std::int64_t half{static_cast<std::int64_t>(std::sqrt(static_cast<double>(rem)))};
++        while(half > 0 && half * half > rem) {
++            half--;
+         }
++        while((half + 1) * (half + 1) <= rem) {
++            half++;
++        }
++
++        const std::int32_t fy{static_cast<std::int32_t>(s.m_y) + y};
++        const std::int32_t x1{commonutil::clamp(static_cast<std::int32_t>(s.m_x) - static_cast<std::int32_t>(half), xMin, xMax - 1)};
++        const std::int32_t x2{commonutil::clamp(static_cast<std::int32_t>(s.m_x) + static_cast<std::int32_t>(half), xMin, xMax - 1)};
++        lines.push_back(geometrize::Scanline(fy, x1, x2));
+     }
+ 
+     return geometrize::trimScanlines(lines, xMin, yMin, xMax, yMax);
+@@ -266,7 +311,7 @@
+             x2 = xMax - 1;
+         }
+ 
+-        if (y1 >= xMin && y1 < yMax) {
++        if (y1 >= yMin && y1 < yMax) {
+             lines.push_back(Scanline(y1, x1, x2));
+         }
+         if (y2 >= yMin && y2 < yMax && dy > 0) {

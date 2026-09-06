@@ -1,0 +1,82 @@
+--- src/baseline-lib/geometrize/geometrize/core.h	2026-08-27 13:24:27.364137300 +0800
++++ src/improved-lib/geometrize/geometrize/core.h	2026-08-29 13:00:03.690694700 +0800
+@@ -21,6 +21,23 @@
+ {
+ 
+ /**
++ * @brief HillClimbEnhancements 增强爬山搜索的开关参数集(算法增强轨道,opt-in)。
++ * 任一开关打开时 Model 调度走 bestHillClimbStateEnhanced;全关时零参与,经典/金字塔路径不受影响。
++ */
++struct HillClimbEnhancements
++{
++    // ---- A2.2 自适应变异步长(1/5 成功法则) ----
++    bool adaptiveStep{false}; ///< 是否启用自适应步长:连续拒绝升档(步长减半)、连续接受降档(回升)。
++    std::uint32_t rejectHalveInterval{8}; ///< 连续拒绝多少次升一档(maxAge=100 预算下 8 连拒是强平台信号)。
++    std::uint32_t acceptEscalateRun{4}; ///< 连续接受多少次降一档(回升步长,密集改善期才触发)。
++    std::int32_t maxStepShift{3}; ///< 步长移位上限:0=基准,1=1/2,2=1/4,3=1/8;再深变异近似恒等,浪费评估。
++
++    // ---- A2.3 逐形状最优 alpha 微搜索 ----
++    bool alphaSearch{false}; ///< 是否启用逐候选 alpha 档位搜索:每候选对全部档位求能量取最优,胜者档回写 State::m_alpha。
++    std::vector<std::uint8_t> alphaCandidates{64U, 128U, 192U}; ///< alpha 候选档位;使用前与用户 alpha 合并规范化。
++};
++
++/**
+  * The core functions for Geometrize.
+  * @author Sam Twidale (https://samcodes.co.uk/)
+  */
+@@ -124,6 +141,55 @@
+         double lastScore,
+         const EnergyFunction& customEnergyFunction = nullptr);
+ 
++/**
++ * @brief bestHillClimbStatePyramid 金字塔搜索变体:候选生成与爬山评估在半分辨率图上进行,
++ * 形状坐标始终留在全分辨率空间(scanline 层投影,不做几何缩放)。RNG 消费序列与
++ * bestHillClimbState 完全一致,两模式可逐候选对照。搜索启发式轨道,输出与全分辨率
++ * 搜索不必相同属预期;最终接受判定由调用方在全分辨率进行。
++ * @param shapeCreator A function that will create the shapes that will be chosen from.
++ * @param alpha The opacity of the shape.
++ * @param n The number of random states to generate.
++ * @param age The number of hillclimbing steps.
++ * @param target The half-resolution target bitmap.
++ * @param current The half-resolution current bitmap.
++ * @param buffer The half-resolution buffer bitmap (private to the calling task).
++ * @param lastScore The last full-resolution score (all in-step evaluations share this constant baseline).
++ * @param halfWidth The width of the half-resolution bitmaps.
++ * @param halfHeight The height of the half-resolution bitmaps.
++ * @return The best state acquired from hill climbing i.e. the one with the lowest energy.
++ */
++geometrize::State bestHillClimbStatePyramid(
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        std::uint32_t alpha,
++        std::uint32_t n,
++        std::uint32_t age,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        double lastScore,
++        std::int32_t halfWidth,
++        std::int32_t halfHeight);
++
++/**
++ * @brief bestHillClimbStateEnhanced 增强爬山变体:按 HillClimbEnhancements 开关组合启用
++ * 自适应步长 / alpha 档位搜索;halfWidth>0 时评估在半分辨率图上进行(与金字塔轨道同语义)。
++ * RNG 消费位置与经典路径完全相同(步长缩放只改区间不改 draw 次数,alpha 搜索零 RNG),
++ * 同 seed 同输入同输出,且可与经典路径逐候选对照。算法增强轨道,输出与经典路径不同属预期。
++ * @param halfWidth 0 表示全分辨率评估;>0 时 target/current/buffer 均须为对应半分辨率位图。
++ */
++geometrize::State bestHillClimbStateEnhanced(
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        std::uint32_t alpha,
++        std::uint32_t n,
++        std::uint32_t age,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        double lastScore,
++        std::int32_t halfWidth,
++        std::int32_t halfHeight,
++        const HillClimbEnhancements& enhancements);
++
+ }
+ 
+ }

@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/midsummer_eve/manifest.json</file>
+        <file>templates/templates/midsummer_eve/midsummer_eve.jpg</file>
+        <file>templates/templates/midsummer_eve/settings.json</file>
+    </qresource>
+</RCC>

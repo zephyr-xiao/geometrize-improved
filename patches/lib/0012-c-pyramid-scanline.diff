@@ -1,0 +1,20 @@
+--- src/baseline-lib/geometrize/geometrize/rasterizer/scanline.h	2026-08-27 13:24:27.392147300 +0800
++++ src/improved-lib/geometrize/geometrize/rasterizer/scanline.h	2026-08-29 09:02:31.208618500 +0800
+@@ -49,4 +49,17 @@
+  */
+ std::vector<geometrize::Scanline> trimScanlines(const std::vector<geometrize::Scanline>& scanlines, std::int32_t minX, std::int32_t minY, std::int32_t maxX, std::int32_t maxY);
+ 
++/**
++ * @brief downscaleScanlines 将全分辨率扫描线组映射到半分辨率坐标空间(坐标约定 floor:x → x/2)。
++ * 金字塔搜索轨道专用:形状坐标留在全分辨率空间,仅评估时把覆盖区投影到半分辨率图上。
++ * 相邻行对 (2k, 2k+1) 合并为半分辨率行 k,x 范围取两行的并(除以 2 向下取整,
++ * 保守超覆盖——搜索启发式允许,最终接受判定仍在全分辨率进行)。
++ * 输入须按 y 升序(库内所有光栅化输出均满足),单趟 O(n)。
++ * @param lines The full-resolution scanlines to project.
++ * @param halfWidth The width of the half-resolution bitmap (ceil(fullWidth / 2)).
++ * @param halfHeight The height of the half-resolution bitmap (ceil(fullHeight / 2)).
++ * @return The scanlines mapped into the half-resolution space, trimmed to the half-resolution bounds.
++ */
++std::vector<geometrize::Scanline> downscaleScanlines(const std::vector<geometrize::Scanline>& lines, std::int32_t halfWidth, std::int32_t halfHeight);
++
+ }

@@ -1,0 +1,22 @@
+--- src/baseline-lib/geometrize/geometrize/rasterizer/scanline.cpp	2026-08-27 13:24:27.390146900 +0800
++++ src/improved-lib/geometrize/geometrize/rasterizer/scanline.cpp	2026-08-27 15:41:39.473122600 +0800
+@@ -23,6 +23,7 @@
+ std::vector<geometrize::Scanline> trimScanlines(const std::vector<geometrize::Scanline>& scanlines, std::int32_t minX, std::int32_t minY, std::int32_t maxX, std::int32_t maxY)
+ {
+     std::vector<geometrize::Scanline> trimmedScanlines;
++    trimmedScanlines.reserve(scanlines.size());
+ 
+     for(const geometrize::Scanline& line : scanlines) {
+         if(line.y < minY || line.y >= maxY) {
+@@ -31,8 +32,9 @@
+         if(line.x1 > line.x2) {
+             continue;
+         }
+-        const float x1 = geometrize::commonutil::clamp(line.x1, minX, maxX - 1);
+-        const float x2 = geometrize::commonutil::clamp(line.x2, minX, maxX - 1);
++        // int 直接 clamp(上游经 float 中转,float 可无损表示该域内整数,数值恒等)
++        const std::int32_t x1 = geometrize::commonutil::clamp(line.x1, minX, maxX - 1);
++        const std::int32_t x2 = geometrize::commonutil::clamp(line.x2, minX, maxX - 1);
+         trimmedScanlines.emplace_back(Scanline(line.y, x1, x2));
+     }
+     return trimmedScanlines;

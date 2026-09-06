@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/iori_bird/iori_bird.jpg</file>
+        <file>templates/templates/iori_bird/manifest.json</file>
+        <file>templates/templates/iori_bird/settings.json</file>
+    </qresource>
+</RCC>

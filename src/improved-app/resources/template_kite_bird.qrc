@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/kite_bird/kite_bird.jpg</file>
+        <file>templates/templates/kite_bird/manifest.json</file>
+        <file>templates/templates/kite_bird/settings.json</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/fruity_drink/fruity_drink.jpg</file>
+        <file>templates/templates/fruity_drink/manifest.json</file>
+        <file>templates/templates/fruity_drink/settings.json</file>
+    </qresource>
+</RCC>

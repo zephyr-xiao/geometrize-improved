@@ -1,0 +1,229 @@
+@@ -409,6 +409,57 @@
+     </layout>
+    </item>
+    <item>
++    <widget class="Line" name="enhancementsSeparator">
++     <property name="orientation">
++      <enum>Qt::Horizontal</enum>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <layout class="QVBoxLayout" name="enhancementsLayout">
++     <item>
++      <widget class="QCheckBox" name="pyramidSearchCheckbox">
++       <property name="toolTip">
++        <string>Evaluate hill-climbing candidates on a half-resolution image. Much faster on large images, output differs from the standard search.</string>
++       </property>
++       <property name="text">
++        <string>Pyramid Search (Fast)</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="adaptiveStepCheckbox">
++       <property name="toolTip">
++        <string>Shrink the mutation step when candidates keep failing, grow it back on successes (1/5 success rule). Better quality per step, slower.</string>
++       </property>
++       <property name="text">
++        <string>Adaptive Mutation Step</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="alphaSearchCheckbox">
++       <property name="toolTip">
++        <string>Try several opacity levels per shape and keep the best. Better quality per step, much slower.</string>
++       </property>
++       <property name="text">
++        <string>Per-Shape Alpha Search</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="errorGuideCheckbox">
++       <property name="toolTip">
++        <string>Place new shapes where the error is highest instead of uniformly at random. Helps most with low budgets (few candidates or mutations).</string>
++       </property>
++       <property name="text">
++        <string>Error-Guided Shape Placement</string>
++       </property>
++      </widget>
++     </item>
++    </layout>
++   </item>
++   <item>
+     <spacer name="verticalSpacer_2">
+      <property name="orientation">
+       <enum>Qt::Vertical</enum>
+@@ -2,6 +2,8 @@
+ #include "ui_imagetaskrunnerwidget.h"
+ 
+ #include <memory>
++#include <algorithm>
++#include <thread>
+ 
+ #include <QEvent>
+ #include <QLocale>
+@@ -50,6 +52,20 @@
+             m_task->getPreferences().setShapeBoundsEnabled(state != Qt::Unchecked);
+         });
+ 
++        // 算法增强轨道开关:勾选即写任务偏好(每步 stepModel 组装 options 时透传到库)
++        connect(ui->pyramidSearchCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setPyramidSearch(checked);
++        });
++        connect(ui->adaptiveStepCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setAdaptiveStep(checked);
++        });
++        connect(ui->alphaSearchCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setAlphaSearch(checked);
++        });
++        connect(ui->errorGuideCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setErrorGuide(checked);
++        });
++
+         connect(m_hBoundsSlider, &geometrize::dialog::RangeSlider::lowerValueChanged, [this](const int value) {
+             m_task->getPreferences().setShapeBoundsXMinPercent(static_cast<double>(value));
+             emit q->shapeBoundsSliderMoved();
+@@ -122,16 +138,43 @@
+         ui->mutationsPerCandidateShapeSlider->setValue(opts.maxShapeMutations);
+         ui->randomSeedSpinBox->setValue(opts.seed);
+ 
+-        // Constrain max threads based on global settings
+-        ui->maxThreadsSpinBox->setMaximum(geometrize::preferences::getGlobalPreferences().getImageTaskMaxThreads());
+-
+-        ui->maxThreadsSpinBox->setValue(opts.maxThreads);
++        // 最大线程数完全按 CPU 动态适配:
++        // - 上限 = 硬件线程数(hardware_concurrency;查询失败时退回全局偏好值)
++        // - 全局偏好的旧值不参与封顶(避免历史持久化值把多核机器压回小数字)
++        // - 新任务的初始值 = min(任务偏好已有值, 硬件线程数);全局偏好值大于硬件线程数时
++        //   视为用户"想吃满全部线程",直接用硬件线程数
++        const std::uint32_t globalMaxThreads{geometrize::preferences::getGlobalPreferences().getImageTaskMaxThreads()};
++        std::uint32_t hardwareThreads{std::thread::hardware_concurrency()};
++        if(hardwareThreads == 0) {
++            hardwareThreads = (globalMaxThreads > 0) ? globalMaxThreads : 4U;
++        }
++        ui->maxThreadsSpinBox->setMaximum(static_cast<int>(hardwareThreads));
++
++        std::uint32_t initialThreads{opts.maxThreads};
++        if(initialThreads == 0 || initialThreads > hardwareThreads) {
++            initialThreads = hardwareThreads; // 默认吃满 CPU
++        }
++        ui->maxThreadsSpinBox->setValue(static_cast<int>(initialThreads));
+ 
+         ui->useBoundsCheckbox->setChecked(opts.shapeBounds.enabled);
+         m_hBoundsSlider->setLowerValue(opts.shapeBounds.xMinPercent);
+         m_hBoundsSlider->setUpperValue(opts.shapeBounds.xMaxPercent);
+         m_vBoundsSlider->setLowerValue(opts.shapeBounds.yMinPercent);
+         m_vBoundsSlider->setUpperValue(opts.shapeBounds.yMaxPercent);
++
++        // 增强开关回填:先阻塞信号再 setChecked,避免回填动作反写偏好(与 load 时序无关,纯防御)
++        ui->pyramidSearchCheckbox->blockSignals(true);
++        ui->adaptiveStepCheckbox->blockSignals(true);
++        ui->alphaSearchCheckbox->blockSignals(true);
++        ui->errorGuideCheckbox->blockSignals(true);
++        ui->pyramidSearchCheckbox->setChecked(opts.pyramidSearch);
++        ui->adaptiveStepCheckbox->setChecked(opts.enhancements.adaptiveStep);
++        ui->alphaSearchCheckbox->setChecked(opts.enhancements.alphaSearch);
++        ui->errorGuideCheckbox->setChecked(opts.enhancements.errorGuide);
++        ui->pyramidSearchCheckbox->blockSignals(false);
++        ui->adaptiveStepCheckbox->blockSignals(false);
++        ui->alphaSearchCheckbox->blockSignals(false);
++        ui->errorGuideCheckbox->blockSignals(false);
+     }
+ 
+     void toggleRunning()
+@@ -62,6 +62,16 @@
+     void setMaxShapeMutations(std::uint32_t maxMutations);
+     void setSeed(std::uint32_t seed);
+     void setMaxThreads(std::uint32_t maxThreads);
++    // 算法增强轨道开关(透传 ImageRunnerOptions,默认关)
++    void setPyramidSearch(bool enabled);
++    void setAdaptiveStep(bool enabled);
++    void setAlphaSearch(bool enabled);
++
++    /**
++     * @brief setErrorGuide Sets whether new shapes are placed at sampled high-error locations (algorithm enhancement, opt-in).
++     * @param enabled True to enable error-guided shape placement.
++     */
++    void setErrorGuide(bool enabled);
+     void setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds);
+     void setShapeBounds(double xMinPercent, double yMinPercent, double xMaxPercent, double yMaxPercent);
+     void setShapeBoundsXMinPercent(double xMinPercent);
+@@ -129,6 +129,26 @@
+         m_options.maxThreads = maxThreads;
+     }
+ 
++    void setPyramidSearch(const bool enabled)
++    {
++        m_options.pyramidSearch = enabled;
++    }
++
++    void setAdaptiveStep(const bool enabled)
++    {
++        m_options.enhancements.adaptiveStep = enabled;
++    }
++
++    void setAlphaSearch(const bool enabled)
++    {
++        m_options.enhancements.alphaSearch = enabled;
++    }
++
++    void setErrorGuide(const bool enabled)
++    {
++        m_options.enhancements.errorGuide = enabled;
++    }
++
+     void setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds)
+     {
+         m_options.shapeBounds = shapeBounds;
+@@ -277,6 +297,26 @@
+     d->setMaxThreads(maxThreads);
+ }
+ 
++void ImageTaskPreferences::setPyramidSearch(const bool enabled)
++{
++    d->setPyramidSearch(enabled);
++}
++
++void ImageTaskPreferences::setAdaptiveStep(const bool enabled)
++{
++    d->setAdaptiveStep(enabled);
++}
++
++void ImageTaskPreferences::setAlphaSearch(const bool enabled)
++{
++    d->setAlphaSearch(enabled);
++}
++
++void ImageTaskPreferences::setErrorGuide(const bool enabled)
++{
++    d->setErrorGuide(enabled);
++}
++
+ void ImageTaskPreferences::setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds)
+ {
+     d->setShapeBounds(shapeBounds);
+@@ -40,6 +40,10 @@
+         ar(cereal::make_nvp(shapeTypesKey, options.shapeTypes));
+         ar(cereal::make_nvp(randomSeedKey, options.seed));
+         ar(cereal::make_nvp(maxThreadsKey, options.maxThreads));
++        ar(cereal::make_nvp(pyramidSearchKey, options.pyramidSearch));
++        ar(cereal::make_nvp(adaptiveStepKey, options.enhancements.adaptiveStep));
++        ar(cereal::make_nvp(alphaSearchKey, options.enhancements.alphaSearch));
++        ar(cereal::make_nvp(errorGuideKey, options.enhancements.errorGuide));
+         ar(cereal::make_nvp(shapeBounds, options.shapeBounds));
+         ar(cereal::make_nvp(scriptsEnabledKey, scriptsEnabled));
+         ar(cereal::make_nvp(scriptsKey, scripts));
+@@ -52,6 +56,10 @@
+     const std::string shapeTypesKey{"shapeTypes"};
+     const std::string randomSeedKey{"randomSeed"};
+     const std::string maxThreadsKey{"maxThreads"};
++    const std::string pyramidSearchKey{"pyramidSearch"};
++    const std::string adaptiveStepKey{"adaptiveStep"};
++    const std::string alphaSearchKey{"alphaSearch"};
++    const std::string errorGuideKey{"errorGuide"};
+     const std::string shapeBounds{"shapeBounds"};
+ 
+     const std::string scriptsEnabledKey{"scriptModeEnabled"};

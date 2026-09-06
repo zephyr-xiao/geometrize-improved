@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/squirrel/manifest.json</file>
+        <file>templates/templates/squirrel/settings.json</file>
+        <file>templates/templates/squirrel/squirrel.jpg</file>
+    </qresource>
+</RCC>

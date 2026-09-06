@@ -1,0 +1,2949 @@
+# A2.4 分段颜色 GUI 面板(第八批,2026-08-30)—— 补丁定位说明
+# 与 0017-0022 同款口径:baseline 侧 = 纯上游快照(upstream/geometrize-app),+ 侧 = improved-app 累积态(含 0017-0022 全部差异)。
+# 本补丁覆盖:imagetaskrunnerwidget.ui(segmentColorsCheckbox)+ runnerwidget.cpp(connect+sync)
+#   + imagetaskpreferences.h/cpp(setSegmentColors)+ imagetaskpreferencesdata.h(segmentColorsKey 序列化)。
+# 检阅本批增量请与 0022 交付态对照;应用时保持 -utf-8 与 CRLF。
+--- upstream/geometrize-app/geometrize/dialog/imagetaskrunnerwidget.ui	2026-08-27 13:24:25.878547200 +0800
++++ src/improved-app/geometrize/dialog/imagetaskrunnerwidget.ui	2026-08-30 22:24:02.016621600 +0800
+@@ -1,480 +1,595 @@
+-<?xml version="1.0" encoding="UTF-8"?>
+-<ui version="4.0">
+- <class>ImageTaskRunnerWidget</class>
+- <widget class="QWidget" name="ImageTaskRunnerWidget">
+-  <property name="geometry">
+-   <rect>
+-    <x>0</x>
+-    <y>0</y>
+-    <width>299</width>
+-    <height>414</height>
+-   </rect>
+-  </property>
+-  <property name="sizePolicy">
+-   <sizepolicy hsizetype="MinimumExpanding" vsizetype="Preferred">
+-    <horstretch>0</horstretch>
+-    <verstretch>0</verstretch>
+-   </sizepolicy>
+-  </property>
+-  <property name="windowTitle">
+-   <string notr="true"/>
+-  </property>
+-  <layout class="QVBoxLayout" name="verticalLayout">
+-   <item>
+-    <layout class="QVBoxLayout" name="optionsLayout">
+-     <item>
+-      <layout class="QHBoxLayout" name="horizontalLayout_15">
+-       <item>
+-        <widget class="QLabel" name="candidateShapesPerStepLabel">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="text">
+-          <string extracomment="Label text next to a slider that allows the user to control the number of geometric shapes the app creates each time it updates">Shapes Per Update</string>
+-         </property>
+-        </widget>
+-       </item>
+-       <item>
+-        <widget class="QSlider" name="candidateShapesPerStepSlider">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="minimum">
+-          <number>1</number>
+-         </property>
+-         <property name="maximum">
+-          <number>1500</number>
+-         </property>
+-         <property name="orientation">
+-          <enum>Qt::Horizontal</enum>
+-         </property>
+-        </widget>
+-       </item>
+-       <item>
+-        <widget class="QLabel" name="candidateShapesPerStepCountLabel">
+-         <property name="text">
+-          <string notr="true">0</string>
+-         </property>
+-        </widget>
+-       </item>
+-      </layout>
+-     </item>
+-     <item>
+-      <layout class="QHBoxLayout" name="horizontalLayout_16">
+-       <item>
+-        <widget class="QLabel" name="mutationsPerCandidateShapeLabel">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="text">
+-          <string extracomment="Label text next to a slider that allows the user to control the maximum number of times a shape is modified (mutated) each time it updates">Max Shape Mutations</string>
+-         </property>
+-        </widget>
+-       </item>
+-       <item>
+-        <widget class="QSlider" name="mutationsPerCandidateShapeSlider">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="minimum">
+-          <number>1</number>
+-         </property>
+-         <property name="maximum">
+-          <number>1500</number>
+-         </property>
+-         <property name="orientation">
+-          <enum>Qt::Horizontal</enum>
+-         </property>
+-        </widget>
+-       </item>
+-       <item>
+-        <widget class="QLabel" name="mutationsPerCandidateShapeCountLabel">
+-         <property name="text">
+-          <string notr="true">0</string>
+-         </property>
+-        </widget>
+-       </item>
+-      </layout>
+-     </item>
+-     <item>
+-      <layout class="QHBoxLayout" name="horizontalLayout_3">
+-       <item>
+-        <widget class="QLabel" name="shapeOpacityLabel">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="text">
+-          <string extracomment="Label text next to a slider that allows the user to control opacity/transparency of the geometric shapes that are created">Shape Opacity</string>
+-         </property>
+-        </widget>
+-       </item>
+-       <item>
+-        <widget class="QSlider" name="shapeOpacitySlider">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="minimum">
+-          <number>1</number>
+-         </property>
+-         <property name="maximum">
+-          <number>255</number>
+-         </property>
+-         <property name="orientation">
+-          <enum>Qt::Horizontal</enum>
+-         </property>
+-         <property name="tickPosition">
+-          <enum>QSlider::NoTicks</enum>
+-         </property>
+-         <property name="tickInterval">
+-          <number>5</number>
+-         </property>
+-        </widget>
+-       </item>
+-       <item>
+-        <widget class="QLabel" name="shapeOpacityValueLabel">
+-         <property name="text">
+-          <string notr="true">0</string>
+-         </property>
+-        </widget>
+-       </item>
+-      </layout>
+-     </item>
+-     <item>
+-      <layout class="QFormLayout" name="formLayout">
+-       <item row="0" column="0">
+-        <widget class="QLabel" name="randomSeedLabel">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Fixed" vsizetype="Preferred">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="text">
+-          <string extracomment="Label text next to the seed value of a random number generator. The seed number is a mathematical term - not like the seed of a plant!">Random Seed</string>
+-         </property>
+-        </widget>
+-       </item>
+-       <item row="0" column="1">
+-        <widget class="QSpinBox" name="randomSeedSpinBox">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="alignment">
+-          <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+-         </property>
+-         <property name="correctionMode">
+-          <enum>QAbstractSpinBox::CorrectToNearestValue</enum>
+-         </property>
+-         <property name="showGroupSeparator" stdset="0">
+-          <bool>false</bool>
+-         </property>
+-         <property name="maximum">
+-          <number>2147483647</number>
+-         </property>
+-        </widget>
+-       </item>
+-      </layout>
+-     </item>
+-     <item>
+-      <layout class="QFormLayout" name="formLayout_2">
+-       <item row="0" column="0">
+-        <widget class="QLabel" name="maxThreadsLabel">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Fixed" vsizetype="Preferred">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="text">
+-          <string extracomment="A text label next to a value that describes the maximum number of CPU threads the computer can use when recreating an image using shapes">Max Threads</string>
+-         </property>
+-        </widget>
+-       </item>
+-       <item row="0" column="1">
+-        <widget class="QSpinBox" name="maxThreadsSpinBox">
+-         <property name="sizePolicy">
+-          <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+-           <horstretch>0</horstretch>
+-           <verstretch>0</verstretch>
+-          </sizepolicy>
+-         </property>
+-         <property name="alignment">
+-          <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+-         </property>
+-         <property name="correctionMode">
+-          <enum>QAbstractSpinBox::CorrectToNearestValue</enum>
+-         </property>
+-         <property name="maximum">
+-          <number>32</number>
+-         </property>
+-        </widget>
+-       </item>
+-      </layout>
+-     </item>
+-    </layout>
+-   </item>
+-   <item>
+-    <spacer name="verticalSpacer">
+-     <property name="orientation">
+-      <enum>Qt::Vertical</enum>
+-     </property>
+-     <property name="sizeType">
+-      <enum>QSizePolicy::Fixed</enum>
+-     </property>
+-     <property name="sizeHint" stdset="0">
+-      <size>
+-       <width>20</width>
+-       <height>10</height>
+-      </size>
+-     </property>
+-    </spacer>
+-   </item>
+-   <item>
+-    <widget class="Line" name="line">
+-     <property name="orientation">
+-      <enum>Qt::Horizontal</enum>
+-     </property>
+-    </widget>
+-   </item>
+-   <item>
+-    <widget class="QWidget" name="shapeTypesContainer" native="true">
+-     <property name="sizePolicy">
+-      <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
+-       <horstretch>0</horstretch>
+-       <verstretch>0</verstretch>
+-      </sizepolicy>
+-     </property>
+-     <widget class="QCheckBox" name="usesRotatedRectangles">
+-      <property name="geometry">
+-       <rect>
+-        <x>6</x>
+-        <y>26</y>
+-        <width>88</width>
+-        <height>16</height>
+-       </rect>
+-      </property>
+-      <property name="text">
+-       <string extracomment="Plural form of rectangle geometric shape. These rectangles are rotated through an angle (0-360 degrees)">Rotated Rectangles</string>
+-      </property>
+-     </widget>
+-     <widget class="QCheckBox" name="usesCircles">
+-      <property name="geometry">
+-       <rect>
+-        <x>6</x>
+-        <y>6</y>
+-        <width>42</width>
+-        <height>16</height>
+-       </rect>
+-      </property>
+-      <property name="text">
+-       <string extracomment="Plural form of circle/circular geometric shape">Circles</string>
+-      </property>
+-     </widget>
+-     <widget class="QCheckBox" name="usesQuadraticBeziers">
+-      <property name="geometry">
+-       <rect>
+-        <x>6</x>
+-        <y>166</y>
+-        <width>81</width>
+-        <height>16</height>
+-       </rect>
+-      </property>
+-      <property name="text">
+-       <string extracomment="Plural form of quadratic bezier curve geometric shape">Quadratic Beziers</string>
+-      </property>
+-     </widget>
+-     <widget class="QCheckBox" name="usesEllipses">
+-      <property name="geometry">
+-       <rect>
+-        <x>6</x>
+-        <y>146</y>
+-        <width>45</width>
+-        <height>16</height>
+-       </rect>
+-      </property>
+-      <property name="text">
+-       <string extracomment="Plural form of ellipse/ellipsoid geometric shape">Ellipses</string>
+-      </property>
+-     </widget>
+-     <widget class="QCheckBox" name="usesTriangles">
+-      <property name="geometry">
+-       <rect>
+-        <x>6</x>
+-        <y>126</y>
+-        <width>52</width>
+-        <height>16</height>
+-       </rect>
+-      </property>
+-      <property name="text">
+-       <string extracomment="Plural form of triangle geometric shape">Triangles</string>
+-      </property>
+-     </widget>
+-     <widget class="QCheckBox" name="usesRectangles">
+-      <property name="geometry">
+-       <rect>
+-        <x>6</x>
+-        <y>106</y>
+-        <width>58</width>
+-        <height>16</height>
+-       </rect>
+-      </property>
+-      <property name="text">
+-       <string extracomment="Plural form of rectangle geometric shape">Rectangles</string>
+-      </property>
+-     </widget>
+-     <widget class="QCheckBox" name="usesLines">
+-      <property name="geometry">
+-       <rect>
+-        <x>6</x>
+-        <y>86</y>
+-        <width>38</width>
+-        <height>16</height>
+-       </rect>
+-      </property>
+-      <property name="text">
+-       <string extracomment="Plural form of the simple line geometric shape">Lines</string>
+-      </property>
+-     </widget>
+-     <widget class="QCheckBox" name="usesRotatedEllipses">
+-      <property name="geometry">
+-       <rect>
+-        <x>6</x>
+-        <y>66</y>
+-        <width>75</width>
+-        <height>16</height>
+-       </rect>
+-      </property>
+-      <property name="text">
+-       <string extracomment="Plural form of ellipse geometric shape. These ellipses are rotated through an angle (0-360 degrees)">Rotated Ellipses</string>
+-      </property>
+-     </widget>
+-     <widget class="QCheckBox" name="usesPolylines">
+-      <property name="geometry">
+-       <rect>
+-        <x>6</x>
+-        <y>46</y>
+-        <width>50</width>
+-        <height>16</height>
+-       </rect>
+-      </property>
+-      <property name="text">
+-       <string extracomment="Plural form of the polyline geometric shape (multiple line segments joined together)">Polylines</string>
+-      </property>
+-     </widget>
+-    </widget>
+-   </item>
+-   <item>
+-    <widget class="Line" name="line_3">
+-     <property name="orientation">
+-      <enum>Qt::Horizontal</enum>
+-     </property>
+-    </widget>
+-   </item>
+-   <item>
+-    <layout class="QHBoxLayout" name="boundsLayout">
+-     <item>
+-      <widget class="QCheckBox" name="useBoundsCheckbox">
+-       <property name="sizePolicy">
+-        <sizepolicy hsizetype="Preferred" vsizetype="MinimumExpanding">
+-         <horstretch>0</horstretch>
+-         <verstretch>0</verstretch>
+-        </sizepolicy>
+-       </property>
+-       <property name="text">
+-        <string>Use Shape Bounding Area</string>
+-       </property>
+-      </widget>
+-     </item>
+-    </layout>
+-   </item>
+-   <item>
+-    <spacer name="verticalSpacer_2">
+-     <property name="orientation">
+-      <enum>Qt::Vertical</enum>
+-     </property>
+-     <property name="sizeType">
+-      <enum>QSizePolicy::Preferred</enum>
+-     </property>
+-     <property name="sizeHint" stdset="0">
+-      <size>
+-       <width>20</width>
+-       <height>40</height>
+-      </size>
+-     </property>
+-    </spacer>
+-   </item>
+-   <item>
+-    <widget class="Line" name="line_2">
+-     <property name="orientation">
+-      <enum>Qt::Horizontal</enum>
+-     </property>
+-    </widget>
+-   </item>
+-   <item>
+-    <widget class="QPushButton" name="runStopButton">
+-     <property name="sizePolicy">
+-      <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+-       <horstretch>0</horstretch>
+-       <verstretch>0</verstretch>
+-      </sizepolicy>
+-     </property>
+-     <property name="text">
+-      <string notr="true">Run</string>
+-     </property>
+-    </widget>
+-   </item>
+-   <item>
+-    <widget class="QPushButton" name="stepButton">
+-     <property name="sizePolicy">
+-      <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+-       <horstretch>0</horstretch>
+-       <verstretch>0</verstretch>
+-      </sizepolicy>
+-     </property>
+-     <property name="text">
+-      <string extracomment="Text on a button that updates (steps) a task once when pressed">Step</string>
+-     </property>
+-    </widget>
+-   </item>
+-   <item>
+-    <widget class="QPushButton" name="clearButton">
+-     <property name="sizePolicy">
+-      <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+-       <horstretch>0</horstretch>
+-       <verstretch>0</verstretch>
+-      </sizepolicy>
+-     </property>
+-     <property name="text">
+-      <string extracomment="Text on a button that clears/resets the results of a task back to a starting value when pressed">Clear</string>
+-     </property>
+-    </widget>
+-   </item>
+-   <item>
+-    <widget class="QWidget" name="bottomButtonsContainer" native="true"/>
+-   </item>
+-  </layout>
+- </widget>
+- <resources/>
+- <connections/>
+-</ui>
++<?xml version="1.0" encoding="UTF-8"?>
++<ui version="4.0">
++ <class>ImageTaskRunnerWidget</class>
++ <widget class="QWidget" name="ImageTaskRunnerWidget">
++  <property name="geometry">
++   <rect>
++    <x>0</x>
++    <y>0</y>
++    <width>299</width>
++    <height>414</height>
++   </rect>
++  </property>
++  <property name="sizePolicy">
++   <sizepolicy hsizetype="MinimumExpanding" vsizetype="Preferred">
++    <horstretch>0</horstretch>
++    <verstretch>0</verstretch>
++   </sizepolicy>
++  </property>
++  <property name="windowTitle">
++   <string notr="true"/>
++  </property>
++  <layout class="QVBoxLayout" name="verticalLayout">
++   <item>
++    <layout class="QVBoxLayout" name="optionsLayout">
++     <item>
++      <layout class="QHBoxLayout" name="horizontalLayout_15">
++       <item>
++        <widget class="QLabel" name="candidateShapesPerStepLabel">
++         <property name="sizePolicy">
++          <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
++           <horstretch>0</horstretch>
++           <verstretch>0</verstretch>
++          </sizepolicy>
++         </property>
++         <property name="text">
++          <string extracomment="Label text next to a slider that allows the user to control the number of geometric shapes the app creates each time it updates">Shapes Per Update</string>
++         </property>
++        </widget>
++       </item>
++       <item>
++        <widget class="QSlider" name="candidateShapesPerStepSlider">
++         <property name="sizePolicy">
++          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
++           <horstretch>0</horstretch>
++           <verstretch>0</verstretch>
++          </sizepolicy>
++         </property>
++         <property name="minimum">
++          <number>1</number>
++         </property>
++         <property name="maximum">
++          <number>1500</number>
++         </property>
++         <property name="orientation">
++          <enum>Qt::Horizontal</enum>
++         </property>
++        </widget>
++       </item>
++       <item>
++        <widget class="QLabel" name="candidateShapesPerStepCountLabel">
++         <property name="text">
++          <string notr="true">0</string>
++         </property>
++        </widget>
++       </item>
++      </layout>
++     </item>
++     <item>
++      <layout class="QHBoxLayout" name="horizontalLayout_16">
++       <item>
++        <widget class="QLabel" name="mutationsPerCandidateShapeLabel">
++         <property name="sizePolicy">
++          <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
++           <horstretch>0</horstretch>
++           <verstretch>0</verstretch>
++          </sizepolicy>
++         </property>
++         <property name="text">
++          <string extracomment="Label text next to a slider that allows the user to control the maximum number of times a shape is modified (mutated) each time it updates">Max Shape Mutations</string>
++         </property>
++        </widget>
++       </item>
++       <item>
++        <widget class="QSlider" name="mutationsPerCandidateShapeSlider">
++         <property name="sizePolicy">
++          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
++           <horstretch>0</horstretch>
++           <verstretch>0</verstretch>
++          </sizepolicy>
++         </property>
++         <property name="minimum">
++          <number>1</number>
++         </property>
++         <property name="maximum">
++          <number>1500</number>
++         </property>
++         <property name="orientation">
++          <enum>Qt::Horizontal</enum>
++         </property>
++        </widget>
++       </item>
++       <item>
++        <widget class="QLabel" name="mutationsPerCandidateShapeCountLabel">
++         <property name="text">
++          <string notr="true">0</string>
++         </property>
++        </widget>
++       </item>
++      </layout>
++     </item>
++     <item>
++      <layout class="QHBoxLayout" name="horizontalLayout_3">
++       <item>
++        <widget class="QLabel" name="shapeOpacityLabel">
++         <property name="sizePolicy">
++          <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
++           <horstretch>0</horstretch>
++           <verstretch>0</verstretch>
++          </sizepolicy>
++         </property>
++         <property name="text">
++          <string extracomment="Label text next to a slider that allows the user to control opacity/transparency of the geometric shapes that are created">Shape Opacity</string>
++         </property>
++        </widget>
++       </item>
++       <item>
++        <widget class="QSlider" name="shapeOpacitySlider">
++         <property name="sizePolicy">
++          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
++           <horstretch>0</horstretch>
++           <verstretch>0</verstretch>
++          </sizepolicy>
++         </property>
++         <property name="minimum">
++          <number>1</number>
++         </property>
++         <property name="maximum">
++          <number>255</number>
++         </property>
++         <property name="orientation">
++          <enum>Qt::Horizontal</enum>
++         </property>
++         <property name="tickPosition">
++          <enum>QSlider::NoTicks</enum>
++         </property>
++         <property name="tickInterval">
++          <number>5</number>
++         </property>
++        </widget>
++       </item>
++       <item>
++        <widget class="QLabel" name="shapeOpacityValueLabel">
++         <property name="text">
++          <string notr="true">0</string>
++         </property>
++        </widget>
++       </item>
++      </layout>
++     </item>
++     <item>
++      <layout class="QFormLayout" name="formLayout">
++       <item row="0" column="0">
++        <widget class="QLabel" name="randomSeedLabel">
++         <property name="sizePolicy">
++          <sizepolicy hsizetype="Fixed" vsizetype="Preferred">
++           <horstretch>0</horstretch>
++           <verstretch>0</verstretch>
++          </sizepolicy>
++         </property>
++         <property name="text">
++          <string extracomment="Label text next to the seed value of a random number generator. The seed number is a mathematical term - not like the seed of a plant!">Random Seed</string>
++         </property>
++        </widget>
++       </item>
++       <item row="0" column="1">
++        <widget class="QSpinBox" name="randomSeedSpinBox">
++         <property name="sizePolicy">
++          <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
++           <horstretch>0</horstretch>
++           <verstretch>0</verstretch>
++          </sizepolicy>
++         </property>
++         <property name="alignment">
++          <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
++         </property>
++         <property name="correctionMode">
++          <enum>QAbstractSpinBox::CorrectToNearestValue</enum>
++         </property>
++         <property name="showGroupSeparator" stdset="0">
++          <bool>false</bool>
++         </property>
++         <property name="maximum">
++          <number>2147483647</number>
++         </property>
++        </widget>
++       </item>
++      </layout>
++     </item>
++     <item>
++      <layout class="QFormLayout" name="formLayout_2">
++       <item row="0" column="0">
++        <widget class="QLabel" name="maxThreadsLabel">
++         <property name="sizePolicy">
++          <sizepolicy hsizetype="Fixed" vsizetype="Preferred">
++           <horstretch>0</horstretch>
++           <verstretch>0</verstretch>
++          </sizepolicy>
++         </property>
++         <property name="text">
++          <string extracomment="A text label next to a value that describes the maximum number of CPU threads the computer can use when recreating an image using shapes">Max Threads</string>
++         </property>
++        </widget>
++       </item>
++       <item row="0" column="1">
++        <widget class="QSpinBox" name="maxThreadsSpinBox">
++         <property name="sizePolicy">
++          <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
++           <horstretch>0</horstretch>
++           <verstretch>0</verstretch>
++          </sizepolicy>
++         </property>
++         <property name="alignment">
++          <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
++         </property>
++         <property name="correctionMode">
++          <enum>QAbstractSpinBox::CorrectToNearestValue</enum>
++         </property>
++         <property name="maximum">
++          <number>32</number>
++         </property>
++        </widget>
++       </item>
++      </layout>
++     </item>
++    </layout>
++   </item>
++   <item>
++    <spacer name="verticalSpacer">
++     <property name="orientation">
++      <enum>Qt::Vertical</enum>
++     </property>
++     <property name="sizeType">
++      <enum>QSizePolicy::Fixed</enum>
++     </property>
++     <property name="sizeHint" stdset="0">
++      <size>
++       <width>20</width>
++       <height>10</height>
++      </size>
++     </property>
++    </spacer>
++   </item>
++   <item>
++    <widget class="Line" name="line">
++     <property name="orientation">
++      <enum>Qt::Horizontal</enum>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <widget class="QWidget" name="shapeTypesContainer" native="true">
++     <property name="sizePolicy">
++      <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
++       <horstretch>0</horstretch>
++       <verstretch>0</verstretch>
++      </sizepolicy>
++     </property>
++     <widget class="QCheckBox" name="usesRotatedRectangles">
++      <property name="geometry">
++       <rect>
++        <x>6</x>
++        <y>26</y>
++        <width>88</width>
++        <height>16</height>
++       </rect>
++      </property>
++      <property name="text">
++       <string extracomment="Plural form of rectangle geometric shape. These rectangles are rotated through an angle (0-360 degrees)">Rotated Rectangles</string>
++      </property>
++     </widget>
++     <widget class="QCheckBox" name="usesCircles">
++      <property name="geometry">
++       <rect>
++        <x>6</x>
++        <y>6</y>
++        <width>42</width>
++        <height>16</height>
++       </rect>
++      </property>
++      <property name="text">
++       <string extracomment="Plural form of circle/circular geometric shape">Circles</string>
++      </property>
++     </widget>
++     <widget class="QCheckBox" name="usesQuadraticBeziers">
++      <property name="geometry">
++       <rect>
++        <x>6</x>
++        <y>166</y>
++        <width>81</width>
++        <height>16</height>
++       </rect>
++      </property>
++      <property name="text">
++       <string extracomment="Plural form of quadratic bezier curve geometric shape">Quadratic Beziers</string>
++      </property>
++     </widget>
++     <widget class="QCheckBox" name="usesEllipses">
++      <property name="geometry">
++       <rect>
++        <x>6</x>
++        <y>146</y>
++        <width>45</width>
++        <height>16</height>
++       </rect>
++      </property>
++      <property name="text">
++       <string extracomment="Plural form of ellipse/ellipsoid geometric shape">Ellipses</string>
++      </property>
++     </widget>
++     <widget class="QCheckBox" name="usesTriangles">
++      <property name="geometry">
++       <rect>
++        <x>6</x>
++        <y>126</y>
++        <width>52</width>
++        <height>16</height>
++       </rect>
++      </property>
++      <property name="text">
++       <string extracomment="Plural form of triangle geometric shape">Triangles</string>
++      </property>
++     </widget>
++     <widget class="QCheckBox" name="usesRectangles">
++      <property name="geometry">
++       <rect>
++        <x>6</x>
++        <y>106</y>
++        <width>58</width>
++        <height>16</height>
++       </rect>
++      </property>
++      <property name="text">
++       <string extracomment="Plural form of rectangle geometric shape">Rectangles</string>
++      </property>
++     </widget>
++     <widget class="QCheckBox" name="usesLines">
++      <property name="geometry">
++       <rect>
++        <x>6</x>
++        <y>86</y>
++        <width>38</width>
++        <height>16</height>
++       </rect>
++      </property>
++      <property name="text">
++       <string extracomment="Plural form of the simple line geometric shape">Lines</string>
++      </property>
++     </widget>
++     <widget class="QCheckBox" name="usesRotatedEllipses">
++      <property name="geometry">
++       <rect>
++        <x>6</x>
++        <y>66</y>
++        <width>75</width>
++        <height>16</height>
++       </rect>
++      </property>
++      <property name="text">
++       <string extracomment="Plural form of ellipse geometric shape. These ellipses are rotated through an angle (0-360 degrees)">Rotated Ellipses</string>
++      </property>
++     </widget>
++     <widget class="QCheckBox" name="usesPolylines">
++      <property name="geometry">
++       <rect>
++        <x>6</x>
++        <y>46</y>
++        <width>50</width>
++        <height>16</height>
++       </rect>
++      </property>
++      <property name="text">
++       <string extracomment="Plural form of the polyline geometric shape (multiple line segments joined together)">Polylines</string>
++      </property>
++     </widget>
++    </widget>
++   </item>
++   <item>
++    <widget class="Line" name="line_3">
++     <property name="orientation">
++      <enum>Qt::Horizontal</enum>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <layout class="QHBoxLayout" name="boundsLayout">
++     <item>
++      <widget class="QCheckBox" name="useBoundsCheckbox">
++       <property name="sizePolicy">
++        <sizepolicy hsizetype="Preferred" vsizetype="MinimumExpanding">
++         <horstretch>0</horstretch>
++         <verstretch>0</verstretch>
++        </sizepolicy>
++       </property>
++       <property name="text">
++        <string>Use Shape Bounding Area</string>
++       </property>
++      </widget>
++     </item>
++    </layout>
++   </item>
++   <item>
++    <widget class="Line" name="enhancementsSeparator">
++     <property name="orientation">
++      <enum>Qt::Horizontal</enum>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <layout class="QVBoxLayout" name="enhancementsLayout">
++     <item>
++      <widget class="QCheckBox" name="pyramidSearchCheckbox">
++       <property name="toolTip">
++        <string>Evaluate hill-climbing candidates on a half-resolution image. Much faster on large images, output differs from the standard search.</string>
++       </property>
++       <property name="text">
++        <string>Pyramid Search (Fast)</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="adaptiveStepCheckbox">
++       <property name="toolTip">
++        <string>Shrink the mutation step when candidates keep failing, grow it back on successes (1/5 success rule). Better quality per step, slower.</string>
++       </property>
++       <property name="text">
++        <string>Adaptive Mutation Step</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="alphaSearchCheckbox">
++       <property name="toolTip">
++        <string>Try several opacity levels per shape and keep the best. Better quality per step, much slower.</string>
++       </property>
++       <property name="text">
++        <string>Per-Shape Alpha Search</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="errorGuideCheckbox">
++       <property name="toolTip">
++        <string>Place new shapes where the error is highest instead of uniformly at random. Helps most with low budgets (few candidates or mutations).</string>
++       </property>
++       <property name="text">
++        <string>Error-Guided Shape Placement</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="segmentColorsCheckbox">
++       <property name="toolTip">
++        <string>Draw each scanline of a shape with its own best color, so shapes spanning light/dark edges no longer turn gray. Applies to SVG/PNG/GIF export too; uses the enhanced search path.</string>
++       </property>
++       <property name="text">
++        <string>Segmented Colors (Per-Scanline)</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <widget class="QCheckBox" name="selectPriorityRegionCheckbox">
++       <property name="toolTip">
++        <string>While checked, Ctrl+Drag on the image selects priority regions (error weight x10 inside). Requires Error-Guided Shape Placement to take effect.</string>
++       </property>
++       <property name="text">
++        <string>Priority Region Selection (Ctrl+Drag)</string>
++       </property>
++      </widget>
++     </item>
++     <item>
++      <layout class="QHBoxLayout" name="priorityRegionsRow">
++       <item>
++        <widget class="QLabel" name="priorityRegionsLabel">
++         <property name="text">
++          <string>Priority Regions: 0</string>
++         </property>
++        </widget>
++       </item>
++       <item>
++        <widget class="QPushButton" name="clearPriorityRegionsButton">
++         <property name="text">
++          <string>Clear Regions</string>
++         </property>
++        </widget>
++       </item>
++      </layout>
++     </item>
++    </layout>
++   </item>
++   <item>
++    <spacer name="verticalSpacer_2">
++     <property name="orientation">
++      <enum>Qt::Vertical</enum>
++     </property>
++     <property name="sizeType">
++      <enum>QSizePolicy::Preferred</enum>
++     </property>
++     <property name="sizeHint" stdset="0">
++      <size>
++       <width>20</width>
++       <height>40</height>
++      </size>
++     </property>
++    </spacer>
++   </item>
++   <item>
++    <widget class="Line" name="line_2">
++     <property name="orientation">
++      <enum>Qt::Horizontal</enum>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <widget class="QPushButton" name="runStopButton">
++     <property name="sizePolicy">
++      <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
++       <horstretch>0</horstretch>
++       <verstretch>0</verstretch>
++      </sizepolicy>
++     </property>
++     <property name="text">
++      <string notr="true">Run</string>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <widget class="QPushButton" name="stepButton">
++     <property name="sizePolicy">
++      <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
++       <horstretch>0</horstretch>
++       <verstretch>0</verstretch>
++      </sizepolicy>
++     </property>
++     <property name="text">
++      <string extracomment="Text on a button that updates (steps) a task once when pressed">Step</string>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <widget class="QPushButton" name="clearButton">
++     <property name="sizePolicy">
++      <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
++       <horstretch>0</horstretch>
++       <verstretch>0</verstretch>
++      </sizepolicy>
++     </property>
++     <property name="text">
++      <string extracomment="Text on a button that clears/resets the results of a task back to a starting value when pressed">Clear</string>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <widget class="QPushButton" name="undoButton">
++     <property name="sizePolicy">
++      <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
++       <horstretch>0</horstretch>
++       <verstretch>0</verstretch>
++      </sizepolicy>
++     </property>
++     <property name="text">
++      <string extracomment="Text on a button that removes the most recently added shape from the task when pressed">Undo</string>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <widget class="QPushButton" name="redoButton">
++     <property name="sizePolicy">
++      <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
++       <horstretch>0</horstretch>
++       <verstretch>0</verstretch>
++      </sizepolicy>
++     </property>
++     <property name="text">
++      <string extracomment="Text on a button that re-adds the most recently undone shape to the task when pressed">Redo</string>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <widget class="QWidget" name="bottomButtonsContainer" native="true"/>
++   </item>
++  </layout>
++ </widget>
++ <resources/>
++ <connections/>
++</ui>
+--- upstream/geometrize-app/geometrize/dialog/imagetaskrunnerwidget.cpp	2026-08-27 13:24:25.937779000 +0800
++++ src/improved-app/geometrize/dialog/imagetaskrunnerwidget.cpp	2026-08-30 22:26:46.137035500 +0800
+@@ -1,331 +1,437 @@
+-#include "imagetaskrunnerwidget.h"
+-#include "ui_imagetaskrunnerwidget.h"
+-
+-#include <memory>
+-
+-#include <QEvent>
+-#include <QLocale>
+-#include <QString>
+-
+-#include "dialog/rangeslider.h"
+-#include "layout/flowlayout.h"
+-#include "preferences/globalpreferences.h"
+-#include "task/imagetask.h"
+-
+-namespace geometrize
+-{
+-
+-namespace dialog
+-{
+-
+-class ImageTaskRunnerWidget::ImageTaskRunnerWidgetImpl
+-{
+-public:
+-    ImageTaskRunnerWidgetImpl(ImageTaskRunnerWidget* pQ) : q{pQ}, ui{std::make_unique<Ui::ImageTaskRunnerWidget>()}
+-    {
+-        ui->setupUi(q);
+-
+-        auto shapeLayout = new geometrize::layout::FlowLayout();
+-        shapeLayout->addWidget(ui->usesCircles);
+-        shapeLayout->addWidget(ui->usesEllipses);
+-        shapeLayout->addWidget(ui->usesLines);
+-        shapeLayout->addWidget(ui->usesPolylines);
+-        shapeLayout->addWidget(ui->usesQuadraticBeziers);
+-        shapeLayout->addWidget(ui->usesRectangles);
+-        shapeLayout->addWidget(ui->usesRotatedEllipses);
+-        shapeLayout->addWidget(ui->usesRotatedRectangles);
+-        shapeLayout->addWidget(ui->usesTriangles);
+-        ui->shapeTypesContainer->setLayout(shapeLayout);
+-
+-        ui->useBoundsCheckbox->setChecked(false);
+-        m_hBoundsSlider = new geometrize::dialog::RangeSlider(Qt::Horizontal, RangeSlider::Option::DoubleHandles, nullptr);
+-        m_vBoundsSlider = new geometrize::dialog::RangeSlider(Qt::Vertical, RangeSlider::Option::DoubleHandles, nullptr);
+-        for(auto* slider : { m_hBoundsSlider, m_vBoundsSlider}) {
+-            slider->SetRange(0, 100);
+-            slider->setLowerValue(0);
+-            slider->setUpperValue(100);
+-        }
+-
+-        connect(ui->useBoundsCheckbox, &QCheckBox::stateChanged, [this](const int state) {
+-            m_task->getPreferences().setShapeBoundsEnabled(state != Qt::Unchecked);
+-        });
+-
+-        connect(m_hBoundsSlider, &geometrize::dialog::RangeSlider::lowerValueChanged, [this](const int value) {
+-            m_task->getPreferences().setShapeBoundsXMinPercent(static_cast<double>(value));
+-            emit q->shapeBoundsSliderMoved();
+-        });
+-        connect(m_hBoundsSlider, &geometrize::dialog::RangeSlider::upperValueChanged, [this](const int value) {
+-            m_task->getPreferences().setShapeBoundsXMaxPercent(static_cast<double>(value));
+-            emit q->shapeBoundsSliderMoved();
+-        });
+-        connect(m_vBoundsSlider, &geometrize::dialog::RangeSlider::lowerValueChanged, [this](const int value) {
+-            m_task->getPreferences().setShapeBoundsYMinPercent(static_cast<double>(value));
+-            emit q->shapeBoundsSliderMoved();
+-        });
+-        connect(m_vBoundsSlider, &geometrize::dialog::RangeSlider::upperValueChanged, [this](const int value) {
+-            m_task->getPreferences().setShapeBoundsYMaxPercent(static_cast<double>(value));
+-            emit q->shapeBoundsSliderMoved();
+-        });
+-        ui->boundsLayout->addWidget(m_hBoundsSlider);
+-        ui->boundsLayout->addWidget(m_vBoundsSlider);
+-
+-        auto runnerButtonsLayout = new geometrize::layout::FlowLayout();
+-        runnerButtonsLayout->addWidget(ui->runStopButton);
+-        runnerButtonsLayout->addWidget(ui->stepButton);
+-        runnerButtonsLayout->addWidget(ui->clearButton);
+-
+-        ui->bottomButtonsContainer->setLayout(runnerButtonsLayout);
+-
+-        populateUi();
+-    }
+-    ~ImageTaskRunnerWidgetImpl() = default;
+-    ImageTaskRunnerWidgetImpl operator=(const ImageTaskRunnerWidgetImpl&) = delete;
+-    ImageTaskRunnerWidgetImpl(const ImageTaskRunnerWidgetImpl&) = delete;
+-
+-    void setImageTask(task::ImageTask* task)
+-    {
+-        m_task = task;
+-    }
+-
+-    void setRunStopButtonText(const QString& text)
+-    {
+-        ui->runStopButton->setText(text);
+-    }
+-
+-    void syncUserInterface()
+-    {
+-        if(m_task == nullptr) {
+-            return;
+-        }
+-
+-        geometrize::preferences::ImageTaskPreferences& prefs{m_task->getPreferences()};
+-
+-        const geometrize::ImageRunnerOptions opts{prefs.getImageRunnerOptions()}; // Geometrize library options
+-
+-        const auto usesShape = [&opts](const geometrize::ShapeTypes type) -> bool {
+-            const std::uint32_t shapes{static_cast<std::uint32_t>(opts.shapeTypes)};
+-            return shapes & type;
+-        };
+-
+-        ui->usesRectangles->setChecked(usesShape(geometrize::RECTANGLE));
+-        ui->usesRotatedRectangles->setChecked(usesShape(geometrize::ROTATED_RECTANGLE));
+-        ui->usesTriangles->setChecked(usesShape(geometrize::TRIANGLE));
+-        ui->usesEllipses->setChecked(usesShape(geometrize::ELLIPSE));
+-        ui->usesRotatedEllipses->setChecked(usesShape(geometrize::ROTATED_ELLIPSE));
+-        ui->usesCircles->setChecked(usesShape(geometrize::CIRCLE));
+-        ui->usesLines->setChecked(usesShape(geometrize::LINE));
+-        ui->usesQuadraticBeziers->setChecked(usesShape(geometrize::QUADRATIC_BEZIER));
+-        ui->usesPolylines->setChecked(usesShape(geometrize::POLYLINE));
+-
+-        ui->shapeOpacitySlider->setValue(opts.alpha);
+-        ui->candidateShapesPerStepSlider->setValue(opts.shapeCount);
+-        ui->mutationsPerCandidateShapeSlider->setValue(opts.maxShapeMutations);
+-        ui->randomSeedSpinBox->setValue(opts.seed);
+-
+-        // Constrain max threads based on global settings
+-        ui->maxThreadsSpinBox->setMaximum(geometrize::preferences::getGlobalPreferences().getImageTaskMaxThreads());
+-
+-        ui->maxThreadsSpinBox->setValue(opts.maxThreads);
+-
+-        ui->useBoundsCheckbox->setChecked(opts.shapeBounds.enabled);
+-        m_hBoundsSlider->setLowerValue(opts.shapeBounds.xMinPercent);
+-        m_hBoundsSlider->setUpperValue(opts.shapeBounds.xMaxPercent);
+-        m_vBoundsSlider->setLowerValue(opts.shapeBounds.yMinPercent);
+-        m_vBoundsSlider->setUpperValue(opts.shapeBounds.yMaxPercent);
+-    }
+-
+-    void toggleRunning()
+-    {
+-        emit q->runStopButtonClicked();
+-    }
+-
+-    void stepModel()
+-    {
+-        emit q->stepButtonClicked();
+-    }
+-
+-    void clearModel()
+-    {
+-        emit q->clearButtonClicked();
+-    }
+-
+-    void setShapes(const geometrize::ShapeTypes shapeTypes, const bool enable)
+-    {
+-        if(enable) {
+-            m_task->getPreferences().enableShapeTypes(shapeTypes);
+-        } else {
+-            m_task->getPreferences().disableShapeTypes(shapeTypes);
+-        }
+-    }
+-
+-    void setShapeOpacity(const int opacity)
+-    {
+-        ui->shapeOpacityValueLabel->setText(QLocale().toString(opacity));
+-
+-        m_task->getPreferences().setShapeAlpha(opacity);
+-    }
+-
+-    void setCandidateShapesPerStep(const int value)
+-    {
+-        ui->candidateShapesPerStepCountLabel->setText(QLocale().toString(value));
+-
+-        m_task->getPreferences().setCandidateShapeCount(value);
+-    }
+-
+-    void setMutationsPerCandidateShape(const int value)
+-    {
+-        ui->mutationsPerCandidateShapeCountLabel->setText(QLocale().toString(value));
+-
+-        m_task->getPreferences().setMaxShapeMutations(value);
+-    }
+-
+-    void setRandomSeed(const int value)
+-    {
+-        m_task->getPreferences().setSeed(value);
+-    }
+-
+-    void setMaxThreads(const int value)
+-    {
+-        m_task->getPreferences().setMaxThreads(value);
+-    }
+-
+-    void onLanguageChange()
+-    {
+-        ui->retranslateUi(q);
+-        populateUi();
+-    }
+-
+-private:
+-    void populateUi()
+-    {
+-
+-    }
+-
+-    geometrize::dialog::RangeSlider* m_hBoundsSlider{ nullptr }; // Horizontal slider for controlling the shape bounds
+-    geometrize::dialog::RangeSlider* m_vBoundsSlider{ nullptr }; // Vertical slider for controlling the shape bounds
+-    geometrize::task::ImageTask* m_task{ nullptr };
+-    ImageTaskRunnerWidget* q{ nullptr };
+-    std::unique_ptr<Ui::ImageTaskRunnerWidget> ui;
+-};
+-
+-ImageTaskRunnerWidget::ImageTaskRunnerWidget(QWidget* parent) :
+-    QWidget{parent},
+-    d{std::make_unique<ImageTaskRunnerWidget::ImageTaskRunnerWidgetImpl>(this)}
+-{
+-}
+-
+-ImageTaskRunnerWidget::~ImageTaskRunnerWidget()
+-{
+-}
+-
+-void ImageTaskRunnerWidget::setImageTask(task::ImageTask* task)
+-{
+-    d->setImageTask(task);
+-}
+-
+-void ImageTaskRunnerWidget::setRunStopButtonText(const QString& text)
+-{
+-    d->setRunStopButtonText(text);
+-}
+-
+-void ImageTaskRunnerWidget::syncUserInterface()
+-{
+-    d->syncUserInterface();
+-}
+-
+-void ImageTaskRunnerWidget::on_runStopButton_clicked()
+-{
+-    d->toggleRunning();
+-}
+-
+-void ImageTaskRunnerWidget::on_stepButton_clicked()
+-{
+-    d->stepModel();
+-}
+-
+-void ImageTaskRunnerWidget::on_clearButton_clicked()
+-{
+-    d->clearModel();
+-}
+-
+-void ImageTaskRunnerWidget::on_usesRectangles_clicked(bool checked)
+-{
+-    d->setShapes(geometrize::RECTANGLE, checked);
+-}
+-
+-void ImageTaskRunnerWidget::on_usesRotatedRectangles_clicked(bool checked)
+-{
+-    d->setShapes(geometrize::ROTATED_RECTANGLE, checked);
+-}
+-
+-void ImageTaskRunnerWidget::on_usesTriangles_clicked(bool checked)
+-{
+-    d->setShapes(geometrize::TRIANGLE, checked);
+-}
+-
+-void ImageTaskRunnerWidget::on_usesEllipses_clicked(bool checked)
+-{
+-    d->setShapes(geometrize::ELLIPSE, checked);
+-}
+-
+-void ImageTaskRunnerWidget::on_usesRotatedEllipses_clicked(bool checked)
+-{
+-    d->setShapes(geometrize::ROTATED_ELLIPSE, checked);
+-}
+-
+-void ImageTaskRunnerWidget::on_usesCircles_clicked(bool checked)
+-{
+-    d->setShapes(geometrize::CIRCLE, checked);
+-}
+-
+-void ImageTaskRunnerWidget::on_usesLines_clicked(bool checked)
+-{
+-    d->setShapes(geometrize::LINE, checked);
+-}
+-
+-void ImageTaskRunnerWidget::on_usesQuadraticBeziers_clicked(bool checked)
+-{
+-    d->setShapes(geometrize::QUADRATIC_BEZIER, checked);
+-}
+-
+-void ImageTaskRunnerWidget::on_usesPolylines_clicked(bool checked)
+-{
+-    d->setShapes(geometrize::POLYLINE, checked);
+-}
+-
+-void ImageTaskRunnerWidget::on_shapeOpacitySlider_valueChanged(int value)
+-{
+-    d->setShapeOpacity(value);
+-}
+-
+-void ImageTaskRunnerWidget::on_candidateShapesPerStepSlider_valueChanged(int value)
+-{
+-    d->setCandidateShapesPerStep(value);
+-}
+-
+-void ImageTaskRunnerWidget::on_mutationsPerCandidateShapeSlider_valueChanged(int value)
+-{
+-    d->setMutationsPerCandidateShape(value);
+-}
+-
+-void ImageTaskRunnerWidget::on_randomSeedSpinBox_valueChanged(int value)
+-{
+-    d->setRandomSeed(value);
+-}
+-
+-void ImageTaskRunnerWidget::on_maxThreadsSpinBox_valueChanged(int value)
+-{
+-    d->setMaxThreads(value);
+-}
+-
+-void ImageTaskRunnerWidget::changeEvent(QEvent* event)
+-{
+-    if (event->type() == QEvent::LanguageChange) {
+-        d->onLanguageChange();
+-    }
+-    QWidget::changeEvent(event);
+-}
+-
+-}
+-
+-}
++#include "imagetaskrunnerwidget.h"
++#include "ui_imagetaskrunnerwidget.h"
++
++#include <memory>
++#include <algorithm>
++#include <thread>
++
++#include <QEvent>
++#include <QLocale>
++#include <QString>
++
++#include "dialog/rangeslider.h"
++#include "layout/flowlayout.h"
++#include "preferences/globalpreferences.h"
++#include "task/imagetask.h"
++
++namespace geometrize
++{
++
++namespace dialog
++{
++
++class ImageTaskRunnerWidget::ImageTaskRunnerWidgetImpl
++{
++public:
++    ImageTaskRunnerWidgetImpl(ImageTaskRunnerWidget* pQ) : q{pQ}, ui{std::make_unique<Ui::ImageTaskRunnerWidget>()}
++    {
++        ui->setupUi(q);
++
++        auto shapeLayout = new geometrize::layout::FlowLayout();
++        shapeLayout->addWidget(ui->usesCircles);
++        shapeLayout->addWidget(ui->usesEllipses);
++        shapeLayout->addWidget(ui->usesLines);
++        shapeLayout->addWidget(ui->usesPolylines);
++        shapeLayout->addWidget(ui->usesQuadraticBeziers);
++        shapeLayout->addWidget(ui->usesRectangles);
++        shapeLayout->addWidget(ui->usesRotatedEllipses);
++        shapeLayout->addWidget(ui->usesRotatedRectangles);
++        shapeLayout->addWidget(ui->usesTriangles);
++        ui->shapeTypesContainer->setLayout(shapeLayout);
++
++        ui->useBoundsCheckbox->setChecked(false);
++        m_hBoundsSlider = new geometrize::dialog::RangeSlider(Qt::Horizontal, RangeSlider::Option::DoubleHandles, nullptr);
++        m_vBoundsSlider = new geometrize::dialog::RangeSlider(Qt::Vertical, RangeSlider::Option::DoubleHandles, nullptr);
++        for(auto* slider : { m_hBoundsSlider, m_vBoundsSlider}) {
++            slider->SetRange(0, 100);
++            slider->setLowerValue(0);
++            slider->setUpperValue(100);
++        }
++
++        connect(ui->useBoundsCheckbox, &QCheckBox::stateChanged, [this](const int state) {
++            m_task->getPreferences().setShapeBoundsEnabled(state != Qt::Unchecked);
++        });
++
++        // 算法增强轨道开关:勾选即写任务偏好(每步 stepModel 组装 options 时透传到库)
++        connect(ui->pyramidSearchCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setPyramidSearch(checked);
++        });
++        connect(ui->adaptiveStepCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setAdaptiveStep(checked);
++        });
++        connect(ui->alphaSearchCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setAlphaSearch(checked);
++        });
++        connect(ui->errorGuideCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setErrorGuide(checked);
++        });
++        connect(ui->segmentColorsCheckbox, &QCheckBox::toggled, [this](const bool checked) {
++            m_task->getPreferences().setSegmentColors(checked);
++        });
++
++        connect(m_hBoundsSlider, &geometrize::dialog::RangeSlider::lowerValueChanged, [this](const int value) {
++            m_task->getPreferences().setShapeBoundsXMinPercent(static_cast<double>(value));
++            emit q->shapeBoundsSliderMoved();
++        });
++        connect(m_hBoundsSlider, &geometrize::dialog::RangeSlider::upperValueChanged, [this](const int value) {
++            m_task->getPreferences().setShapeBoundsXMaxPercent(static_cast<double>(value));
++            emit q->shapeBoundsSliderMoved();
++        });
++        connect(m_vBoundsSlider, &geometrize::dialog::RangeSlider::lowerValueChanged, [this](const int value) {
++            m_task->getPreferences().setShapeBoundsYMinPercent(static_cast<double>(value));
++            emit q->shapeBoundsSliderMoved();
++        });
++        connect(m_vBoundsSlider, &geometrize::dialog::RangeSlider::upperValueChanged, [this](const int value) {
++            m_task->getPreferences().setShapeBoundsYMaxPercent(static_cast<double>(value));
++            emit q->shapeBoundsSliderMoved();
++        });
++        ui->boundsLayout->addWidget(m_hBoundsSlider);
++        ui->boundsLayout->addWidget(m_vBoundsSlider);
++
++        auto runnerButtonsLayout = new geometrize::layout::FlowLayout();
++        runnerButtonsLayout->addWidget(ui->runStopButton);
++        runnerButtonsLayout->addWidget(ui->stepButton);
++        runnerButtonsLayout->addWidget(ui->clearButton);
++        runnerButtonsLayout->addWidget(ui->undoButton);
++        runnerButtonsLayout->addWidget(ui->redoButton);
++
++        ui->bottomButtonsContainer->setLayout(runnerButtonsLayout);
++
++        populateUi();
++    }
++    ~ImageTaskRunnerWidgetImpl() = default;
++    ImageTaskRunnerWidgetImpl operator=(const ImageTaskRunnerWidgetImpl&) = delete;
++    ImageTaskRunnerWidgetImpl(const ImageTaskRunnerWidgetImpl&) = delete;
++
++    void setImageTask(task::ImageTask* task)
++    {
++        m_task = task;
++    }
++
++    void setRunStopButtonText(const QString& text)
++    {
++        ui->runStopButton->setText(text);
++    }
++
++    void syncUserInterface()
++    {
++        if(m_task == nullptr) {
++            return;
++        }
++
++        geometrize::preferences::ImageTaskPreferences& prefs{m_task->getPreferences()};
++
++        const geometrize::ImageRunnerOptions opts{prefs.getImageRunnerOptions()}; // Geometrize library options
++
++        const auto usesShape = [&opts](const geometrize::ShapeTypes type) -> bool {
++            const std::uint32_t shapes{static_cast<std::uint32_t>(opts.shapeTypes)};
++            return shapes & type;
++        };
++
++        ui->usesRectangles->setChecked(usesShape(geometrize::RECTANGLE));
++        ui->usesRotatedRectangles->setChecked(usesShape(geometrize::ROTATED_RECTANGLE));
++        ui->usesTriangles->setChecked(usesShape(geometrize::TRIANGLE));
++        ui->usesEllipses->setChecked(usesShape(geometrize::ELLIPSE));
++        ui->usesRotatedEllipses->setChecked(usesShape(geometrize::ROTATED_ELLIPSE));
++        ui->usesCircles->setChecked(usesShape(geometrize::CIRCLE));
++        ui->usesLines->setChecked(usesShape(geometrize::LINE));
++        ui->usesQuadraticBeziers->setChecked(usesShape(geometrize::QUADRATIC_BEZIER));
++        ui->usesPolylines->setChecked(usesShape(geometrize::POLYLINE));
++
++        ui->shapeOpacitySlider->setValue(opts.alpha);
++        ui->candidateShapesPerStepSlider->setValue(opts.shapeCount);
++        ui->mutationsPerCandidateShapeSlider->setValue(opts.maxShapeMutations);
++        ui->randomSeedSpinBox->setValue(opts.seed);
++
++        // 最大线程数完全按 CPU 动态适配:
++        // - 上限 = 硬件线程数(hardware_concurrency;查询失败时退回全局偏好值)
++        // - 全局偏好的旧值不参与封顶(避免历史持久化值把多核机器压回小数字)
++        // - 新任务的初始值 = min(任务偏好已有值, 硬件线程数);全局偏好值大于硬件线程数时
++        //   视为用户"想吃满全部线程",直接用硬件线程数
++        const std::uint32_t globalMaxThreads{geometrize::preferences::getGlobalPreferences().getImageTaskMaxThreads()};
++        std::uint32_t hardwareThreads{std::thread::hardware_concurrency()};
++        if(hardwareThreads == 0) {
++            hardwareThreads = (globalMaxThreads > 0) ? globalMaxThreads : 4U;
++        }
++        ui->maxThreadsSpinBox->setMaximum(static_cast<int>(hardwareThreads));
++
++        std::uint32_t initialThreads{opts.maxThreads};
++        if(initialThreads == 0 || initialThreads > hardwareThreads) {
++            initialThreads = hardwareThreads; // 默认吃满 CPU
++        }
++        ui->maxThreadsSpinBox->setValue(static_cast<int>(initialThreads));
++
++        ui->useBoundsCheckbox->setChecked(opts.shapeBounds.enabled);
++        m_hBoundsSlider->setLowerValue(opts.shapeBounds.xMinPercent);
++        m_hBoundsSlider->setUpperValue(opts.shapeBounds.xMaxPercent);
++        m_vBoundsSlider->setLowerValue(opts.shapeBounds.yMinPercent);
++        m_vBoundsSlider->setUpperValue(opts.shapeBounds.yMaxPercent);
++
++        // 增强开关回填:先阻塞信号再 setChecked,避免回填动作反写偏好(与 load 时序无关,纯防御)
++        ui->pyramidSearchCheckbox->blockSignals(true);
++        ui->adaptiveStepCheckbox->blockSignals(true);
++        ui->alphaSearchCheckbox->blockSignals(true);
++        ui->errorGuideCheckbox->blockSignals(true);
++        ui->segmentColorsCheckbox->blockSignals(true);
++        ui->pyramidSearchCheckbox->setChecked(opts.pyramidSearch);
++        ui->adaptiveStepCheckbox->setChecked(opts.enhancements.adaptiveStep);
++        ui->alphaSearchCheckbox->setChecked(opts.enhancements.alphaSearch);
++        ui->errorGuideCheckbox->setChecked(opts.enhancements.errorGuide);
++        ui->segmentColorsCheckbox->setChecked(opts.enhancements.segmentColors);
++        ui->pyramidSearchCheckbox->blockSignals(false);
++        ui->adaptiveStepCheckbox->blockSignals(false);
++        ui->alphaSearchCheckbox->blockSignals(false);
++        ui->errorGuideCheckbox->blockSignals(false);
++        ui->segmentColorsCheckbox->blockSignals(false);
++
++        // 区域优先:模式勾选是会话操作态不回填;计数标签反映当前任务的区域列表
++        ui->selectPriorityRegionCheckbox->blockSignals(true);
++        ui->selectPriorityRegionCheckbox->setChecked(false);
++        ui->selectPriorityRegionCheckbox->blockSignals(false);
++        ui->priorityRegionsLabel->setText(QObject::tr("Priority Regions: %1").arg(opts.priorityRegions.size()));
++    }
++
++    void toggleRunning()
++    {
++        emit q->runStopButtonClicked();
++    }
++
++    void stepModel()
++    {
++        emit q->stepButtonClicked();
++    }
++
++    void undoModel()
++    {
++        emit q->undoButtonClicked();
++    }
++
++    void redoModel()
++    {
++        emit q->redoButtonClicked();
++    }
++
++    void setUndoRedoButtonsEnabled(bool undoEnabled, bool redoEnabled)
++    {
++        ui->undoButton->setEnabled(undoEnabled);
++        ui->redoButton->setEnabled(redoEnabled);
++    }
++
++    void clearPriorityRegions()
++    {
++        if(m_task != nullptr) {
++            m_task->getPreferences().setPriorityRegions({});
++        }
++    }
++
++    void clearModel()
++    {
++        emit q->clearButtonClicked();
++    }
++
++    void setShapes(const geometrize::ShapeTypes shapeTypes, const bool enable)
++    {
++        if(enable) {
++            m_task->getPreferences().enableShapeTypes(shapeTypes);
++        } else {
++            m_task->getPreferences().disableShapeTypes(shapeTypes);
++        }
++    }
++
++    void setShapeOpacity(const int opacity)
++    {
++        ui->shapeOpacityValueLabel->setText(QLocale().toString(opacity));
++
++        m_task->getPreferences().setShapeAlpha(opacity);
++    }
++
++    void setCandidateShapesPerStep(const int value)
++    {
++        ui->candidateShapesPerStepCountLabel->setText(QLocale().toString(value));
++
++        m_task->getPreferences().setCandidateShapeCount(value);
++    }
++
++    void setMutationsPerCandidateShape(const int value)
++    {
++        ui->mutationsPerCandidateShapeCountLabel->setText(QLocale().toString(value));
++
++        m_task->getPreferences().setMaxShapeMutations(value);
++    }
++
++    void setRandomSeed(const int value)
++    {
++        m_task->getPreferences().setSeed(value);
++    }
++
++    void setMaxThreads(const int value)
++    {
++        m_task->getPreferences().setMaxThreads(value);
++    }
++
++    void onLanguageChange()
++    {
++        ui->retranslateUi(q);
++        populateUi();
++    }
++
++private:
++    void populateUi()
++    {
++
++    }
++
++    geometrize::dialog::RangeSlider* m_hBoundsSlider{ nullptr }; // Horizontal slider for controlling the shape bounds
++    geometrize::dialog::RangeSlider* m_vBoundsSlider{ nullptr }; // Vertical slider for controlling the shape bounds
++    geometrize::task::ImageTask* m_task{ nullptr };
++    ImageTaskRunnerWidget* q{ nullptr };
++    std::unique_ptr<Ui::ImageTaskRunnerWidget> ui;
++};
++
++ImageTaskRunnerWidget::ImageTaskRunnerWidget(QWidget* parent) :
++    QWidget{parent},
++    d{std::make_unique<ImageTaskRunnerWidget::ImageTaskRunnerWidgetImpl>(this)}
++{
++}
++
++ImageTaskRunnerWidget::~ImageTaskRunnerWidget()
++{
++}
++
++void ImageTaskRunnerWidget::setImageTask(task::ImageTask* task)
++{
++    d->setImageTask(task);
++}
++
++void ImageTaskRunnerWidget::setRunStopButtonText(const QString& text)
++{
++    d->setRunStopButtonText(text);
++}
++
++void ImageTaskRunnerWidget::setUndoRedoButtonsEnabled(bool undoEnabled, bool redoEnabled)
++{
++    d->setUndoRedoButtonsEnabled(undoEnabled, redoEnabled);
++}
++
++void ImageTaskRunnerWidget::syncUserInterface()
++{
++    d->syncUserInterface();
++}
++
++void ImageTaskRunnerWidget::on_runStopButton_clicked()
++{
++    d->toggleRunning();
++}
++
++void ImageTaskRunnerWidget::on_stepButton_clicked()
++{
++    d->stepModel();
++}
++
++void ImageTaskRunnerWidget::on_clearButton_clicked()
++{
++    d->clearModel();
++}
++
++void ImageTaskRunnerWidget::on_undoButton_clicked()
++{
++    d->undoModel();
++}
++
++void ImageTaskRunnerWidget::on_redoButton_clicked()
++{
++    d->redoModel();
++}
++
++void ImageTaskRunnerWidget::on_selectPriorityRegionCheckbox_toggled(bool checked)
++{
++    emit priorityRegionSelectionModeChanged(checked);
++}
++
++void ImageTaskRunnerWidget::on_clearPriorityRegionsButton_clicked()
++{
++    d->clearPriorityRegions();
++    emit clearPriorityRegionsClicked();
++}
++
++void ImageTaskRunnerWidget::on_usesRectangles_clicked(bool checked)
++{
++    d->setShapes(geometrize::RECTANGLE, checked);
++}
++
++void ImageTaskRunnerWidget::on_usesRotatedRectangles_clicked(bool checked)
++{
++    d->setShapes(geometrize::ROTATED_RECTANGLE, checked);
++}
++
++void ImageTaskRunnerWidget::on_usesTriangles_clicked(bool checked)
++{
++    d->setShapes(geometrize::TRIANGLE, checked);
++}
++
++void ImageTaskRunnerWidget::on_usesEllipses_clicked(bool checked)
++{
++    d->setShapes(geometrize::ELLIPSE, checked);
++}
++
++void ImageTaskRunnerWidget::on_usesRotatedEllipses_clicked(bool checked)
++{
++    d->setShapes(geometrize::ROTATED_ELLIPSE, checked);
++}
++
++void ImageTaskRunnerWidget::on_usesCircles_clicked(bool checked)
++{
++    d->setShapes(geometrize::CIRCLE, checked);
++}
++
++void ImageTaskRunnerWidget::on_usesLines_clicked(bool checked)
++{
++    d->setShapes(geometrize::LINE, checked);
++}
++
++void ImageTaskRunnerWidget::on_usesQuadraticBeziers_clicked(bool checked)
++{
++    d->setShapes(geometrize::QUADRATIC_BEZIER, checked);
++}
++
++void ImageTaskRunnerWidget::on_usesPolylines_clicked(bool checked)
++{
++    d->setShapes(geometrize::POLYLINE, checked);
++}
++
++void ImageTaskRunnerWidget::on_shapeOpacitySlider_valueChanged(int value)
++{
++    d->setShapeOpacity(value);
++}
++
++void ImageTaskRunnerWidget::on_candidateShapesPerStepSlider_valueChanged(int value)
++{
++    d->setCandidateShapesPerStep(value);
++}
++
++void ImageTaskRunnerWidget::on_mutationsPerCandidateShapeSlider_valueChanged(int value)
++{
++    d->setMutationsPerCandidateShape(value);
++}
++
++void ImageTaskRunnerWidget::on_randomSeedSpinBox_valueChanged(int value)
++{
++    d->setRandomSeed(value);
++}
++
++void ImageTaskRunnerWidget::on_maxThreadsSpinBox_valueChanged(int value)
++{
++    d->setMaxThreads(value);
++}
++
++void ImageTaskRunnerWidget::changeEvent(QEvent* event)
++{
++    if (event->type() == QEvent::LanguageChange) {
++        d->onLanguageChange();
++    }
++    QWidget::changeEvent(event);
++}
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/preferences/imagetaskpreferences.h	2026-08-27 13:24:26.055684200 +0800
++++ src/improved-app/geometrize/preferences/imagetaskpreferences.h	2026-08-30 22:22:47.273662200 +0800
+@@ -1,86 +1,109 @@
+-#pragma once
+-
+-#include <cstdint>
+-#include <map>
+-#include <memory>
+-#include <string>
+-
+-#include "geometrize/runner/imagerunneroptions.h"
+-
+-namespace geometrize
+-{
+-
+-namespace preferences
+-{
+-
+-/**
+- * @brief getImageTaskPreferencesAutoSavePath Gets the absolute path to where the image task preferences config file should be read/written.
+- * @param hashOfFirstTargetImage A string containing a hash of the first target image the task was set up to use.
+- * NOTE - this hash changes based on the target image, so modifying the "resize image" settings in the application will cause this to change.
+- * @return The name of the autosave task settings file, including the file extension
+- * @return The absolute path the image task auto save path.
+- */
+-std::string getImageTaskPreferencesAutoSavePath(const std::string& hashOfFirstTargetImage);
+-
+-/**
+- * @brief The ImageTaskPreferences class models the preferences associated with an image task.
+- */
+-class ImageTaskPreferences
+-{
+-public:
+-    ImageTaskPreferences();
+-    ImageTaskPreferences(const std::string& filePath);
+-    ImageTaskPreferences& operator=(const ImageTaskPreferences& other);
+-    ImageTaskPreferences(const ImageTaskPreferences& other);
+-    virtual ~ImageTaskPreferences();
+-
+-    /**
+-     * @brief load Loads the image task preferences from a file.
+-     * @param filePath The path to the image task preferences file.
+-     * @param return True if the image task preferences were loaded successfully, else false.
+-     */
+-    bool load(const std::string& filePath);
+-
+-    /**
+-     * @brief save Saves the image task preferences to a file.
+-     * @param filePath The path to the image task preferences file.
+-     * @param return True if the image task preferences were saved successfully, else false.
+-     */
+-    bool save(const std::string& filePath);
+-
+-    /**
+-     * @brief getImageRunnerOptions Gets a copy of the image runner options.
+-     * @return The image runner options.
+-     */
+-    geometrize::ImageRunnerOptions getImageRunnerOptions() const;
+-
+-    void enableShapeTypes(geometrize::ShapeTypes shapes);
+-    void disableShapeTypes(geometrize::ShapeTypes shapes);
+-    void setShapeTypes(geometrize::ShapeTypes shapes);
+-    void setShapeAlpha(std::uint8_t alpha);
+-    void setCandidateShapeCount(std::uint32_t shapeCount);
+-    void setMaxShapeMutations(std::uint32_t maxMutations);
+-    void setSeed(std::uint32_t seed);
+-    void setMaxThreads(std::uint32_t maxThreads);
+-    void setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds);
+-    void setShapeBounds(double xMinPercent, double yMinPercent, double xMaxPercent, double yMaxPercent);
+-    void setShapeBoundsXMinPercent(double xMinPercent);
+-    void setShapeBoundsYMinPercent(double yMinPercent);
+-    void setShapeBoundsXMaxPercent(double xMaxPercent);
+-    void setShapeBoundsYMaxPercent(double yMaxPercent);
+-    void setShapeBoundsEnabled(bool shapeBoundsEnabled);
+-
+-    bool isScriptModeEnabled() const;
+-    void setScriptModeEnabled(bool enabled);
+-    void setScript(const std::string& scriptName, const std::string& code);
+-    void setScripts(const std::map<std::string, std::string>& scripts);
+-    std::map<std::string, std::string> getScripts() const;
+-
+-private:
+-    class ImageTaskPreferencesImpl;
+-    std::shared_ptr<ImageTaskPreferencesImpl> d;
+-};
+-
+-}
+-
+-}
++#pragma once
++
++#include <cstdint>
++#include <map>
++#include <memory>
++#include <string>
++
++#include "geometrize/runner/imagerunneroptions.h"
++
++namespace geometrize
++{
++
++namespace preferences
++{
++
++/**
++ * @brief getImageTaskPreferencesAutoSavePath Gets the absolute path to where the image task preferences config file should be read/written.
++ * @param hashOfFirstTargetImage A string containing a hash of the first target image the task was set up to use.
++ * NOTE - this hash changes based on the target image, so modifying the "resize image" settings in the application will cause this to change.
++ * @return The name of the autosave task settings file, including the file extension
++ * @return The absolute path the image task auto save path.
++ */
++std::string getImageTaskPreferencesAutoSavePath(const std::string& hashOfFirstTargetImage);
++
++/**
++ * @brief The ImageTaskPreferences class models the preferences associated with an image task.
++ */
++class ImageTaskPreferences
++{
++public:
++    ImageTaskPreferences();
++    ImageTaskPreferences(const std::string& filePath);
++    ImageTaskPreferences& operator=(const ImageTaskPreferences& other);
++    ImageTaskPreferences(const ImageTaskPreferences& other);
++    virtual ~ImageTaskPreferences();
++
++    /**
++     * @brief load Loads the image task preferences from a file.
++     * @param filePath The path to the image task preferences file.
++     * @param return True if the image task preferences were loaded successfully, else false.
++     */
++    bool load(const std::string& filePath);
++
++    /**
++     * @brief save Saves the image task preferences to a file.
++     * @param filePath The path to the image task preferences file.
++     * @param return True if the image task preferences were saved successfully, else false.
++     */
++    bool save(const std::string& filePath);
++
++    /**
++     * @brief getImageRunnerOptions Gets a copy of the image runner options.
++     * @return The image runner options.
++     */
++    geometrize::ImageRunnerOptions getImageRunnerOptions() const;
++
++    void enableShapeTypes(geometrize::ShapeTypes shapes);
++    void disableShapeTypes(geometrize::ShapeTypes shapes);
++    void setShapeTypes(geometrize::ShapeTypes shapes);
++    void setShapeAlpha(std::uint8_t alpha);
++    void setCandidateShapeCount(std::uint32_t shapeCount);
++    void setMaxShapeMutations(std::uint32_t maxMutations);
++    void setSeed(std::uint32_t seed);
++    void setMaxThreads(std::uint32_t maxThreads);
++    // 算法增强轨道开关(透传 ImageRunnerOptions,默认关)
++    void setPyramidSearch(bool enabled);
++    void setAdaptiveStep(bool enabled);
++    void setAlphaSearch(bool enabled);
++
++    /**
++     * @brief setErrorGuide Sets whether new shapes are placed at sampled high-error locations (algorithm enhancement, opt-in).
++     * @param enabled True to enable error-guided shape placement.
++     */
++    void setErrorGuide(bool enabled);
++
++    /**
++     * @brief setSegmentColors Sets whether shapes are drawn with per-scanline colors (algorithm enhancement, opt-in).
++     * @param enabled True to enable segmented (per-scanline) colors.
++     */
++    void setSegmentColors(bool enabled);
++    void setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds);
++    void setShapeBounds(double xMinPercent, double yMinPercent, double xMaxPercent, double yMaxPercent);
++    void setShapeBoundsXMinPercent(double xMinPercent);
++    void setShapeBoundsYMinPercent(double yMinPercent);
++    void setShapeBoundsXMaxPercent(double xMaxPercent);
++    void setShapeBoundsYMaxPercent(double yMaxPercent);
++    void setShapeBoundsEnabled(bool shapeBoundsEnabled);
++
++    /**
++     * @brief setPriorityRegions Sets the priority region rectangles (percentages of the image dimensions)
++     * used to bias error-guided shape placement (F3.2). Empty list disables region weighting.
++     * @param regions The percentage-based region list.
++     */
++    void setPriorityRegions(const std::vector<geometrize::ImageRunnerPriorityRegionOptions>& regions);
++
++    bool isScriptModeEnabled() const;
++    void setScriptModeEnabled(bool enabled);
++    void setScript(const std::string& scriptName, const std::string& code);
++    void setScripts(const std::map<std::string, std::string>& scripts);
++    std::map<std::string, std::string> getScripts() const;
++
++private:
++    class ImageTaskPreferencesImpl;
++    std::shared_ptr<ImageTaskPreferencesImpl> d;
++};
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/preferences/imagetaskpreferences.cpp	2026-08-27 13:24:26.053680100 +0800
++++ src/improved-app/geometrize/preferences/imagetaskpreferences.cpp	2026-08-30 22:22:47.274667500 +0800
+@@ -1,342 +1,402 @@
+-#include "imagetaskpreferences.h"
+-
+-#include <cassert>
+-#include <fstream>
+-#include <ostream>
+-#include <string>
+-#include <vector>
+-
+-#include <QDir>
+-#include <QFileInfo>
+-
+-#include "cereal/archives/json.hpp"
+-
+-#include "common/searchpaths.h"
+-#include "serialization/imagetaskpreferencesdata.h"
+-#include "serialization/streamview.h"
+-
+-namespace geometrize
+-{
+-
+-namespace preferences
+-{
+-
+-std::string getImageTaskPreferencesAutoSavePath(const std::string& hashOfFirstTargetImage)
+-{
+-    const std::vector<std::string> autoSaveSearchPaths = geometrize::searchpaths::getAutosaveTaskSettingsSearchPaths();
+-    if(autoSaveSearchPaths.empty()) {
+-        assert(0 && "Image task autosave search paths should never be empty");
+-        return "";
+-    }
+-    const auto autoSaveTaskSettingsFilename = geometrize::searchpaths::getAutosaveTaskSettingsFilename(hashOfFirstTargetImage);
+-    return autoSaveSearchPaths[0] + QDir::separator().toLatin1() + autoSaveTaskSettingsFilename;
+-}
+-
+-class ImageTaskPreferences::ImageTaskPreferencesImpl
+-{
+-public:
+-    ImageTaskPreferencesImpl()
+-    {
+-    }
+-
+-    ImageTaskPreferencesImpl(const std::string& filePath)
+-    {
+-        load(filePath);
+-    }
+-
+-    ~ImageTaskPreferencesImpl() = default;
+-    ImageTaskPreferencesImpl& operator=(const ImageTaskPreferencesImpl&) = default;
+-    ImageTaskPreferencesImpl(const ImageTaskPreferencesImpl&) = default;
+-
+-    bool load(const std::string& filePath)
+-    {
+-        // Preferences can be bundled into Qt resources, so we use a streamview that loads the file contents into a byte array first
+-        serialization::StreamView streamView(filePath);
+-        std::istream input(&streamView);
+-        try {
+-            cereal::JSONInputArchive archive{input};
+-            m_data.archive(archive, m_options, m_scriptsEnabled, m_scripts);
+-        } catch(...) {
+-            return false;
+-        }
+-        return true;
+-    }
+-
+-    bool save(const std::string& filePath)
+-    {
+-        // Create the directory at the filepath if it does not already exist
+-        // This is necessary because the output archive will not create any missing directories
+-        const QFileInfo info(QString::fromStdString(filePath));
+-        const QDir dir(info.absoluteDir());
+-        if(!dir.exists() && !dir.mkpath(dir.absolutePath())) {
+-            assert(0 && "Failed to create directory in which to save image task preferences");
+-            return false;
+-        }
+-
+-        std::ofstream output(filePath);
+-        try {
+-            cereal::JSONOutputArchive archive{output};
+-            m_data.archive(archive, m_options, m_scriptsEnabled, m_scripts);
+-        } catch(...) {
+-            assert(0 && "Failed to write image task preferences");
+-            return false;
+-        }
+-        return true;
+-    }
+-
+-    geometrize::ImageRunnerOptions getImageRunnerOptions() const
+-    {
+-        return m_options;
+-    }
+-
+-    void enableShapeTypes(const geometrize::ShapeTypes shapes)
+-    {
+-        m_options.shapeTypes = static_cast<geometrize::ShapeTypes>(static_cast<std::uint32_t>(m_options.shapeTypes) | static_cast<std::uint32_t>(shapes));
+-    }
+-
+-    void disableShapeTypes(const geometrize::ShapeTypes shapes)
+-    {
+-        m_options.shapeTypes = static_cast<geometrize::ShapeTypes>(static_cast<std::uint32_t>(m_options.shapeTypes) &~ static_cast<std::uint32_t>(shapes));
+-    }
+-
+-    void setShapeTypes(const geometrize::ShapeTypes shapes)
+-    {
+-        m_options.shapeTypes = shapes;
+-    }
+-
+-    void setShapeAlpha(const std::uint8_t alpha)
+-    {
+-        m_options.alpha = alpha;
+-    }
+-
+-    void setCandidateShapeCount(const std::uint32_t shapeCount)
+-    {
+-        m_options.shapeCount = shapeCount;
+-    }
+-
+-    void setMaxShapeMutations(const std::uint32_t maxMutations)
+-    {
+-        m_options.maxShapeMutations = maxMutations;
+-    }
+-
+-    void setSeed(const std::uint32_t seed)
+-    {
+-        m_options.seed = seed;
+-    }
+-
+-    void setMaxThreads(const std::uint32_t maxThreads)
+-    {
+-        m_options.maxThreads = maxThreads;
+-    }
+-
+-    void setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds)
+-    {
+-        m_options.shapeBounds = shapeBounds;
+-    }
+-
+-    void setShapeBounds(const double xMinPercent, const double yMinPercent, const double xMaxPercent, const double yMaxPercent)
+-    {
+-        m_options.shapeBounds.xMinPercent = xMinPercent;
+-        m_options.shapeBounds.yMinPercent = yMinPercent;
+-        m_options.shapeBounds.xMaxPercent = xMaxPercent;
+-        m_options.shapeBounds.yMaxPercent = yMaxPercent;
+-    }
+-
+-    void setShapeBoundsXMinPercent(const double xMinPercent)
+-    {
+-        m_options.shapeBounds.xMinPercent = xMinPercent;
+-    }
+-
+-    void setShapeBoundsYMinPercent(const double yMinPercent)
+-    {
+-        m_options.shapeBounds.yMinPercent = yMinPercent;
+-    }
+-
+-    void setShapeBoundsXMaxPercent(const double xMaxPercent)
+-    {
+-        m_options.shapeBounds.xMaxPercent = xMaxPercent;
+-    }
+-
+-    void setShapeBoundsYMaxPercent(const double yMaxPercent)
+-    {
+-        m_options.shapeBounds.yMaxPercent = yMaxPercent;
+-    }
+-
+-    void setShapeBoundsEnabled(const bool shapeBoundsEnabled)
+-    {
+-        m_options.shapeBounds.enabled = shapeBoundsEnabled;
+-    }
+-
+-    void setScriptModeEnabled(const bool enabled)
+-    {
+-        m_scriptsEnabled = enabled;
+-    }
+-
+-    bool isScriptModeEnabled() const
+-    {
+-        return m_scriptsEnabled;
+-    }
+-
+-    void setScript(const std::string& scriptName, const std::string& code)
+-    {
+-        m_scripts[scriptName] = code;
+-    }
+-
+-    void setScripts(const std::map<std::string, std::string>& scripts)
+-    {
+-        m_scripts = scripts;
+-    }
+-
+-    std::map<std::string, std::string> getScripts() const
+-    {
+-        return m_scripts;
+-    }
+-
+-private:
+-    serialization::ImageTaskPreferencesData m_data; ///> The data that will be serialized/deserialized
+-    geometrize::ImageRunnerOptions m_options; ///> The Geometrize library-level image runner options
+-
+-    bool m_scriptsEnabled{false}; ///> Whether the custom Chaiscript scripts are enabled or not
+-    std::map<std::string, std::string> m_scripts; ///> Custom Chaiscript scripts that override the default Geometrize functionality
+-};
+-
+-ImageTaskPreferences::ImageTaskPreferences() : d{std::make_shared<ImageTaskPreferences::ImageTaskPreferencesImpl>()}
+-{
+-}
+-
+-ImageTaskPreferences::ImageTaskPreferences(const std::string& filePath) : d{std::make_shared<ImageTaskPreferences::ImageTaskPreferencesImpl>(filePath)}
+-{
+-}
+-
+-ImageTaskPreferences::~ImageTaskPreferences()
+-{
+-}
+-
+-ImageTaskPreferences& ImageTaskPreferences::operator=(const ImageTaskPreferences& other)
+-{
+-    d = other.d;
+-    return *this;
+-}
+-
+-ImageTaskPreferences::ImageTaskPreferences(const ImageTaskPreferences& other) : d{other.d}
+-{
+-}
+-
+-bool ImageTaskPreferences::load(const std::string& filePath)
+-{
+-    return d->load(filePath);
+-}
+-
+-bool ImageTaskPreferences::save(const std::string& filePath)
+-{
+-    return d->save(filePath);
+-}
+-
+-geometrize::ImageRunnerOptions ImageTaskPreferences::getImageRunnerOptions() const
+-{
+-    return d->getImageRunnerOptions();
+-}
+-
+-void ImageTaskPreferences::enableShapeTypes(const geometrize::ShapeTypes shapes)
+-{
+-    d->enableShapeTypes(shapes);
+-}
+-
+-void ImageTaskPreferences::disableShapeTypes(const geometrize::ShapeTypes shapes)
+-{
+-    d->disableShapeTypes(shapes);
+-}
+-
+-void ImageTaskPreferences::setShapeTypes(const geometrize::ShapeTypes shapes)
+-{
+-    d->setShapeTypes(shapes);
+-}
+-
+-void ImageTaskPreferences::setShapeAlpha(const std::uint8_t alpha)
+-{
+-    d->setShapeAlpha(alpha);
+-}
+-
+-void ImageTaskPreferences::setCandidateShapeCount(const std::uint32_t shapeCount)
+-{
+-    d->setCandidateShapeCount(shapeCount);
+-}
+-
+-void ImageTaskPreferences::setMaxShapeMutations(const std::uint32_t maxMutations)
+-{
+-    d->setMaxShapeMutations(maxMutations);
+-}
+-
+-void ImageTaskPreferences::setSeed(const std::uint32_t seed)
+-{
+-    d->setSeed(seed);
+-}
+-
+-void ImageTaskPreferences::setMaxThreads(const std::uint32_t maxThreads)
+-{
+-    d->setMaxThreads(maxThreads);
+-}
+-
+-void ImageTaskPreferences::setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds)
+-{
+-    d->setShapeBounds(shapeBounds);
+-}
+-
+-void ImageTaskPreferences::setShapeBounds(double xMinPercent, double yMinPercent, double xMaxPercent, double yMaxPercent)
+-{
+-    d->setShapeBounds(xMinPercent, yMinPercent, xMaxPercent, yMaxPercent);
+-}
+-
+-void ImageTaskPreferences::setShapeBoundsXMinPercent(const double xMinPercent)
+-{
+-    d->setShapeBoundsXMinPercent(xMinPercent);
+-}
+-
+-void ImageTaskPreferences::setShapeBoundsYMinPercent(const double yMinPercent)
+-{
+-    d->setShapeBoundsYMinPercent(yMinPercent);
+-}
+-
+-void ImageTaskPreferences::setShapeBoundsXMaxPercent(const double xMaxPercent)
+-{
+-    d->setShapeBoundsXMaxPercent(xMaxPercent);
+-}
+-
+-void ImageTaskPreferences::setShapeBoundsYMaxPercent(const double yMaxPercent)
+-{
+-    d->setShapeBoundsYMaxPercent(yMaxPercent);
+-}
+-
+-void ImageTaskPreferences::setShapeBoundsEnabled(const bool shapeBoundsEnabled)
+-{
+-    d->setShapeBoundsEnabled(shapeBoundsEnabled);
+-}
+-
+-void ImageTaskPreferences::setScriptModeEnabled(const bool enabled)
+-{
+-    d->setScriptModeEnabled(enabled);
+-}
+-
+-bool ImageTaskPreferences::isScriptModeEnabled() const
+-{
+-    return d->isScriptModeEnabled();
+-}
+-
+-void ImageTaskPreferences::setScript(const std::string& scriptName, const std::string& code)
+-{
+-    d->setScript(scriptName, code);
+-}
+-
+-void ImageTaskPreferences::setScripts(const std::map<std::string, std::string>& scripts)
+-{
+-    d->setScripts(scripts);
+-}
+-
+-std::map<std::string, std::string> ImageTaskPreferences::getScripts() const
+-{
+-    return d->getScripts();
+-}
+-
+-}
+-
+-}
++#include "imagetaskpreferences.h"
++
++#include <cassert>
++#include <fstream>
++#include <ostream>
++#include <string>
++#include <vector>
++
++#include <QDir>
++#include <QFileInfo>
++
++#include "cereal/archives/json.hpp"
++
++#include "common/searchpaths.h"
++#include "serialization/imagetaskpreferencesdata.h"
++#include "serialization/streamview.h"
++
++namespace geometrize
++{
++
++namespace preferences
++{
++
++std::string getImageTaskPreferencesAutoSavePath(const std::string& hashOfFirstTargetImage)
++{
++    const std::vector<std::string> autoSaveSearchPaths = geometrize::searchpaths::getAutosaveTaskSettingsSearchPaths();
++    if(autoSaveSearchPaths.empty()) {
++        assert(0 && "Image task autosave search paths should never be empty");
++        return "";
++    }
++    const auto autoSaveTaskSettingsFilename = geometrize::searchpaths::getAutosaveTaskSettingsFilename(hashOfFirstTargetImage);
++    return autoSaveSearchPaths[0] + QDir::separator().toLatin1() + autoSaveTaskSettingsFilename;
++}
++
++class ImageTaskPreferences::ImageTaskPreferencesImpl
++{
++public:
++    ImageTaskPreferencesImpl()
++    {
++    }
++
++    ImageTaskPreferencesImpl(const std::string& filePath)
++    {
++        load(filePath);
++    }
++
++    ~ImageTaskPreferencesImpl() = default;
++    ImageTaskPreferencesImpl& operator=(const ImageTaskPreferencesImpl&) = default;
++    ImageTaskPreferencesImpl(const ImageTaskPreferencesImpl&) = default;
++
++    bool load(const std::string& filePath)
++    {
++        // Preferences can be bundled into Qt resources, so we use a streamview that loads the file contents into a byte array first
++        serialization::StreamView streamView(filePath);
++        std::istream input(&streamView);
++        try {
++            cereal::JSONInputArchive archive{input};
++            m_data.archive(archive, m_options, m_scriptsEnabled, m_scripts);
++        } catch(...) {
++            return false;
++        }
++        return true;
++    }
++
++    bool save(const std::string& filePath)
++    {
++        // Create the directory at the filepath if it does not already exist
++        // This is necessary because the output archive will not create any missing directories
++        const QFileInfo info(QString::fromStdString(filePath));
++        const QDir dir(info.absoluteDir());
++        if(!dir.exists() && !dir.mkpath(dir.absolutePath())) {
++            assert(0 && "Failed to create directory in which to save image task preferences");
++            return false;
++        }
++
++        std::ofstream output(filePath);
++        try {
++            cereal::JSONOutputArchive archive{output};
++            m_data.archive(archive, m_options, m_scriptsEnabled, m_scripts);
++        } catch(...) {
++            assert(0 && "Failed to write image task preferences");
++            return false;
++        }
++        return true;
++    }
++
++    geometrize::ImageRunnerOptions getImageRunnerOptions() const
++    {
++        return m_options;
++    }
++
++    void enableShapeTypes(const geometrize::ShapeTypes shapes)
++    {
++        m_options.shapeTypes = static_cast<geometrize::ShapeTypes>(static_cast<std::uint32_t>(m_options.shapeTypes) | static_cast<std::uint32_t>(shapes));
++    }
++
++    void disableShapeTypes(const geometrize::ShapeTypes shapes)
++    {
++        m_options.shapeTypes = static_cast<geometrize::ShapeTypes>(static_cast<std::uint32_t>(m_options.shapeTypes) &~ static_cast<std::uint32_t>(shapes));
++    }
++
++    void setShapeTypes(const geometrize::ShapeTypes shapes)
++    {
++        m_options.shapeTypes = shapes;
++    }
++
++    void setShapeAlpha(const std::uint8_t alpha)
++    {
++        m_options.alpha = alpha;
++    }
++
++    void setCandidateShapeCount(const std::uint32_t shapeCount)
++    {
++        m_options.shapeCount = shapeCount;
++    }
++
++    void setMaxShapeMutations(const std::uint32_t maxMutations)
++    {
++        m_options.maxShapeMutations = maxMutations;
++    }
++
++    void setSeed(const std::uint32_t seed)
++    {
++        m_options.seed = seed;
++    }
++
++    void setMaxThreads(const std::uint32_t maxThreads)
++    {
++        m_options.maxThreads = maxThreads;
++    }
++
++    void setPyramidSearch(const bool enabled)
++    {
++        m_options.pyramidSearch = enabled;
++    }
++
++    void setAdaptiveStep(const bool enabled)
++    {
++        m_options.enhancements.adaptiveStep = enabled;
++    }
++
++    void setAlphaSearch(const bool enabled)
++    {
++        m_options.enhancements.alphaSearch = enabled;
++    }
++
++    void setErrorGuide(const bool enabled)
++    {
++        m_options.enhancements.errorGuide = enabled;
++    }
++
++    void setSegmentColors(const bool enabled)
++    {
++        m_options.enhancements.segmentColors = enabled;
++    }
++
++    void setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds)
++    {
++        m_options.shapeBounds = shapeBounds;
++    }
++
++    void setShapeBounds(const double xMinPercent, const double yMinPercent, const double xMaxPercent, const double yMaxPercent)
++    {
++        m_options.shapeBounds.xMinPercent = xMinPercent;
++        m_options.shapeBounds.yMinPercent = yMinPercent;
++        m_options.shapeBounds.xMaxPercent = xMaxPercent;
++        m_options.shapeBounds.yMaxPercent = yMaxPercent;
++    }
++
++    void setShapeBoundsXMinPercent(const double xMinPercent)
++    {
++        m_options.shapeBounds.xMinPercent = xMinPercent;
++    }
++
++    void setShapeBoundsYMinPercent(const double yMinPercent)
++    {
++        m_options.shapeBounds.yMinPercent = yMinPercent;
++    }
++
++    void setShapeBoundsXMaxPercent(const double xMaxPercent)
++    {
++        m_options.shapeBounds.xMaxPercent = xMaxPercent;
++    }
++
++    void setShapeBoundsYMaxPercent(const double yMaxPercent)
++    {
++        m_options.shapeBounds.yMaxPercent = yMaxPercent;
++    }
++
++    void setShapeBoundsEnabled(const bool shapeBoundsEnabled)
++    {
++        m_options.shapeBounds.enabled = shapeBoundsEnabled;
++    }
++
++    void setPriorityRegions(const std::vector<geometrize::ImageRunnerPriorityRegionOptions>& regions)
++    {
++        m_options.priorityRegions = regions;
++    }
++
++    void setScriptModeEnabled(const bool enabled)
++    {
++        m_scriptsEnabled = enabled;
++    }
++
++    bool isScriptModeEnabled() const
++    {
++        return m_scriptsEnabled;
++    }
++
++    void setScript(const std::string& scriptName, const std::string& code)
++    {
++        m_scripts[scriptName] = code;
++    }
++
++    void setScripts(const std::map<std::string, std::string>& scripts)
++    {
++        m_scripts = scripts;
++    }
++
++    std::map<std::string, std::string> getScripts() const
++    {
++        return m_scripts;
++    }
++
++private:
++    serialization::ImageTaskPreferencesData m_data; ///> The data that will be serialized/deserialized
++    geometrize::ImageRunnerOptions m_options; ///> The Geometrize library-level image runner options
++
++    bool m_scriptsEnabled{false}; ///> Whether the custom Chaiscript scripts are enabled or not
++    std::map<std::string, std::string> m_scripts; ///> Custom Chaiscript scripts that override the default Geometrize functionality
++};
++
++ImageTaskPreferences::ImageTaskPreferences() : d{std::make_shared<ImageTaskPreferences::ImageTaskPreferencesImpl>()}
++{
++}
++
++ImageTaskPreferences::ImageTaskPreferences(const std::string& filePath) : d{std::make_shared<ImageTaskPreferences::ImageTaskPreferencesImpl>(filePath)}
++{
++}
++
++ImageTaskPreferences::~ImageTaskPreferences()
++{
++}
++
++ImageTaskPreferences& ImageTaskPreferences::operator=(const ImageTaskPreferences& other)
++{
++    d = other.d;
++    return *this;
++}
++
++ImageTaskPreferences::ImageTaskPreferences(const ImageTaskPreferences& other) : d{other.d}
++{
++}
++
++bool ImageTaskPreferences::load(const std::string& filePath)
++{
++    return d->load(filePath);
++}
++
++bool ImageTaskPreferences::save(const std::string& filePath)
++{
++    return d->save(filePath);
++}
++
++geometrize::ImageRunnerOptions ImageTaskPreferences::getImageRunnerOptions() const
++{
++    return d->getImageRunnerOptions();
++}
++
++void ImageTaskPreferences::enableShapeTypes(const geometrize::ShapeTypes shapes)
++{
++    d->enableShapeTypes(shapes);
++}
++
++void ImageTaskPreferences::disableShapeTypes(const geometrize::ShapeTypes shapes)
++{
++    d->disableShapeTypes(shapes);
++}
++
++void ImageTaskPreferences::setShapeTypes(const geometrize::ShapeTypes shapes)
++{
++    d->setShapeTypes(shapes);
++}
++
++void ImageTaskPreferences::setShapeAlpha(const std::uint8_t alpha)
++{
++    d->setShapeAlpha(alpha);
++}
++
++void ImageTaskPreferences::setCandidateShapeCount(const std::uint32_t shapeCount)
++{
++    d->setCandidateShapeCount(shapeCount);
++}
++
++void ImageTaskPreferences::setMaxShapeMutations(const std::uint32_t maxMutations)
++{
++    d->setMaxShapeMutations(maxMutations);
++}
++
++void ImageTaskPreferences::setSeed(const std::uint32_t seed)
++{
++    d->setSeed(seed);
++}
++
++void ImageTaskPreferences::setMaxThreads(const std::uint32_t maxThreads)
++{
++    d->setMaxThreads(maxThreads);
++}
++
++void ImageTaskPreferences::setPyramidSearch(const bool enabled)
++{
++    d->setPyramidSearch(enabled);
++}
++
++void ImageTaskPreferences::setAdaptiveStep(const bool enabled)
++{
++    d->setAdaptiveStep(enabled);
++}
++
++void ImageTaskPreferences::setAlphaSearch(const bool enabled)
++{
++    d->setAlphaSearch(enabled);
++}
++
++void ImageTaskPreferences::setErrorGuide(const bool enabled)
++{
++    d->setErrorGuide(enabled);
++}
++
++void ImageTaskPreferences::setSegmentColors(const bool enabled)
++{
++    d->setSegmentColors(enabled);
++}
++
++void ImageTaskPreferences::setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds)
++{
++    d->setShapeBounds(shapeBounds);
++}
++
++void ImageTaskPreferences::setShapeBounds(double xMinPercent, double yMinPercent, double xMaxPercent, double yMaxPercent)
++{
++    d->setShapeBounds(xMinPercent, yMinPercent, xMaxPercent, yMaxPercent);
++}
++
++void ImageTaskPreferences::setShapeBoundsXMinPercent(const double xMinPercent)
++{
++    d->setShapeBoundsXMinPercent(xMinPercent);
++}
++
++void ImageTaskPreferences::setShapeBoundsYMinPercent(const double yMinPercent)
++{
++    d->setShapeBoundsYMinPercent(yMinPercent);
++}
++
++void ImageTaskPreferences::setShapeBoundsXMaxPercent(const double xMaxPercent)
++{
++    d->setShapeBoundsXMaxPercent(xMaxPercent);
++}
++
++void ImageTaskPreferences::setShapeBoundsYMaxPercent(const double yMaxPercent)
++{
++    d->setShapeBoundsYMaxPercent(yMaxPercent);
++}
++
++void ImageTaskPreferences::setShapeBoundsEnabled(const bool shapeBoundsEnabled)
++{
++    d->setShapeBoundsEnabled(shapeBoundsEnabled);
++}
++
++void ImageTaskPreferences::setPriorityRegions(const std::vector<geometrize::ImageRunnerPriorityRegionOptions>& regions)
++{
++    d->setPriorityRegions(regions);
++}
++
++void ImageTaskPreferences::setScriptModeEnabled(const bool enabled)
++{
++    d->setScriptModeEnabled(enabled);
++}
++
++bool ImageTaskPreferences::isScriptModeEnabled() const
++{
++    return d->isScriptModeEnabled();
++}
++
++void ImageTaskPreferences::setScript(const std::string& scriptName, const std::string& code)
++{
++    d->setScript(scriptName, code);
++}
++
++void ImageTaskPreferences::setScripts(const std::map<std::string, std::string>& scripts)
++{
++    d->setScripts(scripts);
++}
++
++std::map<std::string, std::string> ImageTaskPreferences::getScripts() const
++{
++    return d->getScripts();
++}
++
++}
++
++}
+--- upstream/geometrize-app/geometrize/serialization/imagetaskpreferencesdata.h	2026-08-27 13:24:26.083376900 +0800
++++ src/improved-app/geometrize/serialization/imagetaskpreferencesdata.h	2026-08-30 22:20:19.911729600 +0800
+@@ -1,63 +1,84 @@
+-#pragma once
+-
+-#include <map>
+-#include <string>
+-
+-#include "cereal/cereal.hpp"
+-#include "cereal/types/map.hpp"
+-#include "cereal/types/vector.hpp"
+-
+-#include "geometrize/runner/imagerunneroptions.h"
+-
+-namespace geometrize
+-{
+-
+-template<typename Archive>
+-void serialize(Archive& ar, geometrize::ImageRunnerShapeBoundsOptions& bounds)
+-{
+-    ar(cereal::make_nvp("enabled", bounds.enabled),
+-       cereal::make_nvp("xMinPercent", bounds.xMinPercent),
+-       cereal::make_nvp("yMinPercent", bounds.yMinPercent),
+-       cereal::make_nvp("xMaxPercent", bounds.xMaxPercent),
+-       cereal::make_nvp("yMaxPercent", bounds.yMaxPercent));
+-}
+-
+-namespace serialization
+-{
+-
+-/**
+- * @brief The ImageTaskPreferencesData struct represents the preferences data for an image task.
+- */
+-class ImageTaskPreferencesData
+-{
+-public:
+-    template<class Archive>
+-    void archive(Archive& ar, geometrize::ImageRunnerOptions& options, bool& scriptsEnabled, std::map<std::string, std::string>& scripts)
+-    {
+-        ar(cereal::make_nvp(shapeAlphaKey, options.alpha));
+-        ar(cereal::make_nvp(maxShapeMutationsKey, options.maxShapeMutations));
+-        ar(cereal::make_nvp(shapeCountKey, options.shapeCount));
+-        ar(cereal::make_nvp(shapeTypesKey, options.shapeTypes));
+-        ar(cereal::make_nvp(randomSeedKey, options.seed));
+-        ar(cereal::make_nvp(maxThreadsKey, options.maxThreads));
+-        ar(cereal::make_nvp(shapeBounds, options.shapeBounds));
+-        ar(cereal::make_nvp(scriptsEnabledKey, scriptsEnabled));
+-        ar(cereal::make_nvp(scriptsKey, scripts));
+-    }
+-
+-private:
+-    const std::string shapeAlphaKey{"shapeAlpha"};
+-    const std::string maxShapeMutationsKey{"maxShapeMutations"};
+-    const std::string shapeCountKey{"shapeCount"};
+-    const std::string shapeTypesKey{"shapeTypes"};
+-    const std::string randomSeedKey{"randomSeed"};
+-    const std::string maxThreadsKey{"maxThreads"};
+-    const std::string shapeBounds{"shapeBounds"};
+-
+-    const std::string scriptsEnabledKey{"scriptModeEnabled"};
+-    const std::string scriptsKey{"scripts"};
+-};
+-
+-}
+-
+-}
++#pragma once
++
++#include <map>
++#include <string>
++
++#include "cereal/cereal.hpp"
++#include "cereal/types/map.hpp"
++#include "cereal/types/vector.hpp"
++
++#include "geometrize/runner/imagerunneroptions.h"
++
++namespace geometrize
++{
++
++template<typename Archive>
++void serialize(Archive& ar, geometrize::ImageRunnerShapeBoundsOptions& bounds)
++{
++    ar(cereal::make_nvp("enabled", bounds.enabled),
++       cereal::make_nvp("xMinPercent", bounds.xMinPercent),
++       cereal::make_nvp("yMinPercent", bounds.yMinPercent),
++       cereal::make_nvp("xMaxPercent", bounds.xMaxPercent),
++       cereal::make_nvp("yMaxPercent", bounds.yMaxPercent));
++}
++
++template<typename Archive>
++void serialize(Archive& ar, geometrize::ImageRunnerPriorityRegionOptions& region)
++{
++    ar(cereal::make_nvp("xMinPercent", region.xMinPercent),
++       cereal::make_nvp("yMinPercent", region.yMinPercent),
++       cereal::make_nvp("xMaxPercent", region.xMaxPercent),
++       cereal::make_nvp("yMaxPercent", region.yMaxPercent));
++}
++
++namespace serialization
++{
++
++/**
++ * @brief The ImageTaskPreferencesData struct represents the preferences data for an image task.
++ */
++class ImageTaskPreferencesData
++{
++public:
++    template<class Archive>
++    void archive(Archive& ar, geometrize::ImageRunnerOptions& options, bool& scriptsEnabled, std::map<std::string, std::string>& scripts)
++    {
++        ar(cereal::make_nvp(shapeAlphaKey, options.alpha));
++        ar(cereal::make_nvp(maxShapeMutationsKey, options.maxShapeMutations));
++        ar(cereal::make_nvp(shapeCountKey, options.shapeCount));
++        ar(cereal::make_nvp(shapeTypesKey, options.shapeTypes));
++        ar(cereal::make_nvp(randomSeedKey, options.seed));
++        ar(cereal::make_nvp(maxThreadsKey, options.maxThreads));
++        ar(cereal::make_nvp(pyramidSearchKey, options.pyramidSearch));
++        ar(cereal::make_nvp(adaptiveStepKey, options.enhancements.adaptiveStep));
++        ar(cereal::make_nvp(alphaSearchKey, options.enhancements.alphaSearch));
++        ar(cereal::make_nvp(errorGuideKey, options.enhancements.errorGuide));
++        ar(cereal::make_nvp(segmentColorsKey, options.enhancements.segmentColors));
++        ar(cereal::make_nvp(shapeBounds, options.shapeBounds));
++        ar(cereal::make_nvp(priorityRegionsKey, options.priorityRegions));
++        ar(cereal::make_nvp(scriptsEnabledKey, scriptsEnabled));
++        ar(cereal::make_nvp(scriptsKey, scripts));
++    }
++
++private:
++    const std::string shapeAlphaKey{"shapeAlpha"};
++    const std::string maxShapeMutationsKey{"maxShapeMutations"};
++    const std::string shapeCountKey{"shapeCount"};
++    const std::string shapeTypesKey{"shapeTypes"};
++    const std::string randomSeedKey{"randomSeed"};
++    const std::string maxThreadsKey{"maxThreads"};
++    const std::string pyramidSearchKey{"pyramidSearch"};
++    const std::string adaptiveStepKey{"adaptiveStep"};
++    const std::string alphaSearchKey{"alphaSearch"};
++    const std::string errorGuideKey{"errorGuide"};
++    const std::string segmentColorsKey{"segmentColors"};
++    const std::string shapeBounds{"shapeBounds"};
++    const std::string priorityRegionsKey{"priorityRegions"};
++
++    const std::string scriptsEnabledKey{"scriptModeEnabled"};
++    const std::string scriptsKey{"scripts"};
++};
++
++}
++
++}

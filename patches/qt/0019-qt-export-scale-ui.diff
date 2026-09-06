@@ -1,0 +1,134 @@
+@@ -33,6 +33,33 @@
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_2">
+       <item>
++       <layout class="QFormLayout" name="imageOptionsFormLayout">
++        <item row="0" column="0">
++         <widget class="QLabel" name="imageScaleLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the output resolution multiplier of the exported image">Output Scale</string>
++          </property>
++         </widget>
++        </item>
++        <item row="0" column="1">
++         <widget class="QSpinBox" name="imageScaleSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>8</number>
++          </property>
++          <property name="value">
++           <number>3</number>
++          </property>
++          <property name="toolTip">
++           <string>Output resolution multiplier. Higher values render smoother shapes but export slower.</string>
++          </property>
++         </widget>
++        </item>
++       </layout>
++      </item>
++      <item>
+        <widget class="QPushButton" name="saveImageButton">
+         <property name="text">
+          <string extracomment="Text on a button that opens a dialog that allows the user to save an image file">Save Image</string>
+@@ -71,6 +98,99 @@
+       <string extracomment="Title text above a group of controls related to exporting and saving animated GIF images">Export Animated GIF</string>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_4">
++      <item>
++       <layout class="QFormLayout" name="gifOptionsFormLayout">
++        <item row="0" column="0">
++         <widget class="QLabel" name="frameStepLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls how many shapes are added between frames of the GIF animation">Shapes Per Frame</string>
++          </property>
++         </widget>
++        </item>
++        <item row="0" column="1">
++         <widget class="QSpinBox" name="frameStepSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>20</number>
++          </property>
++          <property name="value">
++           <number>2</number>
++          </property>
++          <property name="toolTip">
++           <string>Take one animation frame for every N shapes. Higher values make smaller, faster animations.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="0">
++         <widget class="QLabel" name="frameRateLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the playback speed of the GIF animation">Frame Rate (FPS)</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="1">
++         <widget class="QSpinBox" name="frameRateSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>50</number>
++          </property>
++          <property name="value">
++           <number>10</number>
++          </property>
++          <property name="toolTip">
++           <string>Playback speed of the animation in frames per second.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="2" column="0">
++         <widget class="QLabel" name="scaleFactorLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the output resolution multiplier of the GIF animation">Output Scale</string>
++          </property>
++         </widget>
++        </item>
++        <item row="2" column="1">
++         <widget class="QSpinBox" name="scaleFactorSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>8</number>
++          </property>
++          <property name="value">
++           <number>3</number>
++          </property>
++          <property name="toolTip">
++           <string>Output resolution multiplier. Higher values render smoother shapes but export slower.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="3" column="0" colspan="2">
++         <widget class="QCheckBox" name="loopGifCheckbox">
++          <property name="text">
++           <string extracomment="Checkbox that controls whether the GIF animation loops forever">Loop Forever</string>
++          </property>
++          <property name="checked">
++           <bool>true</bool>
++          </property>
++         </widget>
++        </item>
++        <item row="4" column="0" colspan="2">
++         <widget class="QCheckBox" name="endPauseCheckbox">
++          <property name="text">
++           <string extracomment="Checkbox that controls whether the last frame of the GIF animation pauses for two seconds">Pause at End</string>
++          </property>
++          <property name="checked">
++           <bool>true</bool>
++          </property>
++         </widget>
++        </item>
++       </layout>
++      </item>
+       <item>
+        <widget class="QPushButton" name="saveGIFButton">
+         <property name="text">

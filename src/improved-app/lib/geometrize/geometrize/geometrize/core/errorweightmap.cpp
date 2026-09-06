@@ -1,0 +1,142 @@
+#include "errorweightmap.h"
+
+#include <cassert>
+#include <algorithm>
+
+#include "../bitmap/bitmap.h"
+#include "../commonutil.h"
+
+namespace geometrize
+{
+
+namespace core
+{
+
+ErrorWeightMap::ErrorWeightMap(std::uint32_t blockSize) : m_blockSize{blockSize}
+{
+    assert(m_blockSize > 0U && "Block size must be positive");
+}
+
+namespace
+{
+
+// 块中心点是否落在任一区域矩形内(闭区间);非法矩形(min>max)跳过
+bool isInPriorityRegions(const std::int32_t centerX, const std::int32_t centerY, const std::vector<geometrize::core::RegionRect>& regions)
+{
+    for(const geometrize::core::RegionRect& region : regions) {
+        if(region.xMin > region.xMax || region.yMin > region.yMax) {
+            continue;
+        }
+        if(centerX >= region.xMin && centerX <= region.xMax && centerY >= region.yMin && centerY <= region.yMax) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}
+
+void ErrorWeightMap::rebuild(const geometrize::Bitmap& target, const geometrize::Bitmap& current,
+                             const std::vector<RegionRect>& priorityRegions, const std::uint32_t priorityFactor)
+{
+    const std::int32_t width{static_cast<std::int32_t>(target.getWidth())};
+    const std::int32_t height{static_cast<std::int32_t>(target.getHeight())};
+    assert(current.getWidth() == target.getWidth() && current.getHeight() == target.getHeight() && "Bitmap dimensions must match");
+
+    if(width <= 0 || height <= 0) {
+        m_blocksX = 0U;
+        m_blocksY = 0U;
+        m_blockSums.clear();
+        m_prefix.clear();
+        m_totalScaled = 0;
+        return;
+    }
+
+    m_mapWidth = width;
+    m_mapHeight = height;
+    m_blocksX = (static_cast<std::uint32_t>(width) + m_blockSize - 1U) / m_blockSize;
+    m_blocksY = (static_cast<std::uint32_t>(height) + m_blockSize - 1U) / m_blockSize;
+
+    const std::size_t blockCount{static_cast<std::size_t>(m_blocksX) * m_blocksY};
+    m_blockSums.assign(blockCount, 0U);
+
+    const std::uint32_t stride{target.getWidth() * 4U};
+    const std::uint8_t* targetData{target.getDataRef().data()};
+    const std::uint8_t* currentData{current.getDataRef().data()};
+
+    // 逐行累积块和:内层 x 连续,块号只在跨块时递增,避免每像素重算块索引
+    for(std::int32_t y = 0; y < height; y++) {
+        const std::uint8_t* tRow{targetData + static_cast<std::size_t>(y) * stride};
+        const std::uint8_t* cRow{currentData + static_cast<std::size_t>(y) * stride};
+        std::uint32_t* blockRow{&m_blockSums[static_cast<std::size_t>(y / m_blockSize) * m_blocksX]};
+        std::uint32_t blockIdx{0U};
+        for(std::int32_t x = 0; x < width; x++) {
+            const std::size_t px{static_cast<std::size_t>(x) * 4U};
+            const std::uint32_t w{static_cast<std::uint32_t>(std::abs(tRow[px] - cRow[px]))
+                + std::abs(tRow[px + 1U] - cRow[px + 1U])
+                + std::abs(tRow[px + 2U] - cRow[px + 2U])
+                + std::abs(tRow[px + 3U] - cRow[px + 3U])};
+            blockRow[blockIdx] += w;
+            if(static_cast<std::uint32_t>(x + 1) % m_blockSize == 0U) {
+                blockIdx++;
+            }
+        }
+    }
+
+    // 区域加权:先逐块算好乘后权重(命中判定与块内抖动同用块中心),再统一缩放。
+    // 不变量:除数必须基于 totalWeighted(乘后)计算,不能沿用未乘的 totalRaw——
+    // 区域块 ×factor 后余数分布不同,沿用旧除数可能让 totalScaled 贴近 INT32_MAX。
+    // 实现注:乘后权重暂存进 m_blockSums(饱和到 uint32 上限;总权 uint64 另行累加),
+    // 下一趟 prefix 直接消费,保证命中判定只做一次、两趟分布严格一致。
+    std::uint64_t totalWeighted{0U};
+    for(std::size_t i = 0; i < blockCount; i++) {
+        const std::int32_t bx{static_cast<std::int32_t>((i % m_blocksX) * m_blockSize) + static_cast<std::int32_t>(m_blockSize / 2U)};
+        const std::int32_t by{static_cast<std::int32_t>((i / m_blocksX) * m_blockSize) + static_cast<std::int32_t>(m_blockSize / 2U)};
+        const bool hit{priorityFactor > 1U && isInPriorityRegions(bx, by, priorityRegions)};
+        const std::uint64_t weighted{static_cast<std::uint64_t>(m_blockSums[i]) * (hit ? priorityFactor : 1U)};
+        totalWeighted += weighted;
+        m_blockSums[i] = static_cast<std::uint32_t>((std::min)(weighted, static_cast<std::uint64_t>(0xFFFFFFFFULL)));
+    }
+
+    // 整数缩放:totalRaw 最大可达 4096²×1020 ≈ 1.7e13(×factor 后更高),超出 int32;
+    // k = total/INT32_MAX + 1 使任意块和除以 k 后不超过 INT32_MAX − 1,
+    // 由 Σ(a_i/k) ≤ Σa_i/k 的超加性保证总缩放值安全入 int32。
+    const std::uint64_t divisor{(totalWeighted / 2147483647ULL) + 1ULL};
+    m_prefix.assign(blockCount, 0U);
+    std::uint64_t running{0U};
+    for(std::size_t i = 0; i < blockCount; i++) {
+        running += static_cast<std::uint64_t>(m_blockSums[i]) / divisor;
+        m_prefix[i] = running;
+    }
+    // 就地覆盖:前缀建完后块和数组已无用途,存缩放值仅供调试/校验
+    for(std::size_t i = 0; i < blockCount; i++) {
+        m_blockSums[i] = static_cast<std::uint32_t>(static_cast<std::uint64_t>(m_blockSums[i]) / divisor);
+    }
+    m_totalScaled = static_cast<std::int32_t>(running);
+}
+
+bool ErrorWeightMap::sampleCenter(std::int32_t& cx, std::int32_t& cy) const
+{
+    if(m_totalScaled <= 0) {
+        return false; // 无误差可引导:零 RNG 消耗,调用方保持原 setup 位置即精确均匀退化
+    }
+
+    const std::int32_t roll{commonutil::randomRange(0, m_totalScaled - 1)};
+    const auto it{std::upper_bound(m_prefix.begin(), m_prefix.end(), static_cast<std::uint64_t>(roll))};
+    assert(it != m_prefix.end() && "CDF lookup must always land in a block");
+    const std::size_t blockIdx{static_cast<std::size_t>(std::distance(m_prefix.begin(), it))};
+
+    const std::int32_t bx0{static_cast<std::int32_t>((blockIdx % m_blocksX) * m_blockSize)};
+    const std::int32_t by0{static_cast<std::int32_t>((blockIdx / m_blocksX) * m_blockSize)};
+    // 边缘部分块收敛到图内,块内均匀抖动补足亚块定位
+    const std::int32_t bx1{(std::min)(bx0 + static_cast<std::int32_t>(m_blockSize) - 1, m_mapWidth - 1)};
+    const std::int32_t by1{(std::min)(by0 + static_cast<std::int32_t>(m_blockSize) - 1, m_mapHeight - 1)};
+
+    cx = commonutil::randomRange(bx0, bx1);
+    cy = commonutil::randomRange(by0, by1);
+    return true;
+}
+
+}
+
+}

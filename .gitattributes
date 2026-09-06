@@ -1,0 +1,15 @@
+# 二进制与字节敏感产物:禁止行尾规范化,保证对拍留痕/补丁/released 产物逐字节一致
+*.raw binary
+*.qm binary
+*.exe binary
+*.dll binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.gif binary
+*.woff binary
+*.ttf binary
+*.diff -text
+*.patch -text

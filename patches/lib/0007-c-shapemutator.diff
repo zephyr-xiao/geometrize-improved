@@ -1,0 +1,69 @@
+--- src/baseline-lib/geometrize/geometrize/shape/shapemutator.cpp	2026-08-27 13:24:27.415058500 +0800
++++ src/improved-lib/geometrize/geometrize/shape/shapemutator.cpp	2026-08-27 15:49:30.671910200 +0800
+@@ -250,7 +250,7 @@
+ 
+ void mutate(geometrize::Polyline& s, const std::int32_t xMin, const std::int32_t yMin, const std::int32_t xMax, const std::int32_t yMax)
+ {
+-    const std::int32_t i{geometrize::commonutil::randomRange(static_cast<std::size_t>(0), s.m_points.size() - 1)};
++    const std::int32_t i{geometrize::commonutil::randomRange(0, static_cast<std::int32_t>(s.m_points.size() - 1))};
+ 
+     std::pair<std::int32_t, std::int32_t> point{s.m_points[i]};
+     point.first = geometrize::commonutil::clamp(point.first + geometrize::commonutil::randomRange(-64, 64), xMin, xMax - 1);
+@@ -547,22 +547,25 @@
+ 
+ void scale(geometrize::Polyline& s, const float scaleFactor)
+ {
+-    std::vector<std::pair<float, float>> points;
+-
+-    for(std::size_t i = 0; i < s.m_points.size(); i+=2) {
+-        if(i == s.m_points.size() - 1 || i == s.m_points.size()) {
+-            continue;
+-        }
+-        const float x1 = s.m_points[i].first;
+-        const float x2 = s.m_points[i + 1].first;
+-        const float y1 = s.m_points[i].second;
+-        const float y2 = s.m_points[i + 1].second;
++    // 绕质心缩放全部点
++    if(s.m_points.empty()) {
++        return;
++    }
+ 
+-        const float xLen = (x1 + x2) / 2;
+-        const float yLen = (y1 + y2) / 2;
++    float xSum = 0;
++    float ySum = 0;
++    for(const auto& point : s.m_points) {
++        xSum += point.first;
++        ySum += point.second;
++    }
++    const float xMid = xSum / s.m_points.size();
++    const float yMid = ySum / s.m_points.size();
+ 
+-        points.push_back({(x1 - xLen) * scaleFactor + xLen, (y1 - yLen) * scaleFactor + yLen});
+-        points.push_back({(x1 - xLen) * scaleFactor + xLen, (y2 - yLen) * scaleFactor + yLen});
++    std::vector<std::pair<float, float>> points;
++    points.reserve(s.m_points.size());
++    for(const auto& point : s.m_points) {
++        points.push_back({(point.first - xMid) * scaleFactor + xMid,
++                          (point.second - yMid) * scaleFactor + yMid});
+     }
+ 
+     s.m_points = points;
+@@ -570,7 +573,16 @@
+ 
+ void scale(geometrize::QuadraticBezier& s, const float scaleFactor)
+ {
+-    assert(0 && "TODO");
++    // 绕质心缩放三个控制点
++    const float xMid = (s.m_x1 + s.m_cx + s.m_x2) / 3.0f;
++    const float yMid = (s.m_y1 + s.m_cy + s.m_y2) / 3.0f;
++
++    s.m_x1 = static_cast<std::int32_t>((s.m_x1 - xMid) * scaleFactor + xMid);
++    s.m_y1 = static_cast<std::int32_t>((s.m_y1 - yMid) * scaleFactor + yMid);
++    s.m_cx = static_cast<std::int32_t>((s.m_cx - xMid) * scaleFactor + xMid);
++    s.m_cy = static_cast<std::int32_t>((s.m_cy - yMid) * scaleFactor + yMid);
++    s.m_x2 = static_cast<std::int32_t>((s.m_x2 - xMid) * scaleFactor + xMid);
++    s.m_y2 = static_cast<std::int32_t>((s.m_y2 - yMid) * scaleFactor + yMid);
+ }
+ 
+ void scale(geometrize::Rectangle& s, const float scaleFactor)

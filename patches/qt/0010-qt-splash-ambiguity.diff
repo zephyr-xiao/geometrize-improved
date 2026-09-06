@@ -1,0 +1,11 @@
+--- upstream/geometrize-app/geometrize/dialog/appsplashscreen.cpp	2026-08-27 13:24:25.861656700 +0800
++++ src/improved-app/geometrize/dialog/appsplashscreen.cpp	2026-08-28 10:05:35.877532300 +0800
+@@ -22,7 +22,7 @@
+ class GeometrizeSplashScreen : public QSplashScreen
+ {
+ public:
+-    GeometrizeSplashScreen() : QSplashScreen{nullptr}, m_progress{0}
++    GeometrizeSplashScreen() : QSplashScreen{static_cast<QWidget *>(nullptr)}, m_progress{0}
+     {
+         setWindowFlags(windowFlags() | Qt::WindowStaysOnTopHint);
+         setPixmap(QPixmap(":/logos/splashscreen.png"));

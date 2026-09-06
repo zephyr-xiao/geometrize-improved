@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>web_export/templates/backend_canvas.js</file>
+        <file>web_export/templates/backend_threejs.js</file>
+        <file>web_export/templates/web_export_template.html</file>
+    </qresource>
+</RCC>

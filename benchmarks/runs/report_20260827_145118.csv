@@ -1,0 +1,2 @@
+﻿"case","img","steps","threads","types","verdict","sha_match","fingerprint_match","self_consistent","base_ms","fast_ms","speedup","note"
+"circle_rings","rings_512.png","60","8","circle","PASS","True","True","True","5910","2531","2.335","压 Circle 光栅化"

@@ -1,0 +1,37 @@
+--- upstream/geometrize-app/geometrize/image/imageloader.cpp	2026-08-27 13:24:26.041660000 +0800
++++ src/improved-app/geometrize/image/imageloader.cpp	2026-08-28 01:00:04.722084700 +0800
+@@ -25,25 +25,25 @@
+     assert((image.width() != 0 && image.height() != 0) && "Image has zero width or height");
+     assert((image.format() == QImage::Format_RGBA8888) && "Cannot create bitmap data from a non-RGBA8888 image");
+ 
+-    const std::vector<uchar> data(image.bits(), image.bits() + image.sizeInBytes());
+-    return Bitmap(image.width(), image.height(), data);
++    std::vector<uchar> data(image.bits(), image.bits() + image.sizeInBytes());
++    // move 语义直接把数据搬进 Bitmap,消掉上游按 const 引用传入后的二次深拷
++    return Bitmap(image.width(), image.height(), std::move(data));
+ }
+ 
+ geometrize::Bitmap convertImageToBitmapWithDownscaling(const QImage& image)
+ {
+-    QImage im{image.copy()};
+-
+     const geometrize::preferences::GlobalPreferences& prefs{geometrize::preferences::getGlobalPreferences()};
+     if(prefs.isImageTaskImageResizeEnabled()) {
+         const std::pair<std::uint32_t, std::uint32_t> sizeThreshold{prefs.getImageTaskResizeThreshold()};
+-        const QSize imageSize{im.size()};
+ 
+-        if(sizeThreshold.first < static_cast<unsigned int>(imageSize.width())
+-                || sizeThreshold.second < static_cast<unsigned int>(imageSize.height())) {
+-            im = image.scaled(sizeThreshold.first, sizeThreshold.second, Qt::KeepAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_RGBA8888);
++        if(sizeThreshold.first < static_cast<unsigned int>(image.width())
++                || sizeThreshold.second < static_cast<unsigned int>(image.height())) {
++            // 仅在确实需要缩放时进入拷贝/转换链,原尺寸路径零多余拷贝
++            QImage scaled = image.scaled(sizeThreshold.first, sizeThreshold.second, Qt::KeepAspectRatio, Qt::SmoothTransformation);
++            return geometrize::image::createBitmap(scaled.convertToFormat(QImage::Format_RGBA8888));
+         }
+     }
+-    return geometrize::image::createBitmap(im.convertToFormat(QImage::Format_RGBA8888));
++    return geometrize::image::createBitmap(image);
+ }
+ QImage createImage(const Bitmap& data)
+ {

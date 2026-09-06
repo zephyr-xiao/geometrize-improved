@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/grapefruit/grapefruit.jpg</file>
+        <file>templates/templates/grapefruit/manifest.json</file>
+        <file>templates/templates/grapefruit/settings.json</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>templates/templates/pomegranate_splitting/manifest.json</file>
+        <file>templates/templates/pomegranate_splitting/pomegranate_splitting.jpg</file>
+        <file>templates/templates/pomegranate_splitting/settings.json</file>
+    </qresource>
+</RCC>
