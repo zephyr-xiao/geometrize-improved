@@ -60,6 +60,22 @@ public:
         ar(cereal::make_nvp(scriptsKey, scripts));
     }
 
+    /// 上游(及本分支早期版本)键集:缺少全部增强轨道键。
+    /// 仅供 load 的兼容回退读取;save 始终写新格式(文件在下一次保存时自升级)。
+    template<class Archive>
+    void archiveLegacy(Archive& ar, geometrize::ImageRunnerOptions& options, bool& scriptsEnabled, std::map<std::string, std::string>& scripts)
+    {
+        ar(cereal::make_nvp(shapeAlphaKey, options.alpha));
+        ar(cereal::make_nvp(maxShapeMutationsKey, options.maxShapeMutations));
+        ar(cereal::make_nvp(shapeCountKey, options.shapeCount));
+        ar(cereal::make_nvp(shapeTypesKey, options.shapeTypes));
+        ar(cereal::make_nvp(randomSeedKey, options.seed));
+        ar(cereal::make_nvp(maxThreadsKey, options.maxThreads));
+        ar(cereal::make_nvp(shapeBounds, options.shapeBounds));
+        ar(cereal::make_nvp(scriptsEnabledKey, scriptsEnabled));
+        ar(cereal::make_nvp(scriptsKey, scripts));
+    }
+
 private:
     const std::string shapeAlphaKey{"shapeAlpha"};
     const std::string maxShapeMutationsKey{"maxShapeMutations"};

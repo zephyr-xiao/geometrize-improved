@@ -157,7 +157,7 @@ alpha-search 单色对照(同预算):0.0433 / 17.1s → 分段相对单色穷举
 - 形状横跨明暗边界不再发灰——这是单色路径原理上给不了的效果,视觉收益与数值收益一致。
 - 时间成本 ~4.5x(每行取色 + 增强轨道 alpha 档位穷举恒开)。适用场景 = 质量优先 / 步数受限精修 /
   边界发灰不可接受的交付;等时间口径下不占优(与 A2.2/A2.3 同结论)。
-- 线型形状(Line/Polyline/Bezier)自动退化为单色(逐像素取色会让导出爆炸且无发灰问题),单测锁定。
+- 线型形状(Line/Polyline/Bezier)自动退化为单色(逐像素取色会让导出爆炸且无发灰问题),单测锁定(注:Model 级用例现暂以 #if 0 // CD 禁用,见 test_model.cpp;core 级 computeSegmentColors 线型退化用例仍在,分叉由 run_ab 哨兵 segment_color_lines_bypass 锁定)。
 - 导出链:SVG 色带组(合并段 + crispEdges)与位图逐像素对齐(512² 60 形状实测 mean diff 0.3%,
   零像素超阈值);GIF/PNG 走 SVG 重渲染自动跟随;JSON 增加可选 segments 数组(旧消费者忽略)。
   Array/threejs/canvas 网页导出回退单色平均色(文档声明)。

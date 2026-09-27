@@ -54,7 +54,8 @@ std::vector<geometrize::Scanline> trimScanlines(const std::vector<geometrize::Sc
  * 金字塔搜索轨道专用:形状坐标留在全分辨率空间,仅评估时把覆盖区投影到半分辨率图上。
  * 相邻行对 (2k, 2k+1) 合并为半分辨率行 k,x 范围取两行的并(除以 2 向下取整,
  * 保守超覆盖——搜索启发式允许,最终接受判定仍在全分辨率进行)。
- * 输入须按 y 升序(库内所有光栅化输出均满足),单趟 O(n)。
+ * 输入按 (y, x1, x2) 升序时单趟 O(n);线型形状(Line/Polyline/QuadraticBezier)
+ * 按路径顺序输出,函数内部先检测顺序、乱序才拷贝排序归一(多边形主路径零拷贝)。
  * @param lines The full-resolution scanlines to project.
  * @param halfWidth The width of the half-resolution bitmap (ceil(fullWidth / 2)).
  * @param halfHeight The height of the half-resolution bitmap (ceil(fullHeight / 2)).

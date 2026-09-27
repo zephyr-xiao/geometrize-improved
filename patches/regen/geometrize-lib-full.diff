@@ -269,7 +269,57 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              if(image.getPixel(x, scanline.y).a < minAlpha) {
                  return true;
              }
-@@ -101,6 +105,31 @@
+@@ -72,35 +76,68 @@
+     return false;
+ }
+ 
+-std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image)
++std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image, const bool fixOffByOne)
+ {
++    // C.1.4:消费侧(setup/mutate/rasterize)把返回元组的 max 当排他上界用——内部一律 max-1 采样、
++    // clamp 到 max-1 裁剪——而上游这里给的是闭区间上界 size-1,错配使画布最右列/最下行永不落画。
++    // fixOffByOne 走文档契约的排他语义:百分比按整幅像素跨度换算,整图即 (0, 0, width, height)。
++    const std::int32_t imageWidth{static_cast<std::int32_t>(image.getWidth())};
++    const std::int32_t imageHeight{static_cast<std::int32_t>(image.getHeight())};
++    const std::int32_t widthExtent{fixOffByOne ? imageWidth : imageWidth - 1};
++    const std::int32_t heightExtent{fixOffByOne ? imageHeight : imageHeight - 1};
++
+     if(!options.enabled) {
+-        return { 0, 0, image.getWidth() - 1, image.getHeight() - 1 };
++        return { 0, 0, widthExtent, heightExtent };
+     }
+ 
+-    const double xMinPx = options.xMinPercent / 100.0 * static_cast<double>(image.getWidth() - 1);
+-    const double yMinPx = options.yMinPercent / 100.0 * static_cast<double>(image.getHeight() - 1);
+-    const double xMaxPx = options.xMaxPercent / 100.0 * static_cast<double>(image.getWidth() - 1);
+-    const double yMaxPx = options.yMaxPercent / 100.0 * static_cast<double>(image.getHeight() - 1);
+-
+-    std::int32_t xMin = static_cast<std::int32_t>(std::round(std::min(std::min(xMinPx, xMaxPx), image.getWidth() - 1.0)));
+-    std::int32_t yMin = static_cast<std::int32_t>(std::round(std::min(std::min(yMinPx, yMaxPx), image.getHeight() - 1.0)));
+-    std::int32_t xMax = static_cast<std::int32_t>(std::round(std::min(std::max(xMinPx, xMaxPx), image.getWidth() - 1.0)));
+-    std::int32_t yMax = static_cast<std::int32_t>(std::round(std::min(std::max(yMinPx, yMaxPx), image.getHeight() - 1.0)));
++    const double xMinPx = options.xMinPercent / 100.0 * static_cast<double>(widthExtent);
++    const double yMinPx = options.yMinPercent / 100.0 * static_cast<double>(heightExtent);
++    const double xMaxPx = options.xMaxPercent / 100.0 * static_cast<double>(widthExtent);
++    const double yMaxPx = options.yMaxPercent / 100.0 * static_cast<double>(heightExtent);
++
++    std::int32_t xMin = static_cast<std::int32_t>(std::round(std::min(std::min(xMinPx, xMaxPx), static_cast<double>(widthExtent))));
++    std::int32_t yMin = static_cast<std::int32_t>(std::round(std::min(std::min(yMinPx, yMaxPx), static_cast<double>(heightExtent))));
++    std::int32_t xMax = static_cast<std::int32_t>(std::round(std::min(std::max(xMinPx, xMaxPx), static_cast<double>(widthExtent))));
++    std::int32_t yMax = static_cast<std::int32_t>(std::round(std::min(std::max(yMinPx, yMaxPx), static_cast<double>(heightExtent))));
+ 
+     // If we have a bad width or height, which is bound to cause problems - use the whole image
+     if(xMax - xMin <= 1) {
+         xMin = 0;
+-        xMax = image.getWidth() - 1;
++        xMax = widthExtent;
+     }
+     if(yMax - yMin <= 1) {
+         yMin = 0;
+-        yMax = image.getHeight() - 1;
++        yMax = heightExtent;
+     }
+ 
      return std::make_tuple(xMin, yMin, xMax, yMax);
  }
  
@@ -317,10 +367,19 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  }
  
  namespace geometrize
-@@ -71,6 +76,16 @@
+@@ -67,9 +72,23 @@
+  * @brief mapShapeBoundsToImage Maps the given shape bound percentages to the given image, returning a bounding rectangle, or the whole image if the bounds were invalid
+  * @param The options to map to the image
+  * @param The image to map the options around
++ * @param fixOffByOne 返回排他上界(C.1.4 修复语义):整图 = (0, 0, width, height)。
++ *        默认 false = 上游语义(闭区间上界,整图 = (0, 0, width-1, height-1))。
++ *        消费侧 setup/mutate/rasterize 全程按排他上界解释该元组(内部一律 max-1 / clamp 到 max-1),
++ *        故上游语义下画布最右列与最下行不可达。
+  * @return The mapped shape bounds (xMin, yMin, xMax, yMax)
   */
- std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image);
- 
+-std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image);
++std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image, bool fixOffByOne = false);
++
 +/**
 + * @brief mapPriorityRegionsToImage Converts priority region rectangles from percentages (0-100%) to
 + * whole-image pixel coordinates (closed intervals, clamped to the image). Degenerate rectangles
@@ -330,18 +389,18 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 + * @return Pixel-coordinate region rectangles.
 + */
 +std::vector<geometrize::core::RegionRect> mapPriorityRegionsToImage(const std::vector<geometrize::ImageRunnerPriorityRegionOptions>& regions, const geometrize::Bitmap& image);
-+
- }
  
  }
+ 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/core/errorweightmap.cpp b/geometrize/core/errorweightmap.cpp
 --- a/geometrize/core/errorweightmap.cpp
 +++ b/geometrize/core/errorweightmap.cpp
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,143 @@
 +#include "errorweightmap.h"
 +
 +#include <cassert>
 +#include <algorithm>
++#include <cstdlib>
 +
 +#include "../bitmap/bitmap.h"
 +#include "../commonutil.h"
@@ -721,7 +780,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = s.m_score;
          if(energy >= bestEnergy) {
              s = undo;
-@@ -59,18 +153,197 @@
+@@ -59,18 +153,199 @@
      return bestState;
  }
  
@@ -876,6 +935,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    std::uint32_t acceptRun{0};      // 连续接受计数(降档用)
 +
 +    std::uint32_t age{0};
++    // rejectHalveInterval==0 时 age % 0 是模零 UB(结构体公开可构造,入口无校验),钳回默认 8
++    const std::uint32_t rejectInterval{enhancements.rejectHalveInterval == 0U ? 8U : enhancements.rejectHalveInterval};
 +    while(age < maxAge) {
 +        const geometrize::State undo{s.mutate(enhancements.adaptiveStep ? stepShift : 0)};
 +        rasterizeIntoVector(*s.m_shape, lines);
@@ -899,7 +960,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        }
 +        age++;
 +        // age 本身就是"连续拒绝计数"(接受时被 -1 清零):每满 rejectHalveInterval 升一档
-+        if(enhancements.adaptiveStep && age > 0 && (age % enhancements.rejectHalveInterval) == 0
++        if(enhancements.adaptiveStep && age > 0 && (age % rejectInterval) == 0
 +                && stepShift < enhancements.maxStepShift) {
 +            stepShift++;
 +        }
@@ -931,7 +992,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
          const std::uint32_t alpha,
          const std::uint32_t n,
-@@ -78,15 +351,49 @@
+@@ -78,15 +353,49 @@
          const geometrize::Bitmap& current,
          geometrize::Bitmap& buffer,
          const double lastScore,
@@ -986,7 +1047,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = state.m_score;
          if(i == 0 || energy < bestEnergy) {
              bestEnergy = energy;
-@@ -119,6 +426,27 @@
+@@ -119,6 +428,27 @@
      return geometrize::core::differencePartial(target, current, buffer, score, lines); // Get error measure between areas of current and modified buffers covered by scanlines
  }
  
@@ -1014,7 +1075,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  geometrize::rgba computeColor(
          const geometrize::Bitmap& target,
          const geometrize::Bitmap& current,
-@@ -134,27 +462,33 @@
+@@ -134,27 +464,33 @@
      std::int64_t totalGreen{0};
      std::int64_t totalBlue{0};
      std::int64_t count{0};
@@ -1062,7 +1123,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              count++;
          }
      }
-@@ -171,6 +505,90 @@
+@@ -171,6 +507,90 @@
      return geometrize::rgba{r, g, b, alpha};
  }
  
@@ -1153,7 +1214,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  double differenceFull(const geometrize::Bitmap& first, const geometrize::Bitmap& second)
  {
      assert(first.getWidth() == second.getWidth());
-@@ -180,15 +598,21 @@
+@@ -180,15 +600,21 @@
      const std::size_t height{first.getHeight()};
      std::uint64_t total{0};
  
@@ -1181,7 +1242,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              total += (dr * dr + dg * dg + db * db + da * da);
          }
      }
-@@ -202,24 +626,39 @@
+@@ -202,24 +628,39 @@
          const double score,
          const std::vector<Scanline>& lines)
  {
@@ -1237,7 +1298,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
              total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
              total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
-@@ -243,8 +682,57 @@
+@@ -243,8 +684,57 @@
  {
      const EnergyFunction& e = customEnergyFunction ? customEnergyFunction : geometrize::core::defaultEnergyFunction;
  
@@ -1443,7 +1504,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/exporter/shapejsonexporter.cpp b/geometrize/exporter/shapejsonexporter.cpp
 --- a/geometrize/exporter/shapejsonexporter.cpp
 +++ b/geometrize/exporter/shapejsonexporter.cpp
-@@ -36,7 +36,29 @@
+@@ -36,7 +36,30 @@
              }
          }
          stream << "],\"color\":[" << static_cast<std::uint32_t>(color.r) << "," << static_cast<std::uint32_t>(color.g) << "," << static_cast<std::uint32_t>(color.b) << "," << static_cast<std::uint32_t>(color.a) << "],";
@@ -1463,7 +1524,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +                       << "," << static_cast<std::uint32_t>(seg.color.g)
 +                       << "," << static_cast<std::uint32_t>(seg.color.b)
 +                       << "," << static_cast<std::uint32_t>(seg.color.a) << "]}";
-+                if(k <= s.segments.size() - 2) {
++                // k+1 < size 而非 size-2:单段时 size_t 下溢会输出尾逗号,产生非法 JSON
++                if(k + 1 < s.segments.size()) {
 +                    stream << ",";
 +                }
 +            }
@@ -1604,17 +1666,17 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
                "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
                "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
  
-@@ -263,7 +360,8 @@
+@@ -262,19 +359,31 @@
+ {
      std::stringstream stream;
  
-     stream << "<?xml version=\"1.0\" standalone=\"no\"?>" << "\n";
+-    stream << "<?xml version=\"1.0\" standalone=\"no\"?>" << "\n";
 -    stream << "<svg xmlns=\"https://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
-+    // SVG 命名空间必须是 http(s 协议头会让浏览器拒绝按 SVG 渲染,退回 XML 文档树模式)
-+    stream << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
-               "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
-               "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
- 
-@@ -272,7 +370,8 @@
+-              "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
+-              "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
+-
+     for(std::size_t i = 0; i < data.size(); i++) {
+         options.itemId = i;
  
          const geometrize::ShapeResult& s(data[i]);
  
@@ -1623,7 +1685,25 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        stream << geometrize::exporter::getSingleShapeSVGData(s.color, *(s.shape), s.segments, options);
      }
  
++    // 文档包装与 exportSVGDocument 同源:片段累积式调用方(应用矢量预览)拼出的文档与本函数逐字节一致
++    return geometrize::exporter::exportSVGDocument(stream.str(), width, height);
++}
++
++std::string exportSVGDocument(const std::string& shapeData, const std::uint32_t width, const std::uint32_t height)
++{
++    std::stringstream stream;
++
++    stream << "<?xml version=\"1.0\" standalone=\"no\"?>" << "\n";
++    // SVG 命名空间必须是 http(s 协议头会让浏览器拒绝按 SVG 渲染,退回 XML 文档树模式)
++    stream << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
++              "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
++              "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
++
++    stream << shapeData;
++
      stream << "</svg>";
+ 
+     return stream.str();
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/exporter/svgexporter.h b/geometrize/exporter/svgexporter.h
 --- a/geometrize/exporter/svgexporter.h
 +++ b/geometrize/exporter/svgexporter.h
@@ -1655,6 +1735,24 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * @brief exportSVG Exports a single shape as a complete SVG image.
   * @param color The color of the shape to export.
   * @param shape The shape to export.
+@@ -68,6 +82,17 @@
+  */
+ std::string exportSVG(const std::vector<geometrize::ShapeResult>& data, const std::uint32_t width, const std::uint32_t height, SVGExportOptions options = SVGExportOptions{});
+ 
++/**
++ * @brief exportSVGDocument 把已序列化的形状片段(每项即 getSingleShapeSVGData 的输出)包成完整 SVG 文档。
++ * 供需要增量累积形状的调用方(应用的矢量预览视图:按批追加片段、整体替换渲染器,避免每批新建一个
++ * 全画布图层)复用 exportSVG 的文档包装,保证预览与导出文件的文档头尾同源。
++ * @param shapeData 拼接好的形状元素文本(不含 <svg> 包装)。
++ * @param width The width of the SVG image.
++ * @param height The height of the SVG image.
++ * @return A string representing the SVG image.
++ */
++std::string exportSVGDocument(const std::string& shapeData, const std::uint32_t width, const std::uint32_t height);
++
+ }
+ 
+ }
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/model.cpp b/geometrize/model.cpp
 --- a/geometrize/model.cpp
 +++ b/geometrize/model.cpp
@@ -2012,7 +2110,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      {
          // Ensure that the maximum number of threads is a sane value
          if(maxThreads == 0) {
-@@ -99,34 +388,77 @@
+@@ -99,34 +388,88 @@
              }
          }
  
@@ -2099,24 +2197,35 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +                    }
 +                });
 +            }
++            // 先 drain 全部任务再重抛:pool 的 packaged_task future 析构不等待,
++            // 立即重抛会让未完成任务继续写已析构的 states(上游 std::async 的
++            // future 析构阻塞,恰好屏蔽了这一点)。保留上游"抛首个异常"的可见行为。
++            std::exception_ptr firstError;
 +            for(auto& f : futures) {
 +                try {
 +                    f.get();
 +                } catch(std::exception& e) {
 +                    assert(0 && "Encountered exception when getting hill climb state");
 +                    std::cout << e.what() << std::endl;
-+                    throw; // 按原异常对象重抛(上游按值 throw e 会切掉多态)
++                    if(!firstError) {
++                        firstError = std::current_exception();
++                    }
 +                } catch (...) {
 +                    assert(0 && "Encountered exception when getting hill climb state");
-+                    throw;
++                    if(!firstError) {
++                        firstError = std::current_exception();
++                    }
 +                }
++            }
++            if(firstError) {
++                std::rethrow_exception(firstError); // 按原异常对象重抛(上游按值 throw e 会切掉多态)
              }
          }
 +
          return states;
      }
  
-@@ -137,9 +469,12 @@
+@@ -137,9 +480,12 @@
              const std::uint32_t maxShapeMutations,
              const std::uint32_t maxThreads,
              const geometrize::core::EnergyFunction& energyFunction,
@@ -2131,7 +2240,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          if(states.empty()) {
              assert(0 && "Failed to get a hill climb state");
              return {};
-@@ -151,22 +486,68 @@
+@@ -151,22 +497,68 @@
  
          // Draw the shape onto the image
          const std::shared_ptr<geometrize::Shape> shape = it->m_shape;
@@ -2210,7 +2319,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          return { result };
      }
  
-@@ -179,11 +560,49 @@
+@@ -179,11 +571,49 @@
          geometrize::drawLines(m_current, color, lines);
  
          m_lastScore = geometrize::core::differencePartial(m_target, before, m_current, m_lastScore, lines);
@@ -2260,7 +2369,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      geometrize::Bitmap& getTarget()
      {
          return m_target;
-@@ -210,10 +629,45 @@
+@@ -210,10 +640,45 @@
      }
  
  private:
@@ -2306,7 +2415,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      std::atomic<std::uint32_t> m_baseRandomSeed; ///< The base value used for seeding the random number generator (the one the user has control over).
      std::atomic<std::uint32_t> m_randomSeedOffset; ///< Seed used for random number generation. Note: incremented by each std::async call used for model stepping.
  };
-@@ -249,9 +703,12 @@
+@@ -249,9 +714,12 @@
          const std::uint32_t maxShapeMutations,
          const std::uint32_t maxThreads,
          const geometrize::core::EnergyFunction& energyFunction,
@@ -2321,7 +2430,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  }
  
  geometrize::ShapeResult Model::drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color)
-@@ -259,6 +716,11 @@
+@@ -259,6 +727,11 @@
      return d->drawShape(shape, color);
  }
  
@@ -2632,7 +2741,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
      for(const geometrize::Scanline& line : scanlines) {
          if(line.y < minY || line.y >= maxY) {
-@@ -31,11 +33,46 @@
+@@ -31,11 +33,66 @@
          if(line.x1 > line.x2) {
              continue;
          }
@@ -2651,18 +2760,38 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    std::vector<geometrize::Scanline> downscaled;
 +    downscaled.reserve(lines.size());
 +
++    // 折叠与就地合并都要求输入按 (y, x1, x2) 升序。多边形光栅化天然满足;
++    // 但 Line/Polyline/QuadraticBezier 按路径顺序输出(上行线为降序、锯齿折线
++    // 同 y 不相邻),乱序时同一半行会产出重叠区间,能量按像素累加被重复计费。
++    // 先检测顺序,乱序才拷贝排序;有序主路径(多边形)保持零拷贝。
++    const auto ordered = [](const Scanline& a, const Scanline& b) {
++        if(a.y != b.y) {
++            return a.y < b.y;
++        }
++        if(a.x1 != b.x1) {
++            return a.x1 < b.x1;
++        }
++        return a.x2 < b.x2;
++    };
++    std::vector<geometrize::Scanline> sorted;
++    if(!std::is_sorted(lines.begin(), lines.end(), ordered)) {
++        sorted = lines;
++        std::sort(sorted.begin(), sorted.end(), ordered);
++    }
++    const std::vector<geometrize::Scanline>& src{sorted.empty() ? lines : sorted};
++
 +    // 相邻行对 (2k, 2k+1) 折叠为半分辨率行 k;x 取并后 floor 除 2:
 +    // 覆盖区只放不放收,搜索阶段的评估偏保守,不影响最终全分辨率判定。
 +    // 细形状(Line/Polyline)同一源行可有多条退化扫描线,折叠后同一半分辨率
 +    // 行可能落出相交区间——能量函数按像素遍历,重复覆盖会被重复累加,
 +    // 故与上一条同行的相交区间就地合并,保证输出行内互不重叠。
-+    for(std::size_t i = 0; i < lines.size();) {
-+        const std::int32_t y{lines[i].y / 2};
-+        std::int32_t x1{lines[i].x1};
-+        std::int32_t x2{lines[i].x2};
-+        if(i + 1 < lines.size() && lines[i + 1].y / 2 == y) {
-+            x1 = (std::min)(x1, lines[i + 1].x1);
-+            x2 = (std::max)(x2, lines[i + 1].x2);
++    for(std::size_t i = 0; i < src.size();) {
++        const std::int32_t y{src[i].y / 2};
++        std::int32_t x1{src[i].x1};
++        std::int32_t x2{src[i].x2};
++        if(i + 1 < src.size() && src[i + 1].y / 2 == y) {
++            x1 = (std::min)(x1, src[i + 1].x1);
++            x2 = (std::max)(x2, src[i + 1].x2);
 +            i += 2;
 +        } else {
 +            i += 1;
@@ -2684,7 +2813,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/rasterizer/scanline.h b/geometrize/rasterizer/scanline.h
 --- a/geometrize/rasterizer/scanline.h
 +++ b/geometrize/rasterizer/scanline.h
-@@ -49,4 +49,17 @@
+@@ -49,4 +49,18 @@
   */
  std::vector<geometrize::Scanline> trimScanlines(const std::vector<geometrize::Scanline>& scanlines, std::int32_t minX, std::int32_t minY, std::int32_t maxX, std::int32_t maxY);
  
@@ -2693,7 +2822,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 + * 金字塔搜索轨道专用:形状坐标留在全分辨率空间,仅评估时把覆盖区投影到半分辨率图上。
 + * 相邻行对 (2k, 2k+1) 合并为半分辨率行 k,x 范围取两行的并(除以 2 向下取整,
 + * 保守超覆盖——搜索启发式允许,最终接受判定仍在全分辨率进行)。
-+ * 输入须按 y 升序(库内所有光栅化输出均满足),单趟 O(n)。
++ * 输入按 (y, x1, x2) 升序时单趟 O(n);线型形状(Line/Polyline/QuadraticBezier)
++ * 按路径顺序输出,函数内部先检测顺序、乱序才拷贝排序归一(多边形主路径零拷贝)。
 + * @param lines The full-resolution scanlines to project.
 + * @param halfWidth The width of the half-resolution bitmap (ceil(fullWidth / 2)).
 + * @param halfHeight The height of the half-resolution bitmap (ceil(fullHeight / 2)).
@@ -2705,6 +2835,15 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/runner/imagerunner.cpp b/geometrize/runner/imagerunner.cpp
 --- a/geometrize/runner/imagerunner.cpp
 +++ b/geometrize/runner/imagerunner.cpp
+@@ -30,7 +30,7 @@
+                                               geometrize::core::EnergyFunction energyFunction,
+                                               geometrize::ShapeAcceptancePreconditionFunction addShapePrecondition)
+     {
+-        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(options.shapeBounds, m_model.getTarget());
++        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(options.shapeBounds, m_model.getTarget(), options.fixShapeBoundsOffByOne);
+         const geometrize::ShapeTypes types = options.shapeTypes;
+ 
+         if(!shapeCreator) {
 @@ -38,7 +38,8 @@
          }
  
@@ -2747,11 +2886,12 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * @brief The ImageRunnerOptions class encapsulates preferences/options that the image runner uses.
   * @author Sam Twidale (https://samcodes.co.uk/)
   */
-@@ -33,7 +47,10 @@
+@@ -33,7 +47,11 @@
      std::uint32_t maxShapeMutations = 100U; ///< The maximum number of times each candidate shape will be modified to attempt to find a better fit.
      std::uint32_t seed = 9001U; ///< The seed for the random number generators used by the image runner.
      std::uint32_t maxThreads = 0; ///< The maximum number of separate threads for the implementation to use. 0 lets the implementation choose a reasonable number.
 +    bool pyramidSearch = false; ///< 金字塔搜索:hill-climb 评估在半分辨率图上进行(算法增强轨道,输出与全分辨率搜索不同属预期)。自定义 energyFunction 存在时被忽略。
++    bool fixShapeBoundsOffByOne = false; ///< 形状边界 off-by-one 修复(C.1.4,默认关=上游语义)。上游 mapShapeBoundsToImage 返回闭区间上界(size-1),而 setup/mutate/rasterize 全程按排他上界消费该元组(内部一律用 max-1 / clamp 到 max-1),两者错配导致画布最右列与最下行永不落画。开启后按本结构体上方文档契约返回排他上界(整图 = (0,0,width,height)),形状位置采样范围与光栅化裁剪范围同时恢复完整。改变输出,故为显式开关而非默认行为。
 +    core::HillClimbEnhancements enhancements{}; ///< 增强爬山开关集(自适应步长/alpha 档位搜索,算法增强轨道,默认全关)。
      ImageRunnerShapeBoundsOptions shapeBounds{}; ///< If zero or do not form a rectangle, the entire target image is used i.e. (0, 0, imageWidth, imageHeight)
 +    std::vector<ImageRunnerPriorityRegionOptions> priorityRegions; ///< 区域优先绘制(F3.2):区域内误差块加权;空 = 无区域。仅 errorGuide 开启时生效

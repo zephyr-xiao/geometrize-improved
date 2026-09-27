@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <algorithm>
+#include <cstdlib>
 
 #include "../bitmap/bitmap.h"
 #include "../commonutil.h"

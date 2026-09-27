@@ -50,13 +50,35 @@ public:
 
     bool load(const std::string& filePath)
     {
+        // 失败时恢复进入前状态:调用方可能忽略返回值,不能残留半读状态
+        const geometrize::ImageRunnerOptions fallbackOptions{m_options};
+        const bool fallbackScriptsEnabled{m_scriptsEnabled};
+        const std::map<std::string, std::string> fallbackScripts{m_scripts};
+
         // Preferences can be bundled into Qt resources, so we use a streamview that loads the file contents into a byte array first
+        {
+            serialization::StreamView streamView(filePath);
+            std::istream input(&streamView);
+            try {
+                cereal::JSONInputArchive archive{input};
+                m_data.archive(archive, m_options, m_scriptsEnabled, m_scripts);
+                return true;
+            } catch(...) {
+                // 新格式键不齐(上游/旧版模板缺增强轨道键)或文件损坏:走旧格式回退
+            }
+        }
+
+        // 旧键集整档重读:上面首趟可能已覆写部分成员,legacy 覆盖全部旧键,
+        // 增强轨道键保持默认/进入前值
         serialization::StreamView streamView(filePath);
         std::istream input(&streamView);
         try {
             cereal::JSONInputArchive archive{input};
-            m_data.archive(archive, m_options, m_scriptsEnabled, m_scripts);
+            m_data.archiveLegacy(archive, m_options, m_scriptsEnabled, m_scripts);
         } catch(...) {
+            m_options = fallbackOptions;
+            m_scriptsEnabled = fallbackScriptsEnabled;
+            m_scripts = fallbackScripts;
             return false;
         }
         return true;

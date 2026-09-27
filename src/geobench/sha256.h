@@ -36,6 +36,10 @@ public:
 
     std::string hex()
     {
+        // 消息位长必须在喂入填充前捕获:填充字节(0x80+零)经 update 累计进 m_bitLen,
+        // 位数随 len%64 在 8~512 位间变化,不能按固定 64 位扣减
+        const std::uint64_t bits = m_bitLen;
+
         // 补齐填充:0x80 + 零 + 64 位大端长度
         std::uint8_t pad = 0x80;
         update(&pad, 1);
@@ -44,11 +48,11 @@ public:
             update(&pad, 1);
         }
         std::uint8_t lengthBytes[8];
-        const std::uint64_t bits = m_bitLen - 64U; // 减去本函数已计入的填充位数
         for(int i = 0; i < 8; i++) {
             lengthBytes[i] = static_cast<std::uint8_t>(bits >> (56 - 8 * i));
         }
-        // 直接塞块,不再走 update(避免再次累计 bitLen)
+        // 直接塞块,不再走 update(避免再次累计 bitLen)。
+        // 注意 hex() 会消耗状态,只能调用一次(sha256Hex 每次新构实例)
         std::memcpy(m_buffer + 56, lengthBytes, 8);
         processBlock(m_buffer);
 

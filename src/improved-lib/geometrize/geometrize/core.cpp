@@ -292,6 +292,8 @@ geometrize::State hillClimbScratchEnhanced(
     std::uint32_t acceptRun{0};      // 连续接受计数(降档用)
 
     std::uint32_t age{0};
+    // rejectHalveInterval==0 时 age % 0 是模零 UB(结构体公开可构造,入口无校验),钳回默认 8
+    const std::uint32_t rejectInterval{enhancements.rejectHalveInterval == 0U ? 8U : enhancements.rejectHalveInterval};
     while(age < maxAge) {
         const geometrize::State undo{s.mutate(enhancements.adaptiveStep ? stepShift : 0)};
         rasterizeIntoVector(*s.m_shape, lines);
@@ -315,7 +317,7 @@ geometrize::State hillClimbScratchEnhanced(
         }
         age++;
         // age 本身就是"连续拒绝计数"(接受时被 -1 清零):每满 rejectHalveInterval 升一档
-        if(enhancements.adaptiveStep && age > 0 && (age % enhancements.rejectHalveInterval) == 0
+        if(enhancements.adaptiveStep && age > 0 && (age % rejectInterval) == 0
                 && stepShift < enhancements.maxStepShift) {
             stepShift++;
         }

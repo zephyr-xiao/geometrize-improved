@@ -445,17 +445,28 @@ public:
                     }
                 });
             }
+            // 先 drain 全部任务再重抛:pool 的 packaged_task future 析构不等待,
+            // 立即重抛会让未完成任务继续写已析构的 states(上游 std::async 的
+            // future 析构阻塞,恰好屏蔽了这一点)。保留上游"抛首个异常"的可见行为。
+            std::exception_ptr firstError;
             for(auto& f : futures) {
                 try {
                     f.get();
                 } catch(std::exception& e) {
                     assert(0 && "Encountered exception when getting hill climb state");
                     std::cout << e.what() << std::endl;
-                    throw; // 按原异常对象重抛(上游按值 throw e 会切掉多态)
+                    if(!firstError) {
+                        firstError = std::current_exception();
+                    }
                 } catch (...) {
                     assert(0 && "Encountered exception when getting hill climb state");
-                    throw;
+                    if(!firstError) {
+                        firstError = std::current_exception();
+                    }
                 }
+            }
+            if(firstError) {
+                std::rethrow_exception(firstError); // 按原异常对象重抛(上游按值 throw e 会切掉多态)
             }
         }
 

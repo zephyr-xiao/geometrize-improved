@@ -62,6 +62,7 @@ set(GEOTEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/../test/test_state.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../test/test_model.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../test/test_commonutil.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../test/test_exporter.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../test/test_shapemutator.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../test/test_errorweightmap.cpp"
 )

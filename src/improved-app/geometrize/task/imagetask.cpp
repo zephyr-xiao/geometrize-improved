@@ -115,6 +115,12 @@ public:
         const bool isScriptModeEnabled = m_preferences.isScriptModeEnabled();
         auto imageRunnerOptions = m_preferences.getImageRunnerOptions();
 
+        // C.1.4:应用侧固定开启形状边界 off-by-one 修复。库的 setup/mutate/rasterize 全程按排他上界
+        // 消费边界元组,而上游 mapShapeBoundsToImage 给的是闭区间上界(size-1),错配导致位图最右列与
+        // 最下行永不落画(矢量视图按浮点坐标绘制,故只有点阵视图看得出缺口)。库侧默认保持上游语义以
+        // 维持 bit-exact 对拍门禁,应用作为交付物在此显式开启,并同步用于下方脚本全局量。
+        imageRunnerOptions.fixShapeBoundsOffByOne = true;
+
         // Install the scripts that are required for the geometrization process
         m_geometrizer.installScripts(m_preferences.getScripts());
 
@@ -182,7 +188,7 @@ public:
 
         const auto& target = m_worker.getTarget();
 
-        const auto bounds = geometrize::commonutil::mapShapeBoundsToImage(imageRunnerOptions.shapeBounds, target);
+        const auto bounds = geometrize::commonutil::mapShapeBoundsToImage(imageRunnerOptions.shapeBounds, target, imageRunnerOptions.fixShapeBoundsOffByOne);
 
         // Scripting is enabled - clone the entire geometrizer engine
         // This is important because many threads will be working with it when geometrizing shapes
@@ -273,7 +279,9 @@ private:
 
         m_geometrizer.getEngine()->set_global(chaiscript::var(q), "task");
 
-        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(shapeBounds, getTarget());
+        // 与 stepModel 同一修复开关:脚本全局量 xMax/yMax 必须与库实际使用的排他上界一致
+        // (内置 default_shape_mutators 模板一律按 xMax - 1 取闭区间上界)
+        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(shapeBounds, getTarget(), true);
 
         m_geometrizer.getEngine()->set_global(chaiscript::var(xMin), "xMin");
         m_geometrizer.getEngine()->set_global(chaiscript::var(yMin), "yMin");

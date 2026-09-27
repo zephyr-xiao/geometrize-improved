@@ -15,7 +15,8 @@
 行尾分布作为 INFO 输出(improved-lib 有 24 个纯 LF 文件,与树的 CRLF 约定不一致,已如实上报)。
 
 app 侧为报告口径:构建产物/第三方 pin(vendored libs)/二进制文件豁免,漂移只告警不失败。
-用法:python tools/verify_patches.py [--skip-app] [--keep-temp]
+用法:python tools/verify_patches.py [--skip-app] [--keep-temp] [--init]
+  --init 显式建档/重建(缺失或漂移的归档按当前工作树重写);缺省时缺失/漂移 = FAIL
 exit:0=通过;1=lib 门禁失败
 """
 import argparse
@@ -161,7 +162,7 @@ def patch_sections(patch_bytes):
     return sections
 
 
-def verify_side(name, baseline_src, improved_src, regen_path, app_mode=False, keep=False):
+def verify_side(name, baseline_src, improved_src, regen_path, app_mode=False, keep=False, init=False):
     """单侧验证:返回 (ok, 漂移行)。G1 重放复现 + G2 归档新鲜度。"""
     tmp = tempfile.mkdtemp(prefix="geometrize_verify_%s_" % name)
     print("\n== %s 侧(tmp: %s)" % (name, tmp))
@@ -180,16 +181,30 @@ def verify_side(name, baseline_src, improved_src, regen_path, app_mode=False, ke
                        os.path.join(tmp, "regen_now.diff"))
     now = open(os.path.join(tmp, "regen_now.diff"), "rb").read()
     if not os.path.exists(regen_path):
-        os.makedirs(REGEN_DIR, exist_ok=True)
-        for _ in range(2):
-            shutil.copy(os.path.join(tmp, "regen_now.diff"), regen_path)
-            if open(regen_path, "rb").read() == now:
-                break  # 防写坏:回读校验,不一致则重写一次
-        print("[INIT] 首次运行:已生成规范补丁 %s" % os.path.relpath(regen_path, REPO))
+        # 归档缺失 = 信任锚缺失:只有显式 --init 才允许建档,否则按 FAIL 处理。
+        # 自动建档会让"删除归档 → 双门禁静默通过"成为门禁绕过路径。
+        if not init:
+            ok = False
+            print("[FAIL] G2 归档缺失:%s(信任锚缺失,拒绝自动生成;确认工作树状态后用 --init 显式建档)"
+                  % os.path.relpath(regen_path, REPO))
+        else:
+            os.makedirs(REGEN_DIR, exist_ok=True)
+            for _ in range(2):
+                shutil.copy(os.path.join(tmp, "regen_now.diff"), regen_path)
+                if open(regen_path, "rb").read() == now:
+                    break  # 防写坏:回读校验,不一致则重写一次
+            print("[INIT] 显式建档:已生成规范补丁 %s" % os.path.relpath(regen_path, REPO))
     else:
         archived = TS_RE.sub(rb"\1", open(regen_path, "rb").read())
         if archived == now:
             print("[PASS] G2 归档新鲜度:已提交补丁与工作树现生成一致")
+        elif init:
+            # 显式重建:工作树改动经确认后,按当前树重写归档(带回读校验)
+            for _ in range(2):
+                shutil.copy(os.path.join(tmp, "regen_now.diff"), regen_path)
+                if open(regen_path, "rb").read() == now:
+                    break
+            print("[INIT] 显式重建:已按当前工作树重新生成规范补丁 %s" % os.path.relpath(regen_path, REPO))
         else:
             ok = False
             old_s, new_s = patch_sections(archived), patch_sections(now)
@@ -203,23 +218,24 @@ def verify_side(name, baseline_src, improved_src, regen_path, app_mode=False, ke
                 if old_s[t] != new_s[t]:
                     print("       补丁内容有变: %s" % t)
 
-    # G1:重放复现
-    shutil.copytree(os.path.join(tmp, "a"), os.path.join(tmp, "apply"))
-    rc, out, rej = apply_patch(regen_path, os.path.join(tmp, "apply"))
-    if rc != 0 or rej:
-        ok = False
-        print("[FAIL] G1 补丁应用失败 exit=%d,.rej %d 个" % (rc, len(rej)))
-        print("       " + out.decode("utf-8", "replace")[:500])
-    else:
-        rc, drift = tree_diff(os.path.join(tmp, "apply"), os.path.join(tmp, "b"))
-        if rc == 0:
-            print("[PASS] G1 重放复现:fresh 基线 + 规范补丁 == 工作树(逐文件零漂移,行尾无关)")
-        else:
+    # G1:重放复现(归档缺失且未 --init 时无锚可验,G2 已报 FAIL,这里跳过)
+    if os.path.exists(regen_path):
+        shutil.copytree(os.path.join(tmp, "a"), os.path.join(tmp, "apply"))
+        rc, out, rej = apply_patch(regen_path, os.path.join(tmp, "apply"))
+        if rc != 0 or rej:
             ok = False
-            lines = [l for l in drift.splitlines() if l.strip()]
-            print("[FAIL] G1 重放后与工作树存在漂移:%d 处" % len(lines))
-            for l in lines[:30]:
-                print("       " + l.replace(tmp, "<tmp>"))
+            print("[FAIL] G1 补丁应用失败 exit=%d,.rej %d 个" % (rc, len(rej)))
+            print("       " + out.decode("utf-8", "replace")[:500])
+        else:
+            rc, drift = tree_diff(os.path.join(tmp, "apply"), os.path.join(tmp, "b"))
+            if rc == 0:
+                print("[PASS] G1 重放复现:fresh 基线 + 规范补丁 == 工作树(逐文件零漂移,行尾无关)")
+            else:
+                ok = False
+                lines = [l for l in drift.splitlines() if l.strip()]
+                print("[FAIL] G1 重放后与工作树存在漂移:%d 处" % len(lines))
+                for l in lines[:30]:
+                    print("       " + l.replace(tmp, "<tmp>"))
 
     # 二进制豁免上报(app 报告口径;lib 侧二进制应恒为 0)
     both_a, both_b = set(bin_a), set(bin_b)
@@ -244,19 +260,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-app", action="store_true", help="跳过 app 侧(报告口径)")
     ap.add_argument("--keep-temp", action="store_true", help="保留临时目录供排查")
+    ap.add_argument("--init", action="store_true",
+                    help="显式建档/重建:归档缺失或与工作树漂移时,按当前工作树重写规范补丁(缺省时缺失/漂移=FAIL)")
     args = ap.parse_args()
 
     lib_ok = verify_side("lib",
                          os.path.join(REPO, "src", "baseline-lib", "geometrize"),
                          os.path.join(REPO, "src", "improved-lib", "geometrize"),
-                         LIB_REGEN, app_mode=False, keep=args.keep_temp)
+                         LIB_REGEN, app_mode=False, keep=args.keep_temp, init=args.init)
 
     app_ok = True
     if not args.skip_app:
         app_ok = verify_side("app",
                              os.path.join(REPO, "upstream", "geometrize-app"),
                              os.path.join(REPO, "src", "improved-app"),
-                             APP_REGEN, app_mode=True, keep=args.keep_temp)
+                             APP_REGEN, app_mode=True, keep=args.keep_temp, init=args.init)
         if not app_ok:
             print("\n[WARN] app 侧存在差异(报告口径,不失败):构建产物/第三方 pin/二进制已豁免,"
                   "其余逐文件差异请人工分类")

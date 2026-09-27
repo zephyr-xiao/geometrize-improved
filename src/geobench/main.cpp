@@ -59,6 +59,9 @@ struct Options {
     std::vector<std::array<double, 4>> priorityRegions;
     // 每 N 步打印一次全分辨率 differenceFull 相似度分数(质量曲线验收用;0=关)
     std::uint32_t qualityReportInterval = 0;
+    // --fix-shape-bounds:形状边界 off-by-one 修复(C.1.4,fast 侧专属)。
+    // 库侧默认保持上游语义(闭区间上界)以维持 bit-exact 门禁,本开关是分叉锁定哨兵。
+    bool fixShapeBounds = false;
 };
 
 void printUsage()
@@ -82,6 +85,8 @@ void printUsage()
         "  --guide-epsilon N  引导探索率千分比 0-1000(默认 100,即 10%% 候选保持均匀原位)\n"
         "  --priority-region SPEC  优先区域 x1,y1,x2,y2(百分比 0-100,可重复累积;需配 --error-guide)\n"
         "  --segment-colors  按扫描线行级取色(形状跨明暗边界不发灰,算法增强)\n"
+        "  --fix-shape-bounds 形状边界 off-by-one 修复(C.1.4:画布最右列/最下行可落画;\n"
+        "                     默认关=上游闭区间语义,开启后输出与上游不同属预期)\n"
         "  --quality-report N 每 N 步打印一次全分辨率相似度分数,质量曲线验收用(0=关,默认)\n"
         "  -v                 逐步打印分数\n");
 }
@@ -186,6 +191,7 @@ Options parseArgs(int argc, char** argv)
         else if(arg == "--quality-report") opts.qualityReportInterval = static_cast<std::uint32_t>(std::stoul(next()));
         else if(arg == "--error-guide") opts.errorGuide = true;
         else if(arg == "--segment-colors") opts.segmentColors = true;
+        else if(arg == "--fix-shape-bounds") opts.fixShapeBounds = true;
         else if(arg == "--guide-epsilon") {
             opts.guideEpsilonPermill = static_cast<std::uint32_t>(std::stoul(next()));
             if(opts.guideEpsilonPermill > 1000U) {
@@ -288,6 +294,7 @@ int main(int argc, char** argv)
             options.enhancements.alphaCandidates.push_back(static_cast<std::uint8_t>(tier));
         }
     }
+    options.fixShapeBoundsOffByOne = opts.fixShapeBounds;
 #endif
     if(opts.hasBounds) {
         options.shapeBounds.enabled = true;

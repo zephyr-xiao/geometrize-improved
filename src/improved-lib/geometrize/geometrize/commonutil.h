@@ -72,9 +72,13 @@ bool scanlinesContainTransparentPixels(const std::vector<geometrize::Scanline>& 
  * @brief mapShapeBoundsToImage Maps the given shape bound percentages to the given image, returning a bounding rectangle, or the whole image if the bounds were invalid
  * @param The options to map to the image
  * @param The image to map the options around
+ * @param fixOffByOne 返回排他上界(C.1.4 修复语义):整图 = (0, 0, width, height)。
+ *        默认 false = 上游语义(闭区间上界,整图 = (0, 0, width-1, height-1))。
+ *        消费侧 setup/mutate/rasterize 全程按排他上界解释该元组(内部一律 max-1 / clamp 到 max-1),
+ *        故上游语义下画布最右列与最下行不可达。
  * @return The mapped shape bounds (xMin, yMin, xMax, yMax)
  */
-std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image);
+std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image, bool fixOffByOne = false);
 
 /**
  * @brief mapPriorityRegionsToImage Converts priority region rectangles from percentages (0-100%) to

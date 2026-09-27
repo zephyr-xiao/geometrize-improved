@@ -65,6 +65,16 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 - 上游 Ellipse 光栅化越界笔误(y1>=xMin 应为 yMin)
 - scale(Polyline) 错乱重写、scale(QuadraticBezier) 实现 TODO
 - installShapeScript 解引用 map end 迭代器的 UB(**GUI 启动崩溃根因**,新 MSVC 下必现)
+- 形状边界上界 off-by-one(C.1.4):上游 `mapShapeBoundsToImage` 返回闭区间上界 size-1,而
+  setup/mutate/rasterize 全程按排他上界消费,导致**位图最右列与最下行永不落画**(点阵视图上是
+  一条永不变化的背景边,矢量视图按浮点坐标绘制故看不出)。库侧默认保持上游语义以维持 bit-exact
+  门禁,新增 `ImageRunnerOptions::fixShapeBoundsOffByOne` 显式开启;**应用已固定开启**(脚本模式的
+  `xMin/xMax` 全局量同步为排他上界,内置模板的 `xMax-1` 因此取到真正的末列),geobench 侧开关为
+  `--fix-shape-bounds`,分叉由两个 EXPECTED_DIFF 用例锁定
+- 矢量(矢量图形)视图图层膨胀:上游每批新形状新建一个 `SvgItem`,每个 item 的 boundingRect 都是
+  整幅画布且各持一张全画布缓存位图,形状到几百后每帧要合成几百层、内存线性增长(越用越卡)。
+  改为按块累积(每块 256 形状,封板后不再重解析),并把 Qt 全局 pixmap 缓存上限 10MB→128MB
+  (设备坐标缓存的 item 位图受它约束)。实测 5000 形状:帧耗时 371ms→2.6ms,缓存内存 2.5GB→41MB
 - Qt 应用层:pro 缺 concurrent 模块、ChaiScript 需 pin 上游 commit(HEAD 在 MSVC 14.4x 下编不过)、
   步进刷新 33ms 合帧节流、SVG item 设备缓存、无 timed-update 脚本不启 100ms 轮询、
   加载链去三次整图拷贝、前条件脚本数据竞争强制单线程、默认缩放阈值 256→1024
@@ -81,10 +91,12 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 │   ├─ baseline-lib\           # 上游库快照(只读,对拍基准)
 │   ├─ improved-lib\           # 全部补丁后的库(geobench-fast / geotest-fast 链接它)
 │   ├─ geobench\               # CLI 基准器 + CMake 统一构建入口(SHA-256 + FNV 滚动指纹双口径对拍)
-│   ├─ test\                   # doctest 单元测试(双变体链接,105 用例 × fast / 39 × base,见"复现")
+│   ├─ test\                   # doctest 单元测试(双变体链接,89 用例 × fast / 39 × base,
+│   │                          #   另有 16 个 Model 级用例暂以 #if 0 // CD 禁用,见 src\test\test_model.cpp)
 │   └─ improved-app\           # 应用改进工作树(含改进版库 + 全部应用层 patch,可 qmake 构建)
-├─ tools\run_ab.ps1             # A/B 对拍矩阵(24 用例,全 PASS 才允许合入;12 bit-exact + 12 EXPECTED_DIFF 分叉哨兵)
+├─ tools\run_ab.ps1             # A/B 对拍矩阵(26 用例,全 PASS 才允许合入;12 bit-exact + 14 EXPECTED_DIFF 分叉哨兵)
 ├─ tools\verify_patches.py      # 补丁↔工作树一致性双门禁(重放复现 + 归档新鲜度,lib 侧失败禁合入)
+├─ tools\svgscene-bench\        # 矢量视图渲染开销离屏基准(四方案对比 + 画面等价性,见 F3.9)
 ├─ benchmarks\report.md         # 性能报告(分阶段数据 + 大图可行性)
 └─ docs\                        # 等价性论证 / bug 分级 / Qt 评估
 ```
@@ -96,22 +108,27 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 cd src\geobench
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
-powershell -ExecutionPolicy Bypass -File tools\run_ab.ps1   # 12/12 PASS(含 1 个 EXPECTED_DIFF 分叉锁定用例)
+powershell -ExecutionPolicy Bypass -File tools\run_ab.ps1   # 26/26 PASS(含 14 个 EXPECTED_DIFF 分叉锁定用例)
 # geobench 额外参数:--shape-bounds x1,y1,x2,y2(百分比视口)、--dump-final PATH(位图留痕)
 # 算法增强轨道:--pyramid(金字塔搜索)、--adaptive-step(自适应步长)、--alpha-search( alpha 档位搜索)、
 #   --quality-report N(每 N 步打印相似度分数)
+# 修复开关:--fix-shape-bounds(C.1.4 形状边界 off-by-one;默认关 = 上游语义,应用侧已固定开启)
 # run_ab.ps1 可加 -BaselineExe <exe> 对拍任意外部基线,失败自动保存双方 .raw 供 diff
 
 # 补丁↔工作树一致性校验(双门禁:G1 重放复现 + G2 归档新鲜度;改库/改应用后必须重跑并重新提交 patches\regen\)
 python tools\verify_patches.py   # lib 门禁失败 exit 1;app 侧报告口径(--skip-app 只跑 lib,--keep-temp 留排查现场)
+# 归档缺失默认 FAIL(防"删归档静默过门禁");首次建档或工作树确认后重新导出用 --init:
+python tools\verify_patches.py --init
 
-# 单元测试(双变体:geotest-base 链上游快照 / geotest-fast 链改进版,105 用例 × fast / 39 × base)
+# 单元测试(双变体:geotest-base 链上游快照 / geotest-fast 链改进版,89 用例 × fast / 39 × base;
+# 另有 16 个 Model 级用例暂以 #if 0 // CD 禁用,由 run_ab 的 EXPECTED_DIFF 哨兵端到端覆盖)
 cmake --build build --config Release --target geotest-base geotest-fast
 ctest --test-dir build -C Release --output-on-failure        # 2/2 PASS
-# 共享 golden 用例双变体全绿 = 函数级 bit-exact 门禁;
+# 双变体全绿 = 函数级 bit-exact 门禁;
 # 变体分叉点(Ellipse 边界笔误修复、scanlines 末像素、move 构造、异常重抛、线程池保序)
 # 用 GEOTEST_BASE / GEOTEST_FAST 宏各自锁定行为。
-# golden 常量重采集:build\Release\geotest-fast.exe --dump-golden(输出粘贴进 src\test\test_goldens.h)
+# (注:test_goldens.h 为预留占位,golden 常量机制尚未接线,--dump-golden 暂无消费方;
+#  函数级等价由双变体行为断言 + run_ab.ps1 双口径哈希矩阵承载)
 
 # 应用构建(Qt 5.15.2 win64_msvc2019_64,用 aqtinstall 安装)
 cd src\improved-app
@@ -133,11 +150,15 @@ windeployqt release\Geometrize.exe
 - `scene/imagetaskscenemanager.*` + `serialization/imagetaskpreferencesdata.h`(区域优先框选与
   overlay,见 patches/qt/0022)
 - `dialog/imagetaskwindow.cpp`(33ms 合帧节流、定时器按需启动)
-- `scene/imagetasksvgscene.cpp`(DeviceCoordinateCache)
+- `scene/imagetasksvgscene.cpp` + `scene/svgitem.cpp/.h`(矢量视图分块累积:每块 256 形状,
+  片段 append-only + 封板,设备坐标缓存,见 docs/bugfix-triage.md C.3.1)
+- `main.cpp`(QPixmapCache 上限 10MB→128MB,配合上面的图层缓存)
 - `image/imageloader.cpp`(加载链精简 + Bitmap move)
-- `task/imagetask.cpp`(前条件脚本单线程门控)
+- `task/imagetask.cpp`(前条件脚本单线程门控 + 固定开启形状边界 off-by-one 修复)
 - `preferences/globalpreferences.cpp`(阈值 1024)
 - `script/geometrizerengine.h`(end 迭代器 UB 修复)
+- `lib/geometrize/.../commonutil.cpp` + `runner/imagerunneroptions.h`(C.1.4 边界修复开关)、
+  `exporter/svgexporter.cpp/.h`(exportSVGDocument,供矢量视图复用文档包装)
 
 ## 关键约束
 

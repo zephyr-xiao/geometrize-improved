@@ -48,6 +48,7 @@ public:
     std::uint32_t seed = 9001U; ///< The seed for the random number generators used by the image runner.
     std::uint32_t maxThreads = 0; ///< The maximum number of separate threads for the implementation to use. 0 lets the implementation choose a reasonable number.
     bool pyramidSearch = false; ///< 金字塔搜索:hill-climb 评估在半分辨率图上进行(算法增强轨道,输出与全分辨率搜索不同属预期)。自定义 energyFunction 存在时被忽略。
+    bool fixShapeBoundsOffByOne = false; ///< 形状边界 off-by-one 修复(C.1.4,默认关=上游语义)。上游 mapShapeBoundsToImage 返回闭区间上界(size-1),而 setup/mutate/rasterize 全程按排他上界消费该元组(内部一律用 max-1 / clamp 到 max-1),两者错配导致画布最右列与最下行永不落画。开启后按本结构体上方文档契约返回排他上界(整图 = (0,0,width,height)),形状位置采样范围与光栅化裁剪范围同时恢复完整。改变输出,故为显式开关而非默认行为。
     core::HillClimbEnhancements enhancements{}; ///< 增强爬山开关集(自适应步长/alpha 档位搜索,算法增强轨道,默认全关)。
     ImageRunnerShapeBoundsOptions shapeBounds{}; ///< If zero or do not form a rectangle, the entire target image is used i.e. (0, 0, imageWidth, imageHeight)
     std::vector<ImageRunnerPriorityRegionOptions> priorityRegions; ///< 区域优先绘制(F3.2):区域内误差块加权;空 = 无区域。仅 errorGuide 开启时生效

@@ -40,11 +40,18 @@ $cases = @(
     @{ name="priority_region_threads1"; img="tree_under_clouds.png"; steps=30;  threads=1; types="ellipse";    alpha=128; bounds=""; fastExtra="--error-guide --priority-region 25,25,75,75"; expectDiff=$true; note="EXPECTED_DIFF:单线程下区域优先分叉锁定" },
     @{ name="segment_color_fork";       img="gradnoise_512.png";     steps=40;  threads=8; types="ellipse,rect"; alpha=128; bounds=""; fastExtra="--segment-colors"; expectDiff=$true; note="EXPECTED_DIFF:A2.4 分段颜色分叉锁定,开关失效(输出变同)即红" },
     @{ name="segment_color_threads1";   img="tree_under_clouds.png"; steps=30;  threads=1; types="ellipse";      alpha=128; bounds=""; fastExtra="--segment-colors"; expectDiff=$true; note="EXPECTED_DIFF:单线程下分段颜色分叉锁定" },
-    @{ name="segment_color_lines_bypass"; img="hatch_512.png";       steps=40;  threads=8; types="line";         alpha=128; bounds=""; fastExtra="--segment-colors"; expectDiff=$true; note="EXPECTED_DIFF:line-only 时分段取色不参与(单测锁定)但开关仍路由增强轨道(A2.3 档位穷举恒开),与 base 分叉属增强轨道既有语义" }
+    @{ name="segment_color_lines_bypass"; img="hatch_512.png";       steps=40;  threads=8; types="line";         alpha=128; bounds=""; fastExtra="--segment-colors"; expectDiff=$true; note="EXPECTED_DIFF:line-only 时分段取色不参与(单测锁定)但开关仍路由增强轨道(A2.3 档位穷举恒开),与 base 分叉属增强轨道既有语义" },
+    @{ name="fix_bounds_fork";          img="tiny_64.png";           steps=40;  threads=4; types="ellipse,rect,line"; alpha=128; bounds=""; fastExtra="--fix-shape-bounds"; expectDiff=$true; note="EXPECTED_DIFF:C.1.4 形状边界 off-by-one 修复分叉锁定(整图排他上界,最右列/最下行可落画),修复失效(输出变同)即红" },
+    @{ name="fix_bounds_explicit_fork"; img="tiny_64.png";           steps=30;  threads=4; types="rect";        alpha=128; bounds="0,0,100,100"; fastExtra="--fix-shape-bounds"; expectDiff=$true; note="EXPECTED_DIFF:C.1.4 显式 bounds 路径(百分比按整幅像素跨度换算)分叉锁定" }
 )
 
 if($Case -ne "") {
     $cases = $cases | Where-Object { $_.name -like "*$Case*" }
+}
+# 空矩阵禁入:过滤无匹配时以"零用例全 PASS"放行等于门禁失效
+if($cases.Count -eq 0) {
+    Write-Host "== 门禁矩阵为空:过滤 '$Case' 无匹配用例,拒绝放行 ==" -ForegroundColor Red
+    exit 1
 }
 
 if($OutCsv -eq "") {
@@ -59,10 +66,29 @@ $allPass = $true
 $baselineExePath = if($BaselineExe -ne "") { $BaselineExe } else { Join-Path $ExeDir "geobench-base.exe" }
 $fastExePath = Join-Path $ExeDir "geobench-fast.exe"
 
+# 单次运行的三个指标(sha/指纹/耗时);任一缺失返回 $null。
+# 门禁脚本自身不能因被测 exe 的异常而中断——缺行必须折叠成 FAIL 而不是 InvokeMethodOnNull
+function Get-RunMetrics([object[]]$runOut) {
+    if($null -eq $runOut -or @($runOut).Count -eq 0) { return $null }
+    $sha = @($runOut | Select-String "^FINAL_SHA256")
+    $fp  = @($runOut | Select-String "^STEP_FINGERPRINT")
+    $tm  = @($runOut | Select-String "^TIME_MS")
+    if($sha.Count -eq 0 -or $fp.Count -eq 0 -or $tm.Count -eq 0) { return $null }
+    return @{ sha = $sha[0].Line.Split(" ")[1]; fp = $fp[0].Line.Split(" ")[1]; ms = [long]($tm[0].Line.Split(" ")[1]) }
+}
+
 foreach($c in $cases) {
     $imgPath = Join-Path $ImageDir $c.img
     if(-not (Test-Path $imgPath)) {
-        Write-Host "[SKIP] $($c.name): 缺图 $imgPath"
+        # 缺图按 FAIL 计:测试资产缺失不允许静默跳过后以"全 PASS"放行
+        Write-Host "[FAIL] $($c.name): 缺图 $imgPath(资产缺失按失败计)" -ForegroundColor Red
+        $allPass = $false
+        $results += [pscustomobject]@{
+            case=$c.name; img=$c.img; steps=$c.steps; threads=$c.threads; types=$c.types; fastExtra=$c.fastExtra
+            verdict="FAIL"; sha_match=$false; fingerprint_match=$false; self_consistent=$false
+            expect_diff=$c.expectDiff
+            base_ms=0; fast_ms=0; speedup=0; note="缺图:$($c.img)"
+        }
         continue
     }
 
@@ -79,19 +105,52 @@ foreach($c in $cases) {
         $fastArgs += ($c.fastExtra -split '\s+' | Where-Object { $_ -ne "" })
     }
 
+    # 瞬态崩溃防护(ROADMAP 陷阱 #11:偶发堆损坏实测复现过):单侧无输出先重跑该侧一次,
+    # 仍无输出才记 FAIL 继续跑完剩余矩阵——一次中断不能否决后面所有用例的结论
     $baseOut = & $baselineExePath @args
+    $baseMetrics = Get-RunMetrics $baseOut
+    if($null -eq $baseMetrics) {
+        Write-Host "  [重试] base 侧无输出(疑似瞬态崩溃),重跑一次" -ForegroundColor Yellow
+        $baseOut = & $baselineExePath @args
+        $baseMetrics = Get-RunMetrics $baseOut
+    }
     $fastOut = & $fastExePath @fastArgs
+    $fastMetrics = Get-RunMetrics $fastOut
+    if($null -eq $fastMetrics) {
+        Write-Host "  [重试] fast 侧无输出(疑似瞬态崩溃),重跑一次" -ForegroundColor Yellow
+        $fastOut = & $fastExePath @fastArgs
+        $fastMetrics = Get-RunMetrics $fastOut
+    }
 
-    $baseSha  = ($baseOut | Select-String "^FINAL_SHA256").Line.Split(" ")[1]
-    $fastSha  = ($fastOut | Select-String "^FINAL_SHA256").Line.Split(" ")[1]
-    $baseFp   = ($baseOut | Select-String "^STEP_FINGERPRINT").Line.Split(" ")[1]
-    $fastFp   = ($fastOut | Select-String "^STEP_FINGERPRINT").Line.Split(" ")[1]
     # 双跑基线取自洽性(确定性健全性检查)
     $baseOut2 = & $baselineExePath @args
-    $baseSha2 = ($baseOut2 | Select-String "^FINAL_SHA256").Line.Split(" ")[1]
+    $baseMetrics2 = Get-RunMetrics $baseOut2
+    if($null -eq $baseMetrics2) {
+        Write-Host "  [重试] base 侧自洽跑无输出(疑似瞬态崩溃),重跑一次" -ForegroundColor Yellow
+        $baseOut2 = & $baselineExePath @args
+        $baseMetrics2 = Get-RunMetrics $baseOut2
+    }
 
-    $baseTimeMs  = [long](($baseOut | Select-String "^TIME_MS").Line.Split(" ")[1])
-    $fastTimeMs  = [long](($fastOut | Select-String "^TIME_MS").Line.Split(" ")[1])
+    if($null -eq $baseMetrics -or $null -eq $fastMetrics -or $null -eq $baseMetrics2) {
+        Write-Host "[FAIL] $($c.name): exe 无输出(含一次重试,疑似瞬态崩溃或环境异常),记 FAIL 继续" -ForegroundColor Red
+        $allPass = $false
+        $results += [pscustomobject]@{
+            case=$c.name; img=$c.img; steps=$c.steps; threads=$c.threads; types=$c.types; fastExtra=$c.fastExtra
+            verdict="FAIL"; sha_match=$false; fingerprint_match=$false; self_consistent=$false
+            expect_diff=$c.expectDiff
+            base_ms=0; fast_ms=0; speedup=0; note="$($c.note); exe 无输出(含一次重试)"
+        }
+        continue
+    }
+
+    $baseSha  = $baseMetrics.sha
+    $fastSha  = $fastMetrics.sha
+    $baseFp   = $baseMetrics.fp
+    $fastFp   = $fastMetrics.fp
+    $baseSha2 = $baseMetrics2.sha
+
+    $baseTimeMs  = $baseMetrics.ms
+    $fastTimeMs  = $fastMetrics.ms
 
     $selfConsistent = ($baseSha -eq $baseSha2)
     $shaMatch       = ($baseSha -eq $fastSha)

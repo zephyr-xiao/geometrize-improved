@@ -7,8 +7,10 @@
 
 #include "geometrize/bitmap/bitmap.h"
 #include "geometrize/commonutil.h"
+#include "geometrize/rasterizer/rasterizer.h"
 #include "geometrize/rasterizer/scanline.h"
 #include "geometrize/runner/imagerunneroptions.h"
+#include "geometrize/shape/rectangle.h"
 
 TEST_CASE("clamp:三段边界")
 {
@@ -110,3 +112,56 @@ TEST_CASE("scanlinesContainTransparentPixels:alpha 阈值语义")
     const std::vector<geometrize::Scanline> opaquePart{geometrize::Scanline{0, 0, 1}};
     CHECK_FALSE(geometrize::commonutil::scanlinesContainTransparentPixels(opaquePart, bitmap, 255));
 }
+
+#if defined(GEOTEST_FAST)
+TEST_CASE("mapShapeBoundsToImage:off-by-one 修复路径(C.1.4)")
+{
+    // 上游语义(默认参数)返回闭区间上界 size-1,而 setup/mutate/rasterize 全程按排他上界消费
+    // 该元组(内部一律 max-1 采样、clamp 到 max-1),错配导致画布最右列/最下行永不落画。
+    // 修复路径按文档契约返回排他上界:整图 = (0, 0, width, height),百分比按整幅像素跨度换算。
+    const geometrize::Bitmap bitmap{100, 50, geometrize::rgba{0, 0, 0, 0}};
+
+    const geometrize::ImageRunnerShapeBoundsOptions full{true, 0.0, 0.0, 100.0, 100.0};
+    const auto [fxMin, fyMin, fxMax, fyMax] = geometrize::commonutil::mapShapeBoundsToImage(full, bitmap, true);
+    CHECK(fxMin == 0);
+    CHECK(fyMin == 0);
+    CHECK(fxMax == 100); // 排他上界:像素 x ∈ [0, 99] 全部可落画
+    CHECK(fyMax == 50);
+
+    const geometrize::ImageRunnerShapeBoundsOptions quarter{true, 50.0, 50.0, 100.0, 100.0};
+    const auto [qxMin, qyMin, qxMax, qyMax] = geometrize::commonutil::mapShapeBoundsToImage(quarter, bitmap, true);
+    CHECK(qxMin == 50);
+    CHECK(qyMin == 25);
+    CHECK(qxMax == 100);
+    CHECK(qyMax == 50);
+
+    // 未启用 → 整图排他上界
+    const geometrize::ImageRunnerShapeBoundsOptions disabled{false, 10.0, 10.0, 90.0, 90.0};
+    const auto [dxMin, dyMin, dxMax, dyMax] = geometrize::commonutil::mapShapeBoundsToImage(disabled, bitmap, true);
+    CHECK(dxMin == 0);
+    CHECK(dyMin == 0);
+    CHECK(dxMax == 100);
+    CHECK(dyMax == 50);
+
+    // 退化区域(映射后不足 2px)仍回落到整图,且是排他上界
+    const geometrize::ImageRunnerShapeBoundsOptions degenerate{true, 40.0, 40.0, 41.0, 41.0};
+    const auto [gxMin, gyMin, gxMax, gyMax] = geometrize::commonutil::mapShapeBoundsToImage(degenerate, bitmap, true);
+    CHECK(gxMin == 0);
+    CHECK(gyMin == 0);
+    CHECK(gxMax == 100);
+    CHECK(gyMax == 50);
+
+    // 关键性质:修复后的边界作为排他上界喂给形状工厂时,最右列/最下行确实落在光栅化范围内
+    const std::vector<geometrize::Scanline> lines{geometrize::rasterize(
+        geometrize::Rectangle{0.0f, 0.0f, static_cast<float>(bitmap.getWidth() - 1), static_cast<float>(bitmap.getHeight() - 1)},
+        fxMin, fyMin, fxMax, fyMax)};
+    bool reachesLastColumn = false;
+    bool reachesLastRow = false;
+    for(const geometrize::Scanline& line : lines) {
+        reachesLastColumn = reachesLastColumn || (line.x2 == bitmap.getWidth() - 1);
+        reachesLastRow = reachesLastRow || (line.y == bitmap.getHeight() - 1);
+    }
+    CHECK(reachesLastColumn);
+    CHECK(reachesLastRow);
+}
+#endif

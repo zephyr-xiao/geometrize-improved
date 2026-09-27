@@ -51,7 +51,8 @@ std::string exportShapeJson(const std::vector<geometrize::ShapeResult>& data)
                        << "," << static_cast<std::uint32_t>(seg.color.g)
                        << "," << static_cast<std::uint32_t>(seg.color.b)
                        << "," << static_cast<std::uint32_t>(seg.color.a) << "]}";
-                if(k <= s.segments.size() - 2) {
+                // k+1 < size 而非 size-2:单段时 size_t 下溢会输出尾逗号,产生非法 JSON
+                if(k + 1 < s.segments.size()) {
                     stream << ",";
                 }
             }

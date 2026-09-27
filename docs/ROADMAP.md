@@ -87,7 +87,7 @@
 - 单测:T9-T13(shapemutator 平行序列等价/RNG 流不变/clone 陷阱)+ T1/T4/T8;哨兵 adaptive_step_fork ×2
 
 ### A2.3 逐形状最优 alpha 微搜索 — ✓ 已落地(2026-08-29,--alpha-search)
-每候选对 {64,128,192}∪{用户 alpha} 升序穷举取最优,胜者档回写 State::m_alpha → step() 落画(SVG/指纹联动)。回写通道 = model.cpp 落画改用 it->m_alpha(m_alpha==外部 alpha 是经典路径不变量,T7 双变体锁定)。
+每候选对 {64,128,192}∪{用户 alpha} 升序穷举取最优,胜者档回写 State::m_alpha → step() 落画(SVG/指纹联动)。回写通道 = model.cpp 落画改用 it->m_alpha(m_alpha==外部 alpha 是经典路径不变量,T7 双变体锁定;注:T7 现暂以 #if 0 // CD 禁用,见 test_model.cpp,不变量同时由 run_ab 逐位对拍矩阵承载)。
 - 实测(1024²×60 步):同步数 diff 0.0736→0.0669(**-9.1%**);代价单步 5.6x
 - **等时间口径的诚实结论**:穷举成本 >质量收益,等预算下反劣。适用场景 = 步数受限的精修;或与金字塔组合时用宽档位(默认三档在自适应步长的形状序列上胜者恒为用户 alpha,组合下退化为无效付费,宽档位 --alpha-tiers 可解)
 - 单测:T2/T5/T6/T15 + 哨兵 alpha_search_fork、enhanced_combo_fork
@@ -168,6 +168,24 @@ UI:runner 面板"框选优先区域(Ctrl+Drag)"会话态勾选框 + 计数标签
 ### F3.6 导出分辨率增强 — ✓ 已落地(2026-08-30,qt 补丁 0019)
 现状考证纠偏:PNG "Save Image" 本就是矢量重放链路(exportRasterizedSvg),且硬编码 ×3。
 实际改动:导出面板 PNG 组加"Output Scale"QSpinBox(1-8,默认 3 对齐旧行为),saveRasterizedSVG/saveRasterizedSVGs 读控件值。零 lib 改动、零翻译新增(复用 GIF 组 "Output Scale" 条目)。已知限制:QImage 上限 32767px(4096 源 ×8 越限)。
+
+### F3.9 矢量视图渲染开销(图层数随形状数线性增长)— ✓ 已落地(2026-09-22)
+用户实测驱动:"矢量图形视图形状到几百后开始卡,越多越卡"。根因两条叠加:①上游每批新形状新建一个
+SvgItem,而每份文档 viewBox 都是整幅画布,于是每个 item 都持有整幅画布的设备坐标缓存位图;
+②Qt 全局 QPixmapCache 上限默认 10MB,按整幅画布的设备像素只装得下约 5 个图层,超限后逐帧重渲染。
+实际形态:形状按块累积(每块 256,封板后不再重解析,`scene/imagetasksvgscene.cpp`)+ QPixmapCache
+上限 10MB→128MB(`main.cpp`)。离屏实测(512×384 图 / 900×600 视口 / 每批 4 形状)5000 形状:
+帧耗时 371ms→2.6ms,缓存内存 2.5GB→41MB;10000 形状仍为 4.9ms/82MB(旧实现一侧受内存压力影响
+波动较大,同参数重跑 5000 形状 371~1000ms;分块一侧稳定在个位数毫秒)。
+- 否决方案:**单 item + 多分块渲染器**(自绘 item 内依次 render 各块渲染器,理论最优:1 张缓存位图
+  + 封板块零重解析)。实测画面与上游实现差异单通道最大 184(其余方案 ≤2),在未定位该渲染差异前不采用;
+  其刷新耗时仍是 O(N)(单张缓存位图每次失效都要重画全部形状),收益也不足以抵消风险。
+- 画面等价性:分块方案与上游实现逐像素比,36% 像素差 1 个通道单位、0.03% 差 2(分层合成多一次 8 位舍入);
+  对照实验(阈值放大到不分块)与单 item 方案逐像素相同。
+- 残留:块数随形状数线性增长(10000 形状 = 40 块),再往上缓存内存与每帧合成层数仍会涨;
+  若要彻底 O(1),下一步是"等大小块二分合并"(log-structured merge,块数 O(log N)、摊还解析 O(N log N)),
+  当前规模(万级形状)无必要。
+- 基准可复现:`tools/svgscene-bench`(离屏,四方案对比 + 画面等价性 + QPixmapCache 上限对照)
 
 ---
 
@@ -304,3 +322,5 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 12. **裸形状必须绑 rasterize**:`std::make_shared<Rectangle>(...)` 等不经 shapefactory 的形状,其 `rasterize` std::function 为空,drawShape 调用即 UB/崩溃——照 GUI `drawBackgroundRectangle` 先绑定。椭圆光栅化输出 y 不升序(从中心向两边),导出/统计侧须 stable_sort。
 13. **CMake 链专用**:target_link_options 传含空格的链接选项(/MANIFESTDEPENDENCY)会被 VS 生成器拆成假输入文件(LNK1104)——用 .manifest 文件走源列表(app.manifest 先例);bat 里用 Python 写 Windows 路径必须 raw string(`\b`/`\5` 会被转义吃掉);CMake 版 exe 未经 windeployqt 启动会弹缺 DLL 错误框且进程挂着不退,**勿把 HasExited=False 误判为运行正常**(看 startup_timing.log 是否新增)。
 14. **QPointer 在 Qt5 无 qHash**:`QSet<QPointer<T>>`/`QHash<QPointer<T>,V>` 编译报 qHash 无重载——受管窗口集合用 `QVector<QPointer<T>>` 线性查找(F3.3 先例);QPointer 作 connect lambda 捕获 + receiver 传宿主窗口,WA_DeleteOnClose 的 sender 销毁时 Qt 自动断连,回调不悬空;嵌套类非 QObject 的 Impl 里 `connect` 是全局五参函数直接可用。
+15. **形状边界是排他上界**:`setup`/`mutate`/各 `rasterize` 一律把边界元组的 max 当排他上界消费(内部 `randomRange(xMin, xMax-1)`、`clamp` 到 `xMax-1`、y 过滤在 `[yMin, yMax)`),整幅画布即 `(0, 0, width, height)`。`mapShapeBoundsToImage` 上游返回闭区间 `size-1`,错配使最右列/最下行永不落画(C.1.4);新代码写边界时**别照抄那个 -1**,脚本模板里的 `xMax - 1` 才是对的。
+16. **QGraphicsItem 的 DeviceCoordinateCache 吃全局 QPixmapCache 配额**(默认 10MB,约 5 个全画布图层):图层数超配额后每帧重新渲染而非命中缓存,帧耗时量级跳变(0.2ms→70ms)。给场景加 item 前先算图层数 × 单层设备像素;需要更多图层就 `QPixmapCache::setCacheLimit`(应用 main.cpp 已设 128MB)。诊断手法:离屏 `QGraphicsView::render` 计时 + 打印 item 数,见 F3.9。

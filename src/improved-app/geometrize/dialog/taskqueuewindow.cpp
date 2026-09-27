@@ -18,6 +18,7 @@
 #include <QVector>
 
 #include <algorithm>
+#include <set>
 #include <vector>
 
 #include "chaiscript/chaiscript.hpp"
@@ -161,32 +162,16 @@ public:
         ui->clearTaskListButton->setEnabled(false);
         QTimer* timer = new QTimer(q);
         q->connect(timer, &QTimer::timeout, q, [this]() {
+            // 批处理进度归集:完成事实由信号驱动,销毁兜底由 destroyed 信号按窗口身份计数
+            // (QPointer 销毁后折叠为 null,无法区分多个已销毁窗口,不能再用占位判重)。
+            // 这里只负责展示与按钮状态刷新。
             const bool enableRunClearButtons = ui->taskList->count() > 0;
             ui->runTasksButton->setEnabled(enableRunClearButtons);
             ui->clearTaskListButton->setEnabled(enableRunClearButtons);
             ui->closeOpenWindowsButton->setEnabled(!geometrize::dialog::ImageTaskWindow::getExistingImageTaskWindows().empty());
 
-            // 批处理进度归集:轮询只负责展示与销毁兜底,完成事实由信号驱动。
-            // 受管窗口销毁(WA_DeleteOnClose 手动关闭等)视为完成但不触发导出。
-            bool dirty = false;
-            for(int i = m_trackedWindows.size() - 1; i >= 0; --i) {
-                const QPointer<ImageTaskWindow>& window = m_trackedWindows[i];
-                if(!window.isNull()) {
-                    continue;
-                }
-                if(!m_completedWindows.contains(window)) {
-                    m_completedWindows.push_back(window); // 占位计数:销毁窗口已计入完成
-                    dirty = true;
-                }
-            }
-            if(dirty) {
-                removeWindowImagePath(QPointer<ImageTaskWindow>());
-                m_trackedWindows.erase(std::remove_if(m_trackedWindows.begin(), m_trackedWindows.end(),
-                    [](const QPointer<ImageTaskWindow>& w) { return w.isNull(); }), m_trackedWindows.end());
-            }
-
-            const std::uint32_t completed{static_cast<std::uint32_t>(m_completedWindows.size())};
-            const std::uint32_t total{static_cast<std::uint32_t>(m_trackedWindows.size())};
+            const std::uint32_t completed{static_cast<std::uint32_t>(m_completedIds.size() + m_destroyedUncompletedCount)};
+            const std::uint32_t total{static_cast<std::uint32_t>(m_managedTotal)};
             q->setWindowTitle(tr("Task Queue (%1/%2)").arg(completed).arg(total));
 #ifdef Q_OS_WIN
             m_taskbar->setValue(reinterpret_cast<HWND>(q->winId()), completed, total);
@@ -344,6 +329,13 @@ private:
             connect(window, &ImageTaskWindow::signal_didStopConditionMet, q, [this, guard]() {
                 onTaskWindowFinished(guard);
             });
+            // 销毁兜底:identity 仅作比较用(销毁后不解引用);批次重置后迟到的销毁信号不计入
+            const void* id{window};
+            connect(window, &QObject::destroyed, q, [this, id](QObject*) {
+                onTrackedWindowDestroyed(id);
+            });
+            m_managedTotal++;
+            m_managedIds.insert(id);
             m_trackedWindows.push_back(guard);
             m_windowImagePath.push_back({guard, imagePath});
         }
@@ -369,17 +361,39 @@ private:
 
     void onTaskWindowFinished(const QPointer<ImageTaskWindow>& window)
     {
-        if(m_completedWindows.contains(window)) {
+        if(window.isNull()) {
             return;
         }
-        m_completedWindows.push_back(window);
+        const void* id{window.data()};
+        if(std::find(m_completedIds.begin(), m_completedIds.end(), id) != m_completedIds.end()) {
+            return;
+        }
+        m_completedIds.push_back(id);
         exportTaskResults(window);
+    }
+
+    // 受管窗口销毁兜底:未发完成信号的窗口按"完成"计数(与原占位语义一致,但可分辨身份)。
+    // 批次重置后迟到的销毁信号(m_managedIds 已清)不计入。
+    void onTrackedWindowDestroyed(const void* id)
+    {
+        if(m_managedIds.erase(id) == 0) {
+            return;
+        }
+        if(std::find(m_completedIds.begin(), m_completedIds.end(), id) == m_completedIds.end()) {
+            m_destroyedUncompletedCount++;
+        }
+        m_trackedWindows.erase(std::remove_if(m_trackedWindows.begin(), m_trackedWindows.end(),
+            [](const QPointer<ImageTaskWindow>& w) { return w.isNull(); }), m_trackedWindows.end());
+        removeWindowImagePath(QPointer<ImageTaskWindow>());
     }
 
     void resetBatchProgress()
     {
         m_trackedWindows.clear();
-        m_completedWindows.clear();
+        m_completedIds.clear();
+        m_managedIds.clear();
+        m_managedTotal = 0;
+        m_destroyedUncompletedCount = 0;
         m_exportNameCounter.clear();
         m_windowImagePath.clear();
         q->setWindowTitle(tr("Task Queue (0/0)"));
@@ -524,10 +538,14 @@ private:
     const std::string defaultScriptName{ "default" };
     std::map<std::string, std::string> m_scripts;
 
-    // 批处理受管窗口集合:QPointer 随窗口销毁自动失效,轮询据此做销毁兜底。
-    // QPointer 在 Qt5 无 qHash,集合一律用向量线性查找(批处理窗口数量级小,无性能问题)
+    // 批处理受管窗口集合:完成/销毁计数用窗口原始指针作身份(QPointer 销毁后折叠为
+    // null,无法区分多个已销毁窗口);原始指针在销毁后仅作比较,绝不解引用。
+    // m_trackedWindows 保留 QPointer 用于存活窗口判重(跨 eval 快照 diff)。
     QVector<QPointer<ImageTaskWindow>> m_trackedWindows;
-    QVector<QPointer<ImageTaskWindow>> m_completedWindows;
+    std::vector<const void*> m_completedIds;   // 已发完成信号窗口的身份(含销毁后)
+    std::set<const void*> m_managedIds;        // 尚未销毁的受管窗口身份(迟到销毁信号判重)
+    int m_managedTotal{0};                     // 本批受管窗口总数(单调)
+    int m_destroyedUncompletedCount{0};        // 销毁时未发完成信号的窗口数(按完成计)
     QHash<QString, int> m_exportNameCounter;
     QVector<QPair<QPointer<ImageTaskWindow>, QString>> m_windowImagePath;
 

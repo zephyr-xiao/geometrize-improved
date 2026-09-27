@@ -10,6 +10,7 @@
 #include <QIcon>
 #include <QLocale>
 #include <QObject>
+#include <QPixmapCache>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -50,6 +51,16 @@ void incrementAppLaunchCount()
 {
     auto& prefs = geometrize::preferences::getGlobalPreferences();
     prefs.incrementApplicationLaunchCount();
+}
+
+void tuneGraphicsCaches()
+{
+    // 矢量视图的 SvgItem 用 DeviceCoordinateCache,其缓存位图走 Qt 全局 pixmap 缓存,
+    // 受 QPixmapCache 上限约束(默认 10MB,按整幅画布的设备像素算只装得下约 5 个图层)。
+    // 形状累积到上千后图层数超过该上限,缓存开始抖动——每次重绘都要重新渲染 SVG 文档,
+    // 帧耗时从 0.2ms 量级跳到 70ms 量级(离屏实测见 docs/bugfix-triage.md C.3.1)。
+    // 128MB 可容纳约 60 个全画布图层(对应上万形状),再往上由 SVG 分块阈值控制增量。
+    QPixmapCache::setCacheLimit(128 * 1024); // 参数单位 KB
 }
 
 void setLocale(const QStringList& arguments)
@@ -133,6 +144,8 @@ int main(int argc, char* argv[])
     incrementAppLaunchCount();
 
     QApplication app(argc, argv);
+
+    tuneGraphicsCaches();
 
     // Intercept proximity tablet pen events
     app.installEventFilter(&geometrize::getSharedTabletProximityEventFilterInstance());

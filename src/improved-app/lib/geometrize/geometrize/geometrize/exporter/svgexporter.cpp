@@ -343,6 +343,7 @@ std::string exportSingleShapeSVG(const geometrize::rgba& color, const geometrize
     std::stringstream stream;
 
     stream << "<?xml version=\"1.0\" standalone=\"no\"?>" << "\n";
+    // SVG 命名空间必须是 http(s 协议头会让浏览器拒绝按 SVG 渲染,退回 XML 文档树模式)
     stream << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
               "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
               "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
@@ -358,11 +359,6 @@ std::string exportSVG(const std::vector<geometrize::ShapeResult>& data, const st
 {
     std::stringstream stream;
 
-    stream << "<?xml version=\"1.0\" standalone=\"no\"?>" << "\n";
-    stream << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
-              "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
-              "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
-
     for(std::size_t i = 0; i < data.size(); i++) {
         options.itemId = i;
 
@@ -371,6 +367,22 @@ std::string exportSVG(const std::vector<geometrize::ShapeResult>& data, const st
         // A2.4:segments 非空走色带组重载,空走基元单色(逐字节一致)
         stream << geometrize::exporter::getSingleShapeSVGData(s.color, *(s.shape), s.segments, options);
     }
+
+    // 文档包装与 exportSVGDocument 同源:片段累积式调用方(应用矢量预览)拼出的文档与本函数逐字节一致
+    return geometrize::exporter::exportSVGDocument(stream.str(), width, height);
+}
+
+std::string exportSVGDocument(const std::string& shapeData, const std::uint32_t width, const std::uint32_t height)
+{
+    std::stringstream stream;
+
+    stream << "<?xml version=\"1.0\" standalone=\"no\"?>" << "\n";
+    // SVG 命名空间必须是 http(s 协议头会让浏览器拒绝按 SVG 渲染,退回 XML 文档树模式)
+    stream << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
+              "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
+              "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
+
+    stream << shapeData;
 
     stream << "</svg>";
 

@@ -192,7 +192,9 @@ private:
     std::unique_ptr<Ui::TemplateButton> ui;
     QDrag* m_currentDragAction{ nullptr };
     TemplateButton* q;
-    const std::function<chaiscript::ChaiScript&()>& m_templateLoaderProvider;
+    // 按值存储:调用点传入的是临时 std::function(引用参数绑定临时对象),
+    // 引用成员会在构造完成后悬垂,点击模板回调即 UB
+    const std::function<chaiscript::ChaiScript&()> m_templateLoaderProvider;
     const QString m_templateFolder;
     TemplateManifest m_manifest;
     QFutureWatcher<QImage> m_templateLoaderWatcher;

@@ -43,7 +43,10 @@ geometrize::Bitmap convertImageToBitmapWithDownscaling(const QImage& image)
             return geometrize::image::createBitmap(scaled.convertToFormat(QImage::Format_RGBA8888));
         }
     }
-    return geometrize::image::createBitmap(image);
+    // 原尺寸路径同样强制 RGBA8888:convertToFormat 对已是目标格式的输入只做浅共享拷贝,
+    // 近零成本;不做转换时 createBitmap 的格式断言在 Release 失效,非 RGBA8888 输入
+    // (如脚本绑定直接传入)会按原始字节 memcpy,通道错乱/预乘损坏
+    return geometrize::image::createBitmap(image.convertToFormat(QImage::Format_RGBA8888));
 }
 QImage createImage(const Bitmap& data)
 {

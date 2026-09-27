@@ -82,6 +82,17 @@ std::string exportSingleShapeSVG(const geometrize::rgba& color, const geometrize
  */
 std::string exportSVG(const std::vector<geometrize::ShapeResult>& data, const std::uint32_t width, const std::uint32_t height, SVGExportOptions options = SVGExportOptions{});
 
+/**
+ * @brief exportSVGDocument 把已序列化的形状片段(每项即 getSingleShapeSVGData 的输出)包成完整 SVG 文档。
+ * 供需要增量累积形状的调用方(应用的矢量预览视图:按批追加片段、整体替换渲染器,避免每批新建一个
+ * 全画布图层)复用 exportSVG 的文档包装,保证预览与导出文件的文档头尾同源。
+ * @param shapeData 拼接好的形状元素文本(不含 <svg> 包装)。
+ * @param width The width of the SVG image.
+ * @param height The height of the SVG image.
+ * @return A string representing the SVG image.
+ */
+std::string exportSVGDocument(const std::string& shapeData, const std::uint32_t width, const std::uint32_t height);
+
 }
 
 }

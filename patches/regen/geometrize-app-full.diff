@@ -1545,7 +1545,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/dialog/taskqueuewindow.cpp b/geometrize/dialog/taskqueuewindow.cpp
 --- a/geometrize/dialog/taskqueuewindow.cpp
 +++ b/geometrize/dialog/taskqueuewindow.cpp
-@@ -2,29 +2,117 @@
+@@ -2,29 +2,118 @@
  #include "ui_taskqueuewindow.h"
  
  #include <QCollator>
@@ -1565,6 +1565,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +#include <QVector>
 +
 +#include <algorithm>
++#include <set>
 +#include <vector>
  
  #include "chaiscript/chaiscript.hpp"
@@ -1663,7 +1664,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  class TaskQueueWindow::TaskQueueWindowImpl
  {
  public:
-@@ -41,9 +129,14 @@
+@@ -41,9 +130,14 @@
  
          connect(ui->scriptSelectComboBox, &QComboBox::currentTextChanged, [this](const QString& text) {
              m_scriptEditorWidget->setCurrentCode(m_scripts[text.toStdString()]);
@@ -1678,7 +1679,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              for(int i = 0; i < ui->taskList->count(); ++i) {
                  QListWidgetItem* item = ui->taskList->item(i);
                  QString data = item->data(Qt::UserRole).toString();
-@@ -52,11 +145,17 @@
+@@ -52,27 +146,59 @@
          });
          connect(ui->clearTaskListButton, &QPushButton::clicked, [this]() {
              ui->taskList->clear();
@@ -1696,32 +1697,18 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          // Enable the run and clear buttons only when items are present
          ui->runTasksButton->setEnabled(false);
          ui->clearTaskListButton->setEnabled(false);
-@@ -66,13 +165,55 @@
+         QTimer* timer = new QTimer(q);
+         q->connect(timer, &QTimer::timeout, q, [this]() {
++            // 批处理进度归集:完成事实由信号驱动,销毁兜底由 destroyed 信号按窗口身份计数
++            // (QPointer 销毁后折叠为 null,无法区分多个已销毁窗口,不能再用占位判重)。
++            // 这里只负责展示与按钮状态刷新。
+             const bool enableRunClearButtons = ui->taskList->count() > 0;
              ui->runTasksButton->setEnabled(enableRunClearButtons);
              ui->clearTaskListButton->setEnabled(enableRunClearButtons);
              ui->closeOpenWindowsButton->setEnabled(!geometrize::dialog::ImageTaskWindow::getExistingImageTaskWindows().empty());
 +
-+            // 批处理进度归集:轮询只负责展示与销毁兜底,完成事实由信号驱动。
-+            // 受管窗口销毁(WA_DeleteOnClose 手动关闭等)视为完成但不触发导出。
-+            bool dirty = false;
-+            for(int i = m_trackedWindows.size() - 1; i >= 0; --i) {
-+                const QPointer<ImageTaskWindow>& window = m_trackedWindows[i];
-+                if(!window.isNull()) {
-+                    continue;
-+                }
-+                if(!m_completedWindows.contains(window)) {
-+                    m_completedWindows.push_back(window); // 占位计数:销毁窗口已计入完成
-+                    dirty = true;
-+                }
-+            }
-+            if(dirty) {
-+                removeWindowImagePath(QPointer<ImageTaskWindow>());
-+                m_trackedWindows.erase(std::remove_if(m_trackedWindows.begin(), m_trackedWindows.end(),
-+                    [](const QPointer<ImageTaskWindow>& w) { return w.isNull(); }), m_trackedWindows.end());
-+            }
-+
-+            const std::uint32_t completed{static_cast<std::uint32_t>(m_completedWindows.size())};
-+            const std::uint32_t total{static_cast<std::uint32_t>(m_trackedWindows.size())};
++            const std::uint32_t completed{static_cast<std::uint32_t>(m_completedIds.size() + m_destroyedUncompletedCount)};
++            const std::uint32_t total{static_cast<std::uint32_t>(m_managedTotal)};
 +            q->setWindowTitle(tr("Task Queue (%1/%2)").arg(completed).arg(total));
 +#ifdef Q_OS_WIN
 +            m_taskbar->setValue(reinterpret_cast<HWND>(q->winId()), completed, total);
@@ -1752,7 +1739,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void addItems(const QStringList& tasks)
-@@ -112,11 +253,12 @@
+@@ -112,11 +238,12 @@
          }
      }
  
@@ -1766,7 +1753,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          try {
              engine->eval(code);
              m_scriptEditorWidget->onScriptEvaluationSucceeded();
-@@ -125,9 +267,11 @@
+@@ -125,9 +252,11 @@
          } catch(...) {
              m_scriptEditorWidget->onScriptEvaluationFailed("Unknown script evaluation error");
          }
@@ -1779,7 +1766,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      {
          class MyListWidgetItem : public QListWidgetItem {
          public:
-@@ -150,16 +294,19 @@
+@@ -150,16 +279,19 @@
          QListWidgetItem* item{new MyListWidgetItem()};
          dialog::TaskItemWidget* button{new dialog::TaskItemWidget(itemPath, RecentTasksList::getDisplayNameForTaskPath(itemDisplayName),
          [this](const QString& taskItemId) {
@@ -1800,7 +1787,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void setMenuItemKey(QListWidgetItem* item, const QString& key) const
-@@ -180,6 +327,191 @@
+@@ -180,6 +312,220 @@
          ui->scrollArea->setWidget(m_scriptEditorWidget);
      }
  
@@ -1821,6 +1808,13 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            connect(window, &ImageTaskWindow::signal_didStopConditionMet, q, [this, guard]() {
 +                onTaskWindowFinished(guard);
 +            });
++            // 销毁兜底:identity 仅作比较用(销毁后不解引用);批次重置后迟到的销毁信号不计入
++            const void* id{window};
++            connect(window, &QObject::destroyed, q, [this, id](QObject*) {
++                onTrackedWindowDestroyed(id);
++            });
++            m_managedTotal++;
++            m_managedIds.insert(id);
 +            m_trackedWindows.push_back(guard);
 +            m_windowImagePath.push_back({guard, imagePath});
 +        }
@@ -1846,17 +1840,39 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +    void onTaskWindowFinished(const QPointer<ImageTaskWindow>& window)
 +    {
-+        if(m_completedWindows.contains(window)) {
++        if(window.isNull()) {
 +            return;
 +        }
-+        m_completedWindows.push_back(window);
++        const void* id{window.data()};
++        if(std::find(m_completedIds.begin(), m_completedIds.end(), id) != m_completedIds.end()) {
++            return;
++        }
++        m_completedIds.push_back(id);
 +        exportTaskResults(window);
++    }
++
++    // 受管窗口销毁兜底:未发完成信号的窗口按"完成"计数(与原占位语义一致,但可分辨身份)。
++    // 批次重置后迟到的销毁信号(m_managedIds 已清)不计入。
++    void onTrackedWindowDestroyed(const void* id)
++    {
++        if(m_managedIds.erase(id) == 0) {
++            return;
++        }
++        if(std::find(m_completedIds.begin(), m_completedIds.end(), id) == m_completedIds.end()) {
++            m_destroyedUncompletedCount++;
++        }
++        m_trackedWindows.erase(std::remove_if(m_trackedWindows.begin(), m_trackedWindows.end(),
++            [](const QPointer<ImageTaskWindow>& w) { return w.isNull(); }), m_trackedWindows.end());
++        removeWindowImagePath(QPointer<ImageTaskWindow>());
 +    }
 +
 +    void resetBatchProgress()
 +    {
 +        m_trackedWindows.clear();
-+        m_completedWindows.clear();
++        m_completedIds.clear();
++        m_managedIds.clear();
++        m_managedTotal = 0;
++        m_destroyedUncompletedCount = 0;
 +        m_exportNameCounter.clear();
 +        m_windowImagePath.clear();
 +        q->setWindowTitle(tr("Task Queue (0/0)"));
@@ -1992,15 +2008,19 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      void populateUi()
      {
      }
-@@ -191,6 +523,17 @@
+@@ -191,6 +537,21 @@
  
      const std::string defaultScriptName{ "default" };
      std::map<std::string, std::string> m_scripts;
 +
-+    // 批处理受管窗口集合:QPointer 随窗口销毁自动失效,轮询据此做销毁兜底。
-+    // QPointer 在 Qt5 无 qHash,集合一律用向量线性查找(批处理窗口数量级小,无性能问题)
++    // 批处理受管窗口集合:完成/销毁计数用窗口原始指针作身份(QPointer 销毁后折叠为
++    // null,无法区分多个已销毁窗口);原始指针在销毁后仅作比较,绝不解引用。
++    // m_trackedWindows 保留 QPointer 用于存活窗口判重(跨 eval 快照 diff)。
 +    QVector<QPointer<ImageTaskWindow>> m_trackedWindows;
-+    QVector<QPointer<ImageTaskWindow>> m_completedWindows;
++    std::vector<const void*> m_completedIds;   // 已发完成信号窗口的身份(含销毁后)
++    std::set<const void*> m_managedIds;        // 尚未销毁的受管窗口身份(迟到销毁信号判重)
++    int m_managedTotal{0};                     // 本批受管窗口总数(单调)
++    int m_destroyedUncompletedCount{0};        // 销毁时未发完成信号的窗口数(按完成计)
 +    QHash<QString, int> m_exportNameCounter;
 +    QVector<QPair<QPointer<ImageTaskWindow>, QString>> m_windowImagePath;
 +
@@ -2149,12 +2169,14 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void revealTemplateInExplorer()
-@@ -192,16 +192,16 @@
+@@ -192,16 +192,18 @@
      std::unique_ptr<Ui::TemplateButton> ui;
      QDrag* m_currentDragAction{ nullptr };
      TemplateButton* q;
 -    chaiscript::ChaiScript* const m_templateLoader;
-+    const std::function<chaiscript::ChaiScript&()>& m_templateLoaderProvider;
++    // 按值存储:调用点传入的是临时 std::function(引用参数绑定临时对象),
++    // 引用成员会在构造完成后悬垂,点击模板回调即 UB
++    const std::function<chaiscript::ChaiScript&()> m_templateLoaderProvider;
      const QString m_templateFolder;
      TemplateManifest m_manifest;
      QFutureWatcher<QImage> m_templateLoaderWatcher;
@@ -2560,7 +2582,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/image/imageloader.cpp b/geometrize/image/imageloader.cpp
 --- a/geometrize/image/imageloader.cpp
 +++ b/geometrize/image/imageloader.cpp
-@@ -25,25 +25,25 @@
+@@ -25,25 +25,28 @@
      assert((image.width() != 0 && image.height() != 0) && "Image has zero width or height");
      assert((image.format() == QImage::Format_RGBA8888) && "Cannot create bitmap data from a non-RGBA8888 image");
  
@@ -2591,7 +2613,10 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          }
      }
 -    return geometrize::image::createBitmap(im.convertToFormat(QImage::Format_RGBA8888));
-+    return geometrize::image::createBitmap(image);
++    // 原尺寸路径同样强制 RGBA8888:convertToFormat 对已是目标格式的输入只做浅共享拷贝,
++    // 近零成本;不做转换时 createBitmap 的格式断言在 Release 失效,非 RGBA8888 输入
++    // (如脚本绑定直接传入)会按原始字节 memcpy,通道错乱/预乘损坏
++    return geometrize::image::createBitmap(image.convertToFormat(QImage::Format_RGBA8888));
  }
  QImage createImage(const Bitmap& data)
  {
@@ -2739,15 +2764,35 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  #include <functional>
  #include <string>
  
-@@ -11,6 +12,7 @@
+@@ -9,8 +10,10 @@
+ #include <QIcon>
+ #include <QLocale>
  #include <QObject>
++#include <QPixmapCache>
  #include <QString>
  #include <QStringList>
 +#include <QTimer>
  #include <QtGlobal>
  
  #include "tabletproximityeventfilter.h"
-@@ -97,6 +99,10 @@
+@@ -50,6 +53,16 @@
+     prefs.incrementApplicationLaunchCount();
+ }
+ 
++void tuneGraphicsCaches()
++{
++    // 矢量视图的 SvgItem 用 DeviceCoordinateCache,其缓存位图走 Qt 全局 pixmap 缓存,
++    // 受 QPixmapCache 上限约束(默认 10MB,按整幅画布的设备像素算只装得下约 5 个图层)。
++    // 形状累积到上千后图层数超过该上限,缓存开始抖动——每次重绘都要重新渲染 SVG 文档,
++    // 帧耗时从 0.2ms 量级跳到 70ms 量级(离屏实测见 docs/bugfix-triage.md C.3.1)。
++    // 128MB 可容纳约 60 个全画布图层(对应上万形状),再往上由 SVG 分块阈值控制增量。
++    QPixmapCache::setCacheLimit(128 * 1024); // 参数单位 KB
++}
++
+ void setLocale(const QStringList& arguments)
+ {
+     const QLocale locale = [&arguments]() {
+@@ -97,6 +110,10 @@
          geometrize::common::ui::openLaunchWindow();
          geometrize::dialog::sharedSplashInstance().setState(geometrize::dialog::SplashState::FINISHED);
      }
@@ -2758,7 +2803,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
      // Set up the self tests (these will take over the application and run in the background)
      if(geometrize::cli::shouldRunInSelfTestMode(app.arguments())) {
-@@ -121,6 +127,7 @@
+@@ -121,12 +138,15 @@
  int main(int argc, char* argv[])
  {
      geometrize::logging::setupLogging();
@@ -2766,7 +2811,15 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
      setApplicationSettingsFields();
      incrementAppLaunchCount();
-@@ -138,6 +145,7 @@
+ 
+     QApplication app(argc, argv);
+ 
++    tuneGraphicsCaches();
++
+     // Intercept proximity tablet pen events
+     app.installEventFilter(&geometrize::getSharedTabletProximityEventFilterInstance());
+ 
+@@ -138,6 +158,7 @@
  
      const QStringList arguments{app.arguments()};
      setLocale(arguments);
@@ -2793,7 +2846,44 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/preferences/imagetaskpreferences.cpp b/geometrize/preferences/imagetaskpreferences.cpp
 --- a/geometrize/preferences/imagetaskpreferences.cpp
 +++ b/geometrize/preferences/imagetaskpreferences.cpp
-@@ -129,6 +129,31 @@
+@@ -50,13 +50,35 @@
+ 
+     bool load(const std::string& filePath)
+     {
++        // 失败时恢复进入前状态:调用方可能忽略返回值,不能残留半读状态
++        const geometrize::ImageRunnerOptions fallbackOptions{m_options};
++        const bool fallbackScriptsEnabled{m_scriptsEnabled};
++        const std::map<std::string, std::string> fallbackScripts{m_scripts};
++
+         // Preferences can be bundled into Qt resources, so we use a streamview that loads the file contents into a byte array first
++        {
++            serialization::StreamView streamView(filePath);
++            std::istream input(&streamView);
++            try {
++                cereal::JSONInputArchive archive{input};
++                m_data.archive(archive, m_options, m_scriptsEnabled, m_scripts);
++                return true;
++            } catch(...) {
++                // 新格式键不齐(上游/旧版模板缺增强轨道键)或文件损坏:走旧格式回退
++            }
++        }
++
++        // 旧键集整档重读:上面首趟可能已覆写部分成员,legacy 覆盖全部旧键,
++        // 增强轨道键保持默认/进入前值
+         serialization::StreamView streamView(filePath);
+         std::istream input(&streamView);
+         try {
+             cereal::JSONInputArchive archive{input};
+-            m_data.archive(archive, m_options, m_scriptsEnabled, m_scripts);
++            m_data.archiveLegacy(archive, m_options, m_scriptsEnabled, m_scripts);
+         } catch(...) {
++            m_options = fallbackOptions;
++            m_scriptsEnabled = fallbackScriptsEnabled;
++            m_scripts = fallbackScripts;
+             return false;
+         }
+         return true;
+@@ -129,6 +151,31 @@
          m_options.maxThreads = maxThreads;
      }
  
@@ -2825,7 +2915,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      void setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds)
      {
          m_options.shapeBounds = shapeBounds;
-@@ -167,6 +192,11 @@
+@@ -167,6 +214,11 @@
          m_options.shapeBounds.enabled = shapeBoundsEnabled;
      }
  
@@ -2837,7 +2927,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      void setScriptModeEnabled(const bool enabled)
      {
          m_scriptsEnabled = enabled;
-@@ -277,6 +307,31 @@
+@@ -277,6 +329,31 @@
      d->setMaxThreads(maxThreads);
  }
  
@@ -2869,7 +2959,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  void ImageTaskPreferences::setShapeBounds(const geometrize::ImageRunnerShapeBoundsOptions& shapeBounds)
  {
      d->setShapeBounds(shapeBounds);
-@@ -312,6 +367,11 @@
+@@ -312,6 +389,11 @@
      d->setShapeBoundsEnabled(shapeBoundsEnabled);
  }
  
@@ -3049,16 +3139,170 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/scene/imagetasksvgscene.cpp b/geometrize/scene/imagetasksvgscene.cpp
 --- a/geometrize/scene/imagetasksvgscene.cpp
 +++ b/geometrize/scene/imagetasksvgscene.cpp
-@@ -38,7 +38,8 @@
-         const QByteArray svgData{svgString.toUtf8()};
-         auto svgItem = new SvgItem(svgData);
-         svgItem->setFlags(QGraphicsItem::ItemClipsToShape);
--        svgItem->setCacheMode(QGraphicsItem::NoCache);
-+        // 静态 SVG 用设备坐标位图缓存,命中后免去每帧对每个 item 重过 QSvgRenderer
-+        svgItem->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
-         q->addItem(svgItem);
-         svgItem->setZValue(0);
+@@ -1,6 +1,11 @@
+ #include "imagetasksvgscene.h"
+ 
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
+ #include <memory>
++#include <string>
++#include <vector>
+ 
+ #include <QByteArray>
+ #include <QGraphicsSvgItem>
+@@ -18,10 +23,21 @@
+ namespace scene
+ {
+ 
++namespace
++{
++
++// 分块封板阈值:一个 item 承载的形状数上限。
++// 块越大 → item 越少(每帧合成层数少、缓存内存小),但每次刷新要重解析的文档越大;
++// 块越小 → 刷新越轻,但 item 数随形状数线性增长(退回上游的老问题)。
++// 256 在两侧都留足余量:刷新只重解析当前块,帧开销只跟"形状数/256"成正比。
++constexpr std::size_t SVG_CHUNK_SHAPE_LIMIT{256};
++
++}
++
+ class ImageTaskSvgScene::ImageTaskSvgSceneImpl
+ {
+ public:
+-    ImageTaskSvgSceneImpl(ImageTaskSvgScene* pQ) : q{pQ}
++    ImageTaskSvgSceneImpl(ImageTaskSvgScene* pQ) : q{pQ}, m_width{0}, m_height{0}, m_liveItem{nullptr}, m_liveShapeCount{0}, m_nextShapeId{0}
+     {
      }
+     ImageTaskSvgSceneImpl operator=(const ImageTaskSvgSceneImpl&) = delete;
+@@ -34,28 +50,79 @@
+             return;
+         }
+ 
+-        const QString svgString{QString::fromStdString(geometrize::exporter::exportSVG(shapes, width, height))};
+-        const QByteArray svgData{svgString.toUtf8()};
+-        auto svgItem = new SvgItem(svgData);
+-        svgItem->setFlags(QGraphicsItem::ItemClipsToShape);
+-        svgItem->setCacheMode(QGraphicsItem::NoCache);
+-        q->addItem(svgItem);
+-        svgItem->setZValue(0);
++        // 形状按块累积。上游实现是每批新形状新建一个 item,而每份 SVG 文档的 viewBox 都是整幅画布,
++        // 于是每个 item 的 boundingRect 都是整幅画布、在设备坐标缓存下各持一张全画布位图:
++        // 形状到几百后每帧要合成几百层全画布图层,内存与帧耗时随形状数线性增长(越多越卡)。
++        // 这里改为:当前块 append-only 累积片段,刷新只重拼/重解析当前块;块满即封板
++        // (封板后不再重解析,也不改动),图层数因此是 形状数/256 量级而非 形状数/批 量级。
++        if(m_items.empty() || m_width != width || m_height != height) {
++            removeShapes();
++            m_width = width;
++            m_height = height;
++        }
++
++        // 一次调用可能带一整批形状(撤销/重做重放会把全部形状一次送来),故按块余量切分循环,
++        // 保证单块不超过阈值——否则一次重放就生成一个巨型块,该块每次刷新都要整体重解析。
++        std::size_t index{0};
++        while(index < shapes.size()) {
++            if(m_liveItem != nullptr && m_liveShapeCount >= SVG_CHUNK_SHAPE_LIMIT) {
++                m_liveItem = nullptr; // 封板:该 item 留在场景中,不再重建
++                m_liveData.clear();
++                m_liveShapeCount = 0;
++            }
++
++            const std::size_t room{SVG_CHUNK_SHAPE_LIMIT - m_liveShapeCount};
++            const std::size_t count{(std::min)(room, shapes.size() - index)};
++            for(std::size_t i = 0; i < count; i++) {
++                const geometrize::ShapeResult& result{shapes[index + i]};
++                geometrize::exporter::SVGExportOptions options;
++                options.itemId = m_nextShapeId++;
++                // 与 exportSVG 逐形状同一调用:segments 非空走 A2.4 色带组,空走基元单色
++                m_liveData.append(geometrize::exporter::getSingleShapeSVGData(result.color, *(result.shape), result.segments, options));
++            }
++            m_liveShapeCount += count;
++            index += count;
++
++            const std::string document{geometrize::exporter::exportSVGDocument(m_liveData, width, height)};
++            const QByteArray documentData{document.data(), static_cast<int>(document.size())};
++
++            if(m_liveItem == nullptr) {
++                m_liveItem = new SvgItem(documentData);
++                m_liveItem->setFlags(QGraphicsItem::ItemClipsToShape);
++                // 静态 SVG 用设备坐标位图缓存,命中后免去每帧对 item 重过 QSvgRenderer
++                m_liveItem->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
++                q->addItem(m_liveItem);
++                m_liveItem->setZValue(0);
++                m_items.push_back(m_liveItem);
++            } else {
++                m_liveItem->setDocument(documentData);
++            }
++        }
+     }
+ 
+     void removeShapes()
+     {
+-        const auto items = q->items();
+-        for(auto& item : items) {
+-            if(dynamic_cast<SvgItem*>(item) != nullptr) {
+-                q->removeItem(item);
+-                delete item;
+-            }
++        for(SvgItem* item : m_items) {
++            q->removeItem(item);
++            delete item;
+         }
++        m_items.clear();
++        m_liveItem = nullptr;
++        m_liveData.clear();
++        m_liveShapeCount = 0;
++        m_nextShapeId = 0;
+     }
+ 
+ private:
+     ImageTaskSvgScene* q;
++
++    std::uint32_t m_width;
++    std::uint32_t m_height;
++    std::vector<SvgItem*> m_items; ///> 已封板的块 + 当前块(按插入序,即绘制序)
++    std::string m_liveData; ///> 当前块已累积的形状元素文本(不含 <svg> 包装)
++    SvgItem* m_liveItem; ///> 当前块对应的 item(等于 m_items.back();封板后置空)
++    std::size_t m_liveShapeCount; ///> 当前块已累积的形状数
++    std::size_t m_nextShapeId; ///> 下一个形状的 SVG id(与 exportSVG 的逐形状编号语义一致)
+ };
+ 
+ ImageTaskSvgScene::ImageTaskSvgScene() : ImageTaskScene(), d{std::make_unique<ImageTaskSvgScene::ImageTaskSvgSceneImpl>(this)}
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/scene/svgitem.cpp b/geometrize/scene/svgitem.cpp
+--- a/geometrize/scene/svgitem.cpp
++++ b/geometrize/scene/svgitem.cpp
+@@ -20,6 +20,15 @@
+ 	delete renderer();
+ }
+ 
++void SvgItem::setDocument(const QByteArray& data)
++{
++    // setSharedRenderer 不接管所有权,渲染器由本 item 持有(构造函数 new 出来、析构函数删),
++    // 故换文档时先取旧指针、装新渲染器、再删旧的——旧渲染器此刻已无人引用。
++    QSvgRenderer* previous{renderer()};
++    setSharedRenderer(new QSvgRenderer(data));
++    delete previous;
++}
++
+ }
+ 
+ }
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/scene/svgitem.h b/geometrize/scene/svgitem.h
+--- a/geometrize/scene/svgitem.h
++++ b/geometrize/scene/svgitem.h
+@@ -19,6 +19,13 @@
+     explicit SvgItem(const QByteArray& data);
+     virtual ~SvgItem();
+ 
++    /**
++     * @brief setDocument Replaces the SVG document rendered by this item.
++     * The item owns its renderer (see the constructor), so the previous one is destroyed here.
++     * @param data The SVG document data.
++     */
++    void setDocument(const QByteArray& data);
++
+     // NOTE unfortunately there isn't much point overriding the pointer events, because transparent parts of the image aren't ignored
+     // https://stackoverflow.com/questions/5026429/ignore-mouse-events-over-transparent-parts-of-an-svg-image-in-qgraphicsview
+ };
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/script/geometrizerengine.h b/geometrize/script/geometrizerengine.h
 --- a/geometrize/script/geometrizerengine.h
 +++ b/geometrize/script/geometrizerengine.h
@@ -3092,7 +3336,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  namespace serialization
  {
  
-@@ -40,7 +49,13 @@
+@@ -40,6 +49,28 @@
          ar(cereal::make_nvp(shapeTypesKey, options.shapeTypes));
          ar(cereal::make_nvp(randomSeedKey, options.seed));
          ar(cereal::make_nvp(maxThreadsKey, options.maxThreads));
@@ -3101,12 +3345,27 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        ar(cereal::make_nvp(alphaSearchKey, options.enhancements.alphaSearch));
 +        ar(cereal::make_nvp(errorGuideKey, options.enhancements.errorGuide));
 +        ar(cereal::make_nvp(segmentColorsKey, options.enhancements.segmentColors));
-         ar(cereal::make_nvp(shapeBounds, options.shapeBounds));
++        ar(cereal::make_nvp(shapeBounds, options.shapeBounds));
 +        ar(cereal::make_nvp(priorityRegionsKey, options.priorityRegions));
++        ar(cereal::make_nvp(scriptsEnabledKey, scriptsEnabled));
++        ar(cereal::make_nvp(scriptsKey, scripts));
++    }
++
++    /// 上游(及本分支早期版本)键集:缺少全部增强轨道键。
++    /// 仅供 load 的兼容回退读取;save 始终写新格式(文件在下一次保存时自升级)。
++    template<class Archive>
++    void archiveLegacy(Archive& ar, geometrize::ImageRunnerOptions& options, bool& scriptsEnabled, std::map<std::string, std::string>& scripts)
++    {
++        ar(cereal::make_nvp(shapeAlphaKey, options.alpha));
++        ar(cereal::make_nvp(maxShapeMutationsKey, options.maxShapeMutations));
++        ar(cereal::make_nvp(shapeCountKey, options.shapeCount));
++        ar(cereal::make_nvp(shapeTypesKey, options.shapeTypes));
++        ar(cereal::make_nvp(randomSeedKey, options.seed));
++        ar(cereal::make_nvp(maxThreadsKey, options.maxThreads));
+         ar(cereal::make_nvp(shapeBounds, options.shapeBounds));
          ar(cereal::make_nvp(scriptsEnabledKey, scriptsEnabled));
          ar(cereal::make_nvp(scriptsKey, scripts));
-     }
-@@ -52,7 +67,13 @@
+@@ -52,7 +83,13 @@
      const std::string shapeTypesKey{"shapeTypes"};
      const std::string randomSeedKey{"randomSeed"};
      const std::string maxThreadsKey{"maxThreads"};
@@ -3131,16 +3390,22 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
  #include "geometrize/commonutil.h"
  #include "geometrize/bitmap/bitmap.h"
-@@ -112,7 +113,7 @@
+@@ -112,7 +113,13 @@
      void stepModel()
      {
          const bool isScriptModeEnabled = m_preferences.isScriptModeEnabled();
 -        const auto imageRunnerOptions = m_preferences.getImageRunnerOptions();
 +        auto imageRunnerOptions = m_preferences.getImageRunnerOptions();
++
++        // C.1.4:应用侧固定开启形状边界 off-by-one 修复。库的 setup/mutate/rasterize 全程按排他上界
++        // 消费边界元组,而上游 mapShapeBoundsToImage 给的是闭区间上界(size-1),错配导致位图最右列与
++        // 最下行永不落画(矢量视图按浮点坐标绘制,故只有点阵视图看得出缺口)。库侧默认保持上游语义以
++        // 维持 bit-exact 对拍门禁,应用作为交付物在此显式开启,并同步用于下方脚本全局量。
++        imageRunnerOptions.fixShapeBoundsOffByOne = true;
  
          // Install the scripts that are required for the geometrization process
          m_geometrizer.installScripts(m_preferences.getScripts());
-@@ -124,6 +125,7 @@
+@@ -124,6 +131,7 @@
                  addShapePreconditionScripts.push_back(std::make_pair(script.first, script.second));
              }
          }
@@ -3148,7 +3413,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
          const auto addShapePreconditionFunction =
                  [this](const std::vector<std::pair<std::string, std::string>>& scripts)
-@@ -133,6 +135,9 @@
+@@ -133,6 +141,9 @@
                  return nullptr;
              }
  
@@ -3158,7 +3423,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              const geometrize::ShapeAcceptancePreconditionFunction g = [this, scripts](double lastScore,
                   double newScore,
                   const geometrize::Shape& shape,
-@@ -164,6 +169,11 @@
+@@ -164,6 +175,11 @@
              return g;
          }(addShapePreconditionScripts);
  
@@ -3170,7 +3435,16 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          // Opt out of the multithreaded scripts if the engine is disabled (use the default/C++ implementations)
          if(!isScriptModeEnabled) {
              emit q->signal_step(imageRunnerOptions, nullptr, nullptr, addShapePreconditionFunction);
-@@ -201,7 +211,17 @@
+@@ -172,7 +188,7 @@
+ 
+         const auto& target = m_worker.getTarget();
+ 
+-        const auto bounds = geometrize::commonutil::mapShapeBoundsToImage(imageRunnerOptions.shapeBounds, target);
++        const auto bounds = geometrize::commonutil::mapShapeBoundsToImage(imageRunnerOptions.shapeBounds, target, imageRunnerOptions.fixShapeBoundsOffByOne);
+ 
+         // Scripting is enabled - clone the entire geometrizer engine
+         // This is important because many threads will be working with it when geometrizing shapes
+@@ -201,7 +217,17 @@
  
      void drawShape(const std::shared_ptr<geometrize::Shape> shape, const geometrize::rgba color)
      {
@@ -3189,7 +3463,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void drawBackgroundRectangle(const geometrize::rgba color)
-@@ -211,7 +231,7 @@
+@@ -211,7 +237,7 @@
          const std::shared_ptr<geometrize::Rectangle> rectangle = std::make_shared<geometrize::Rectangle>(0, 0, w, h);
          rectangle->rasterize = [w, h](const geometrize::Shape& s) { return geometrize::rasterize(static_cast<const geometrize::Rectangle&>(s), 0, 0, w, h); };
  
@@ -3198,7 +3472,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void modelWillStep()
-@@ -224,6 +244,11 @@
+@@ -224,6 +250,11 @@
          emit q->signal_modelDidStep(shapes);
      }
  
@@ -3210,7 +3484,18 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      preferences::ImageTaskPreferences& getPreferences()
      {
          return m_preferences;
-@@ -256,6 +281,7 @@
+@@ -248,7 +279,9 @@
+ 
+         m_geometrizer.getEngine()->set_global(chaiscript::var(q), "task");
+ 
+-        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(shapeBounds, getTarget());
++        // 与 stepModel 同一修复开关:脚本全局量 xMax/yMax 必须与库实际使用的排他上界一致
++        // (内置 default_shape_mutators 模板一律按 xMax - 1 取闭区间上界)
++        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(shapeBounds, getTarget(), true);
+ 
+         m_geometrizer.getEngine()->set_global(chaiscript::var(xMin), "xMin");
+         m_geometrizer.getEngine()->set_global(chaiscript::var(yMin), "yMin");
+@@ -256,6 +289,7 @@
          m_geometrizer.getEngine()->set_global(chaiscript::var(yMax), "yMax");
  
          qRegisterMetaType<std::vector<geometrize::ShapeResult>>();
@@ -3218,7 +3503,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          qRegisterMetaType<geometrize::ImageRunnerOptions>();
          qRegisterMetaType<std::function<std::shared_ptr<geometrize::Shape>()>>();
          qRegisterMetaType<std::shared_ptr<geometrize::Shape>>();
-@@ -274,16 +300,20 @@
+@@ -274,16 +308,20 @@
      {
          q->connect(q, &ImageTask::signal_step, &m_worker, &ImageTaskWorker::step, connectionType);
          q->connect(q, &ImageTask::signal_drawShape, &m_worker, &ImageTaskWorker::drawShape, connectionType);
@@ -3239,7 +3524,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      ImageTask* q;
-@@ -293,6 +323,7 @@
+@@ -293,6 +331,7 @@
      QThread m_workerThread; ///> Thread that the image task worker runs on.
      ImageTaskWorker m_worker; ///> The image task worker.
      geometrize::script::GeometrizerEngine m_geometrizer; ///> The script-based geometrizer for the image task.
@@ -3247,7 +3532,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  };
  
  ImageTask::ImageTask(Bitmap& target, Qt::ConnectionType workerConnectionType) : QObject(),
-@@ -374,11 +405,21 @@
+@@ -374,11 +413,21 @@
      d->drawShape(shape, color);
  }
  
@@ -3269,7 +3554,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  void ImageTask::modelWillStep()
  {
      d->modelWillStep();
-@@ -389,6 +430,11 @@
+@@ -389,6 +438,11 @@
      d->modelDidStep(shapes);
  }
  
@@ -3762,7 +4047,57 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              if(image.getPixel(x, scanline.y).a < minAlpha) {
                  return true;
              }
-@@ -101,6 +105,31 @@
+@@ -72,35 +76,68 @@
+     return false;
+ }
+ 
+-std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image)
++std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image, const bool fixOffByOne)
+ {
++    // C.1.4:消费侧(setup/mutate/rasterize)把返回元组的 max 当排他上界用——内部一律 max-1 采样、
++    // clamp 到 max-1 裁剪——而上游这里给的是闭区间上界 size-1,错配使画布最右列/最下行永不落画。
++    // fixOffByOne 走文档契约的排他语义:百分比按整幅像素跨度换算,整图即 (0, 0, width, height)。
++    const std::int32_t imageWidth{static_cast<std::int32_t>(image.getWidth())};
++    const std::int32_t imageHeight{static_cast<std::int32_t>(image.getHeight())};
++    const std::int32_t widthExtent{fixOffByOne ? imageWidth : imageWidth - 1};
++    const std::int32_t heightExtent{fixOffByOne ? imageHeight : imageHeight - 1};
++
+     if(!options.enabled) {
+-        return { 0, 0, image.getWidth() - 1, image.getHeight() - 1 };
++        return { 0, 0, widthExtent, heightExtent };
+     }
+ 
+-    const double xMinPx = options.xMinPercent / 100.0 * static_cast<double>(image.getWidth() - 1);
+-    const double yMinPx = options.yMinPercent / 100.0 * static_cast<double>(image.getHeight() - 1);
+-    const double xMaxPx = options.xMaxPercent / 100.0 * static_cast<double>(image.getWidth() - 1);
+-    const double yMaxPx = options.yMaxPercent / 100.0 * static_cast<double>(image.getHeight() - 1);
+-
+-    std::int32_t xMin = static_cast<std::int32_t>(std::round(std::min(std::min(xMinPx, xMaxPx), image.getWidth() - 1.0)));
+-    std::int32_t yMin = static_cast<std::int32_t>(std::round(std::min(std::min(yMinPx, yMaxPx), image.getHeight() - 1.0)));
+-    std::int32_t xMax = static_cast<std::int32_t>(std::round(std::min(std::max(xMinPx, xMaxPx), image.getWidth() - 1.0)));
+-    std::int32_t yMax = static_cast<std::int32_t>(std::round(std::min(std::max(yMinPx, yMaxPx), image.getHeight() - 1.0)));
++    const double xMinPx = options.xMinPercent / 100.0 * static_cast<double>(widthExtent);
++    const double yMinPx = options.yMinPercent / 100.0 * static_cast<double>(heightExtent);
++    const double xMaxPx = options.xMaxPercent / 100.0 * static_cast<double>(widthExtent);
++    const double yMaxPx = options.yMaxPercent / 100.0 * static_cast<double>(heightExtent);
++
++    std::int32_t xMin = static_cast<std::int32_t>(std::round(std::min(std::min(xMinPx, xMaxPx), static_cast<double>(widthExtent))));
++    std::int32_t yMin = static_cast<std::int32_t>(std::round(std::min(std::min(yMinPx, yMaxPx), static_cast<double>(heightExtent))));
++    std::int32_t xMax = static_cast<std::int32_t>(std::round(std::min(std::max(xMinPx, xMaxPx), static_cast<double>(widthExtent))));
++    std::int32_t yMax = static_cast<std::int32_t>(std::round(std::min(std::max(yMinPx, yMaxPx), static_cast<double>(heightExtent))));
+ 
+     // If we have a bad width or height, which is bound to cause problems - use the whole image
+     if(xMax - xMin <= 1) {
+         xMin = 0;
+-        xMax = image.getWidth() - 1;
++        xMax = widthExtent;
+     }
+     if(yMax - yMin <= 1) {
+         yMin = 0;
+-        yMax = image.getHeight() - 1;
++        yMax = heightExtent;
+     }
+ 
      return std::make_tuple(xMin, yMin, xMax, yMax);
  }
  
@@ -3810,10 +4145,19 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  }
  
  namespace geometrize
-@@ -71,6 +76,16 @@
+@@ -67,9 +72,23 @@
+  * @brief mapShapeBoundsToImage Maps the given shape bound percentages to the given image, returning a bounding rectangle, or the whole image if the bounds were invalid
+  * @param The options to map to the image
+  * @param The image to map the options around
++ * @param fixOffByOne 返回排他上界(C.1.4 修复语义):整图 = (0, 0, width, height)。
++ *        默认 false = 上游语义(闭区间上界,整图 = (0, 0, width-1, height-1))。
++ *        消费侧 setup/mutate/rasterize 全程按排他上界解释该元组(内部一律 max-1 / clamp 到 max-1),
++ *        故上游语义下画布最右列与最下行不可达。
+  * @return The mapped shape bounds (xMin, yMin, xMax, yMax)
   */
- std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image);
- 
+-std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image);
++std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBoundsToImage(const geometrize::ImageRunnerShapeBoundsOptions& options, const geometrize::Bitmap& image, bool fixOffByOne = false);
++
 +/**
 + * @brief mapPriorityRegionsToImage Converts priority region rectangles from percentages (0-100%) to
 + * whole-image pixel coordinates (closed intervals, clamped to the image). Degenerate rectangles
@@ -3823,18 +4167,18 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 + * @return Pixel-coordinate region rectangles.
 + */
 +std::vector<geometrize::core::RegionRect> mapPriorityRegionsToImage(const std::vector<geometrize::ImageRunnerPriorityRegionOptions>& regions, const geometrize::Bitmap& image);
-+
- }
  
  }
+ 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/core/errorweightmap.cpp b/lib/geometrize/geometrize/geometrize/core/errorweightmap.cpp
 --- a/lib/geometrize/geometrize/geometrize/core/errorweightmap.cpp
 +++ b/lib/geometrize/geometrize/geometrize/core/errorweightmap.cpp
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,143 @@
 +#include "errorweightmap.h"
 +
 +#include <cassert>
 +#include <algorithm>
++#include <cstdlib>
 +
 +#include "../bitmap/bitmap.h"
 +#include "../commonutil.h"
@@ -4214,7 +4558,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = s.m_score;
          if(energy >= bestEnergy) {
              s = undo;
-@@ -59,18 +153,197 @@
+@@ -59,18 +153,199 @@
      return bestState;
  }
  
@@ -4369,6 +4713,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    std::uint32_t acceptRun{0};      // 连续接受计数(降档用)
 +
 +    std::uint32_t age{0};
++    // rejectHalveInterval==0 时 age % 0 是模零 UB(结构体公开可构造,入口无校验),钳回默认 8
++    const std::uint32_t rejectInterval{enhancements.rejectHalveInterval == 0U ? 8U : enhancements.rejectHalveInterval};
 +    while(age < maxAge) {
 +        const geometrize::State undo{s.mutate(enhancements.adaptiveStep ? stepShift : 0)};
 +        rasterizeIntoVector(*s.m_shape, lines);
@@ -4392,7 +4738,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        }
 +        age++;
 +        // age 本身就是"连续拒绝计数"(接受时被 -1 清零):每满 rejectHalveInterval 升一档
-+        if(enhancements.adaptiveStep && age > 0 && (age % enhancements.rejectHalveInterval) == 0
++        if(enhancements.adaptiveStep && age > 0 && (age % rejectInterval) == 0
 +                && stepShift < enhancements.maxStepShift) {
 +            stepShift++;
 +        }
@@ -4424,7 +4770,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
          const std::uint32_t alpha,
          const std::uint32_t n,
-@@ -78,15 +351,49 @@
+@@ -78,15 +353,49 @@
          const geometrize::Bitmap& current,
          geometrize::Bitmap& buffer,
          const double lastScore,
@@ -4479,7 +4825,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = state.m_score;
          if(i == 0 || energy < bestEnergy) {
              bestEnergy = energy;
-@@ -119,6 +426,27 @@
+@@ -119,6 +428,27 @@
      return geometrize::core::differencePartial(target, current, buffer, score, lines); // Get error measure between areas of current and modified buffers covered by scanlines
  }
  
@@ -4507,7 +4853,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  geometrize::rgba computeColor(
          const geometrize::Bitmap& target,
          const geometrize::Bitmap& current,
-@@ -134,27 +462,33 @@
+@@ -134,27 +464,33 @@
      std::int64_t totalGreen{0};
      std::int64_t totalBlue{0};
      std::int64_t count{0};
@@ -4555,7 +4901,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              count++;
          }
      }
-@@ -171,6 +505,90 @@
+@@ -171,6 +507,90 @@
      return geometrize::rgba{r, g, b, alpha};
  }
  
@@ -4646,7 +4992,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  double differenceFull(const geometrize::Bitmap& first, const geometrize::Bitmap& second)
  {
      assert(first.getWidth() == second.getWidth());
-@@ -180,15 +598,21 @@
+@@ -180,15 +600,21 @@
      const std::size_t height{first.getHeight()};
      std::uint64_t total{0};
  
@@ -4674,7 +5020,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              total += (dr * dr + dg * dg + db * db + da * da);
          }
      }
-@@ -202,24 +626,39 @@
+@@ -202,24 +628,39 @@
          const double score,
          const std::vector<Scanline>& lines)
  {
@@ -4730,7 +5076,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
              total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
              total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
-@@ -243,8 +682,57 @@
+@@ -243,8 +684,57 @@
  {
      const EnergyFunction& e = customEnergyFunction ? customEnergyFunction : geometrize::core::defaultEnergyFunction;
  
@@ -4936,7 +5282,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/exporter/shapejsonexporter.cpp b/lib/geometrize/geometrize/geometrize/exporter/shapejsonexporter.cpp
 --- a/lib/geometrize/geometrize/geometrize/exporter/shapejsonexporter.cpp
 +++ b/lib/geometrize/geometrize/geometrize/exporter/shapejsonexporter.cpp
-@@ -36,7 +36,29 @@
+@@ -36,7 +36,30 @@
              }
          }
          stream << "],\"color\":[" << static_cast<std::uint32_t>(color.r) << "," << static_cast<std::uint32_t>(color.g) << "," << static_cast<std::uint32_t>(color.b) << "," << static_cast<std::uint32_t>(color.a) << "],";
@@ -4956,7 +5302,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +                       << "," << static_cast<std::uint32_t>(seg.color.g)
 +                       << "," << static_cast<std::uint32_t>(seg.color.b)
 +                       << "," << static_cast<std::uint32_t>(seg.color.a) << "]}";
-+                if(k <= s.segments.size() - 2) {
++                // k+1 < size 而非 size-2:单段时 size_t 下溢会输出尾逗号,产生非法 JSON
++                if(k + 1 < s.segments.size()) {
 +                    stream << ",";
 +                }
 +            }
@@ -5074,7 +5421,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  }
  
  namespace geometrize
-@@ -242,12 +330,20 @@
+@@ -242,12 +330,21 @@
      return ::getSingleShapeSVGData(color, shape, options);
  }
  
@@ -5092,20 +5439,22 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
      stream << "<?xml version=\"1.0\" standalone=\"no\"?>" << "\n";
 -    stream << "<svg xmlns=\"https://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
++    // SVG 命名空间必须是 http(s 协议头会让浏览器拒绝按 SVG 渲染,退回 XML 文档树模式)
 +    stream << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
                "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
                "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
  
-@@ -263,7 +359,7 @@
+@@ -262,19 +359,31 @@
+ {
      std::stringstream stream;
  
-     stream << "<?xml version=\"1.0\" standalone=\"no\"?>" << "\n";
+-    stream << "<?xml version=\"1.0\" standalone=\"no\"?>" << "\n";
 -    stream << "<svg xmlns=\"https://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
-+    stream << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
-               "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
-               "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
- 
-@@ -272,7 +368,8 @@
+-              "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
+-              "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
+-
+     for(std::size_t i = 0; i < data.size(); i++) {
+         options.itemId = i;
  
          const geometrize::ShapeResult& s(data[i]);
  
@@ -5114,7 +5463,25 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        stream << geometrize::exporter::getSingleShapeSVGData(s.color, *(s.shape), s.segments, options);
      }
  
++    // 文档包装与 exportSVGDocument 同源:片段累积式调用方(应用矢量预览)拼出的文档与本函数逐字节一致
++    return geometrize::exporter::exportSVGDocument(stream.str(), width, height);
++}
++
++std::string exportSVGDocument(const std::string& shapeData, const std::uint32_t width, const std::uint32_t height)
++{
++    std::stringstream stream;
++
++    stream << "<?xml version=\"1.0\" standalone=\"no\"?>" << "\n";
++    // SVG 命名空间必须是 http(s 协议头会让浏览器拒绝按 SVG 渲染,退回 XML 文档树模式)
++    stream << "<svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.2\" baseProfile=\"tiny\" " <<
++              "width=\"" << width << "\" " << "height=\"" << height << "\" " <<
++              "viewBox=\"" << 0 << " " << 0 << " " << width << " " << height << "\">" << "\n";
++
++    stream << shapeData;
++
      stream << "</svg>";
+ 
+     return stream.str();
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/exporter/svgexporter.h b/lib/geometrize/geometrize/geometrize/exporter/svgexporter.h
 --- a/lib/geometrize/geometrize/geometrize/exporter/svgexporter.h
 +++ b/lib/geometrize/geometrize/geometrize/exporter/svgexporter.h
@@ -5146,6 +5513,24 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * @brief exportSVG Exports a single shape as a complete SVG image.
   * @param color The color of the shape to export.
   * @param shape The shape to export.
+@@ -68,6 +82,17 @@
+  */
+ std::string exportSVG(const std::vector<geometrize::ShapeResult>& data, const std::uint32_t width, const std::uint32_t height, SVGExportOptions options = SVGExportOptions{});
+ 
++/**
++ * @brief exportSVGDocument 把已序列化的形状片段(每项即 getSingleShapeSVGData 的输出)包成完整 SVG 文档。
++ * 供需要增量累积形状的调用方(应用的矢量预览视图:按批追加片段、整体替换渲染器,避免每批新建一个
++ * 全画布图层)复用 exportSVG 的文档包装,保证预览与导出文件的文档头尾同源。
++ * @param shapeData 拼接好的形状元素文本(不含 <svg> 包装)。
++ * @param width The width of the SVG image.
++ * @param height The height of the SVG image.
++ * @return A string representing the SVG image.
++ */
++std::string exportSVGDocument(const std::string& shapeData, const std::uint32_t width, const std::uint32_t height);
++
+ }
+ 
+ }
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/model.cpp b/lib/geometrize/geometrize/geometrize/model.cpp
 --- a/lib/geometrize/geometrize/geometrize/model.cpp
 +++ b/lib/geometrize/geometrize/geometrize/model.cpp
@@ -5503,7 +5888,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      {
          // Ensure that the maximum number of threads is a sane value
          if(maxThreads == 0) {
-@@ -99,34 +388,77 @@
+@@ -99,34 +388,88 @@
              }
          }
  
@@ -5590,24 +5975,35 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +                    }
 +                });
 +            }
++            // 先 drain 全部任务再重抛:pool 的 packaged_task future 析构不等待,
++            // 立即重抛会让未完成任务继续写已析构的 states(上游 std::async 的
++            // future 析构阻塞,恰好屏蔽了这一点)。保留上游"抛首个异常"的可见行为。
++            std::exception_ptr firstError;
 +            for(auto& f : futures) {
 +                try {
 +                    f.get();
 +                } catch(std::exception& e) {
 +                    assert(0 && "Encountered exception when getting hill climb state");
 +                    std::cout << e.what() << std::endl;
-+                    throw; // 按原异常对象重抛(上游按值 throw e 会切掉多态)
++                    if(!firstError) {
++                        firstError = std::current_exception();
++                    }
 +                } catch (...) {
 +                    assert(0 && "Encountered exception when getting hill climb state");
-+                    throw;
++                    if(!firstError) {
++                        firstError = std::current_exception();
++                    }
 +                }
++            }
++            if(firstError) {
++                std::rethrow_exception(firstError); // 按原异常对象重抛(上游按值 throw e 会切掉多态)
              }
          }
 +
          return states;
      }
  
-@@ -137,9 +469,12 @@
+@@ -137,9 +480,12 @@
              const std::uint32_t maxShapeMutations,
              const std::uint32_t maxThreads,
              const geometrize::core::EnergyFunction& energyFunction,
@@ -5622,7 +6018,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          if(states.empty()) {
              assert(0 && "Failed to get a hill climb state");
              return {};
-@@ -151,22 +486,68 @@
+@@ -151,22 +497,68 @@
  
          // Draw the shape onto the image
          const std::shared_ptr<geometrize::Shape> shape = it->m_shape;
@@ -5701,7 +6097,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          return { result };
      }
  
-@@ -179,11 +560,49 @@
+@@ -179,11 +571,49 @@
          geometrize::drawLines(m_current, color, lines);
  
          m_lastScore = geometrize::core::differencePartial(m_target, before, m_current, m_lastScore, lines);
@@ -5751,7 +6147,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      geometrize::Bitmap& getTarget()
      {
          return m_target;
-@@ -210,10 +629,45 @@
+@@ -210,10 +640,45 @@
      }
  
  private:
@@ -5797,7 +6193,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      std::atomic<std::uint32_t> m_baseRandomSeed; ///< The base value used for seeding the random number generator (the one the user has control over).
      std::atomic<std::uint32_t> m_randomSeedOffset; ///< Seed used for random number generation. Note: incremented by each std::async call used for model stepping.
  };
-@@ -249,9 +703,12 @@
+@@ -249,9 +714,12 @@
          const std::uint32_t maxShapeMutations,
          const std::uint32_t maxThreads,
          const geometrize::core::EnergyFunction& energyFunction,
@@ -5812,7 +6208,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  }
  
  geometrize::ShapeResult Model::drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color)
-@@ -259,6 +716,11 @@
+@@ -259,6 +727,11 @@
      return d->drawShape(shape, color);
  }
  
@@ -6123,7 +6519,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
      for(const geometrize::Scanline& line : scanlines) {
          if(line.y < minY || line.y >= maxY) {
-@@ -31,11 +33,46 @@
+@@ -31,11 +33,66 @@
          if(line.x1 > line.x2) {
              continue;
          }
@@ -6142,18 +6538,38 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    std::vector<geometrize::Scanline> downscaled;
 +    downscaled.reserve(lines.size());
 +
++    // 折叠与就地合并都要求输入按 (y, x1, x2) 升序。多边形光栅化天然满足;
++    // 但 Line/Polyline/QuadraticBezier 按路径顺序输出(上行线为降序、锯齿折线
++    // 同 y 不相邻),乱序时同一半行会产出重叠区间,能量按像素累加被重复计费。
++    // 先检测顺序,乱序才拷贝排序;有序主路径(多边形)保持零拷贝。
++    const auto ordered = [](const Scanline& a, const Scanline& b) {
++        if(a.y != b.y) {
++            return a.y < b.y;
++        }
++        if(a.x1 != b.x1) {
++            return a.x1 < b.x1;
++        }
++        return a.x2 < b.x2;
++    };
++    std::vector<geometrize::Scanline> sorted;
++    if(!std::is_sorted(lines.begin(), lines.end(), ordered)) {
++        sorted = lines;
++        std::sort(sorted.begin(), sorted.end(), ordered);
++    }
++    const std::vector<geometrize::Scanline>& src{sorted.empty() ? lines : sorted};
++
 +    // 相邻行对 (2k, 2k+1) 折叠为半分辨率行 k;x 取并后 floor 除 2:
 +    // 覆盖区只放不放收,搜索阶段的评估偏保守,不影响最终全分辨率判定。
 +    // 细形状(Line/Polyline)同一源行可有多条退化扫描线,折叠后同一半分辨率
 +    // 行可能落出相交区间——能量函数按像素遍历,重复覆盖会被重复累加,
 +    // 故与上一条同行的相交区间就地合并,保证输出行内互不重叠。
-+    for(std::size_t i = 0; i < lines.size();) {
-+        const std::int32_t y{lines[i].y / 2};
-+        std::int32_t x1{lines[i].x1};
-+        std::int32_t x2{lines[i].x2};
-+        if(i + 1 < lines.size() && lines[i + 1].y / 2 == y) {
-+            x1 = (std::min)(x1, lines[i + 1].x1);
-+            x2 = (std::max)(x2, lines[i + 1].x2);
++    for(std::size_t i = 0; i < src.size();) {
++        const std::int32_t y{src[i].y / 2};
++        std::int32_t x1{src[i].x1};
++        std::int32_t x2{src[i].x2};
++        if(i + 1 < src.size() && src[i + 1].y / 2 == y) {
++            x1 = (std::min)(x1, src[i + 1].x1);
++            x2 = (std::max)(x2, src[i + 1].x2);
 +            i += 2;
 +        } else {
 +            i += 1;
@@ -6175,7 +6591,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/rasterizer/scanline.h b/lib/geometrize/geometrize/geometrize/rasterizer/scanline.h
 --- a/lib/geometrize/geometrize/geometrize/rasterizer/scanline.h
 +++ b/lib/geometrize/geometrize/geometrize/rasterizer/scanline.h
-@@ -49,4 +49,17 @@
+@@ -49,4 +49,18 @@
   */
  std::vector<geometrize::Scanline> trimScanlines(const std::vector<geometrize::Scanline>& scanlines, std::int32_t minX, std::int32_t minY, std::int32_t maxX, std::int32_t maxY);
  
@@ -6184,7 +6600,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 + * 金字塔搜索轨道专用:形状坐标留在全分辨率空间,仅评估时把覆盖区投影到半分辨率图上。
 + * 相邻行对 (2k, 2k+1) 合并为半分辨率行 k,x 范围取两行的并(除以 2 向下取整,
 + * 保守超覆盖——搜索启发式允许,最终接受判定仍在全分辨率进行)。
-+ * 输入须按 y 升序(库内所有光栅化输出均满足),单趟 O(n)。
++ * 输入按 (y, x1, x2) 升序时单趟 O(n);线型形状(Line/Polyline/QuadraticBezier)
++ * 按路径顺序输出,函数内部先检测顺序、乱序才拷贝排序归一(多边形主路径零拷贝)。
 + * @param lines The full-resolution scanlines to project.
 + * @param halfWidth The width of the half-resolution bitmap (ceil(fullWidth / 2)).
 + * @param halfHeight The height of the half-resolution bitmap (ceil(fullHeight / 2)).
@@ -6196,6 +6613,15 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/runner/imagerunner.cpp b/lib/geometrize/geometrize/geometrize/runner/imagerunner.cpp
 --- a/lib/geometrize/geometrize/geometrize/runner/imagerunner.cpp
 +++ b/lib/geometrize/geometrize/geometrize/runner/imagerunner.cpp
+@@ -30,7 +30,7 @@
+                                               geometrize::core::EnergyFunction energyFunction,
+                                               geometrize::ShapeAcceptancePreconditionFunction addShapePrecondition)
+     {
+-        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(options.shapeBounds, m_model.getTarget());
++        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(options.shapeBounds, m_model.getTarget(), options.fixShapeBoundsOffByOne);
+         const geometrize::ShapeTypes types = options.shapeTypes;
+ 
+         if(!shapeCreator) {
 @@ -38,7 +38,8 @@
          }
  
@@ -6238,11 +6664,12 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * @brief The ImageRunnerOptions class encapsulates preferences/options that the image runner uses.
   * @author Sam Twidale (https://samcodes.co.uk/)
   */
-@@ -33,7 +47,10 @@
+@@ -33,7 +47,11 @@
      std::uint32_t maxShapeMutations = 100U; ///< The maximum number of times each candidate shape will be modified to attempt to find a better fit.
      std::uint32_t seed = 9001U; ///< The seed for the random number generators used by the image runner.
      std::uint32_t maxThreads = 0; ///< The maximum number of separate threads for the implementation to use. 0 lets the implementation choose a reasonable number.
 +    bool pyramidSearch = false; ///< 金字塔搜索:hill-climb 评估在半分辨率图上进行(算法增强轨道,输出与全分辨率搜索不同属预期)。自定义 energyFunction 存在时被忽略。
++    bool fixShapeBoundsOffByOne = false; ///< 形状边界 off-by-one 修复(C.1.4,默认关=上游语义)。上游 mapShapeBoundsToImage 返回闭区间上界(size-1),而 setup/mutate/rasterize 全程按排他上界消费该元组(内部一律用 max-1 / clamp 到 max-1),两者错配导致画布最右列与最下行永不落画。开启后按本结构体上方文档契约返回排他上界(整图 = (0,0,width,height)),形状位置采样范围与光栅化裁剪范围同时恢复完整。改变输出,故为显式开关而非默认行为。
 +    core::HillClimbEnhancements enhancements{}; ///< 增强爬山开关集(自适应步长/alpha 档位搜索,算法增强轨道,默认全关)。
      ImageRunnerShapeBoundsOptions shapeBounds{}; ///< If zero or do not form a rectangle, the entire target image is used i.e. (0, 0, imageWidth, imageHeight)
 +    std::vector<ImageRunnerPriorityRegionOptions> priorityRegions; ///< 区域优先绘制(F3.2):区域内误差块加权;空 = 无区域。仅 errorGuide 开启时生效

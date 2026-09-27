@@ -30,7 +30,7 @@ public:
                                               geometrize::core::EnergyFunction energyFunction,
                                               geometrize::ShapeAcceptancePreconditionFunction addShapePrecondition)
     {
-        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(options.shapeBounds, m_model.getTarget());
+        const auto [xMin, yMin, xMax, yMax] = geometrize::commonutil::mapShapeBoundsToImage(options.shapeBounds, m_model.getTarget(), options.fixShapeBoundsOffByOne);
         const geometrize::ShapeTypes types = options.shapeTypes;
 
         if(!shapeCreator) {
