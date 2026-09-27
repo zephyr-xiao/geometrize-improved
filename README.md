@@ -94,7 +94,7 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 │   ├─ test\                   # doctest 单元测试(双变体链接,89 用例 × fast / 39 × base,
 │   │                          #   另有 16 个 Model 级用例暂以 #if 0 // CD 禁用,见 src\test\test_model.cpp)
 │   └─ improved-app\           # 应用改进工作树(含改进版库 + 全部应用层 patch,可 qmake 构建)
-├─ tools\run_ab.ps1             # A/B 对拍矩阵(26 用例,全 PASS 才允许合入;12 bit-exact + 14 EXPECTED_DIFF 分叉哨兵)
+├─ tools\run_ab.ps1             # A/B 对拍矩阵(26 用例,全 PASS 才允许合入;11 bit-exact + 15 EXPECTED_DIFF 分叉哨兵)
 ├─ tools\verify_patches.py      # 补丁↔工作树一致性双门禁(重放复现 + 归档新鲜度,lib 侧失败禁合入)
 ├─ tools\svgscene-bench\        # 矢量视图渲染开销离屏基准(四方案对比 + 画面等价性,见 F3.9)
 ├─ benchmarks\report.md         # 性能报告(分阶段数据 + 大图可行性)
@@ -108,7 +108,7 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 cd src\geobench
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
-powershell -ExecutionPolicy Bypass -File tools\run_ab.ps1   # 26/26 PASS(含 14 个 EXPECTED_DIFF 分叉锁定用例)
+powershell -ExecutionPolicy Bypass -File tools\run_ab.ps1   # 26/26 PASS(含 15 个 EXPECTED_DIFF 分叉锁定用例)
 # geobench 额外参数:--shape-bounds x1,y1,x2,y2(百分比视口)、--dump-final PATH(位图留痕)
 # 算法增强轨道:--pyramid(金字塔搜索)、--adaptive-step(自适应步长)、--alpha-search( alpha 档位搜索)、
 #   --quality-report N(每 N 步打印相似度分数)

@@ -3,7 +3,7 @@
 // 注:文中以 "#if 0 // CD" 禁用的 16 个用例为暂缓启用的 Model 级哨兵(区域优先、
 // 分段颜色、四开关组合确定性、T7 不变量、异常传播/池存活等,2026-09-13 盘点)。
 // 这些特性行为当前由 tools/run_ab.ps1 的 EXPECTED_DIFF 哨兵端到端覆盖;
-// 重启用前 README 的用例数口径按 89(fast)/ 39(base) 计。启用原因/跟踪项待补。
+// 重启用前 README 的用例数口径按 89(fast)/ 39(base) 计。跟踪项:docs/ROADMAP.md §4 Q4.5。
 #include "doctest.h"
 
 #include <algorithm>
