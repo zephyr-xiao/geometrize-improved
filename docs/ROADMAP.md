@@ -225,6 +225,40 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 
 ---
 
+## 4.6 审查轮遗留项 — □ 跟踪项(2026-09-29 建档)
+
+2026-09-29 六路并行深审的 P0/P1 与大部分 P2 已修(见 README 审查轮修复清单),以下为**有意未做**的项,
+按性质分组,接手时按需挑:
+
+**A. 修它要动 bit-exact 或需产品决策**
+1. C.1.4 仍有 5 处按闭区间消费形状边界(`shapemutator` 的 Line/Polyline setup 起点、RotatedRectangle 的
+   setup/mutate、Triangle 的 mutate):其余 20+ 处用 `xMax-1`,这 5 处用 `xMax`,导致 fix 关闭时
+   triangle/rrect 顶点可落到最后一列而 rasterize 裁到 `xMax-1`(点阵与矢量视图 1px 不一致)。
+   统一成 `xMax-1` 会改变输出、破坏 bit-exact 门禁,故需与 `fixShapeBoundsOffByOne` 同轨设计后再动。
+
+**B. 工具链与门禁的已知口径缺口(已在报告里声明,未改行为)**
+2. `verify_patches.py` 的行尾归一使"纯行尾变更"对 G1/G2 完全不可见(设计取舍;bat 必须 CRLF 的约定靠人守);
+3. `BIN_EXT` 增删会让归档 diff 的 echo 行全变 → G2 全量报漂移(fail-closed,但会误以为"补丁全废");
+4. `test_goldens.h` / `--dump-golden` 仍是死代码占位(函数级 golden 未接线);端到端值级锁定已由
+   `tools/goldens.csv` 承担,是否接线或删除待定;
+5. `--dump-final` 非原子写且失败静默;`gen_test_images.py` 不生成矩阵依赖的 `tree_under_clouds.png`;
+   `svgscene-bench` 链接硬编码 Release `.lib`、内存列是推算值(未计"单件多渲染"的 renderer 内存);
+   `sha256.h` 缺 `<algorithm>`(靠传递包含);
+6. `src/test` 不在补丁门禁覆盖范围内(改测试不受 G1/G2 约束;ctest 计数与 run_ab 值级锁定可部分兜底)。
+
+**C. 应用层未修的 P2/P3**
+7. 16 区域上限无 UI 反馈(第 17 次拖拽静默丢弃);导出命名只靠内存计数器(不查磁盘,重跑会覆盖);
+   后台导出不可取消;导出侧缺"segments 与扫描线不齐时退单色"的回退(库侧 `drawShape` 有);
+   `taskqueuewindow` 在列表项回调里 `delete item`(继承上游的脆弱写法);
+   GIF 输出尺寸窄化到 uint16(宽 >8191 的输入可触发);脚本下拉 `operator[]` 副作用;
+   撤销重放按需拷贝量 O(N²)(共享 shared_ptr,无形状深拷贝)。
+
+**D. 未做的验证**
+8. 应用层修复只做了**构建 + 启动冒烟**;撤销/重做、批处理队列、GIF/PNG 导出的交互路径未逐项真机回归
+   (A1 前条件脚本克隆、A3 合帧快照、A5 区域勾选、A7 Loop Forever 等改动都值得真机过一遍)。
+
+---
+
 ## 5. 推荐执行顺序(下次对话可直接引用)
 
 ```
