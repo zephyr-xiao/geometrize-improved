@@ -1503,6 +1503,11 @@ Title for the app settings section that contains options that affect the area of
         <extracomment>Status bar message shown when the automatic export output directory could not be created</extracomment>
         <translation>无法创建输出目录:%1</translation>
     </message>
+    <message>
+        <source>Failed to export some results to %1</source>
+        <extracomment>Status bar message shown when one or more batch exports failed to write to disk (e.g. disk full or read-only directory)</extracomment>
+        <translation>部分结果导出失败:%1</translation>
+    </message>
 </context>
 <context>
     <name>geometrize::dialog::ImageTaskRunnerWidget</name>

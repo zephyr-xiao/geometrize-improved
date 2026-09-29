@@ -91,6 +91,10 @@ public:
                 m_liveItem->setFlags(QGraphicsItem::ItemClipsToShape);
                 // 静态 SVG 用设备坐标位图缓存,命中后免去每帧对 item 重过 QSvgRenderer
                 m_liveItem->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
+                // QGraphicsSvgItem 默认把 maximumCacheSize 设为 1024×768,而分块 item 的
+                // boundingRect 是整幅画布:视口或缩放一旦让设备矩形超过该上限,QGraphicsScene
+                // 会整体旁路设备坐标缓存(每帧重解析 SVG),QPixmapCache 上限调多大都没用。
+                m_liveItem->setMaximumCacheSize(QSize(4096, 4096));
                 q->addItem(m_liveItem);
                 m_liveItem->setZValue(0);
                 m_items.push_back(m_liveItem);

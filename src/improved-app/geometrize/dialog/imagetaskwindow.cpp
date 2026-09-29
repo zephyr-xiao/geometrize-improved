@@ -418,6 +418,16 @@ public:
             ui->scriptsWidget->evaluateOnTimedUpdateEventScripts();
         });
 
+        // 33ms 合帧定时器:单发 + 以窗口为接收者(窗口销毁自动断连);Impl 析构时显式停止,
+        // 避免回调在 Impl 已析构后触发(旧写法用 QPointer 守护窗口,但 Impl 早于窗口的 ~QObject 析构)
+        m_sceneUpdateTimer.setSingleShot(true);
+        m_sceneUpdateTimer.setInterval(33);
+        connect(&m_sceneUpdateTimer, &QTimer::timeout, q, [this]() { flushPendingSceneUpdate(); });
+
+        // 脚本增删后重新判定 timed-update 轮询是否需要运行(构造期脚本尚未装载,不能只在那里判定)
+        connect(ui->scriptsWidget, &geometrize::dialog::ImageTaskScriptingWidget::signal_scriptChanged, q,
+                [this](const std::string&, const std::string&) { syncScriptUpdateTimer(); });
+
         // Before shapes are added, evaluate he pre-add shape callbacks
         connect(&m_shapes, &geometrize::task::ShapeCollection::signal_beforeAppendShapes, [this](const std::vector<geometrize::ShapeResult>&) {
             ui->scriptsWidget->evaluateBeforeAddShapeScripts();
@@ -445,9 +455,7 @@ public:
 
         // Update the graphical image views after shapes are added.
         // 节流合帧:高速步进时每步一次全图 Bitmap→QPixmap 上传代价高,改为 33ms 合并窗口,
-        // 到期时按"当时"的任务画面渲染一次,视觉上与逐步刷新无差。
-        // 注:Impl 非 QObject,不能用作 singleShot 的 context receiver;以 QPointer 守护窗口
-        // 存活,窗口销毁后待触发合帧自动失效。
+        // 到期时按"当时"的画面渲染一次,视觉上与逐步刷新无差。
         connect(&m_shapes, &geometrize::task::ShapeCollection::signal_afterAppendShapes, [this](const std::vector<geometrize::ShapeResult>& shapes) {
             // ShapeResult 成员为 const(不可赋值),只能追加构造:重建整个待渲染列表
             m_pendingSceneShapes.reserve(m_pendingSceneShapes.size() + shapes.size());
@@ -456,25 +464,12 @@ public:
             }
             if(!m_sceneUpdatePending) {
                 m_sceneUpdatePending = true;
-                QPointer<ImageTaskWindow> guard{q};
-                QTimer::singleShot(33, [this, guard] {
-                    if(guard.isNull()) {
-                        return;
-                    }
-                    m_sceneUpdatePending = false;
-                    if(m_task == nullptr) {
-                        m_pendingSceneShapes.clear();
-                        return;
-                    }
-                    // 重放在途:此刻位图正被 worker 重写,不作废场景也不读位图,didReplay 会做权威刷新
-                    if(m_replayInFlight) {
-                        m_pendingSceneShapes.clear();
-                        return;
-                    }
-                    const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
-                    m_sceneManager.updateScenes(pixmap, m_pendingSceneShapes);
-                    m_pendingSceneShapes.clear();
-                });
+                // 本回调运行在 didStep 栅栏内(worker 阻塞在信号投递上),此刻读 m_current 安全。
+                // 快照只在此处取一次;33ms 后的渲染回调不再触碰 worker 的活位图。
+                if(m_task != nullptr && !m_replayInFlight) {
+                    m_pendingBitmap = m_task->getCurrent();
+                }
+                m_sceneUpdateTimer.start();
             }
         });
 
@@ -679,15 +674,48 @@ public:
         m_timeRunningTimer.start(static_cast<int>(m_timeRunningTimerResolutionMs));
 
         // Start the timer used to regularly update the associated image task's script engine (if any).
-        // 没有任何 timed-update 脚本时不启动轮询,避免空闲时 100ms 空转求值
+        // 没有任何 timed-update 脚本时不启动轮询,避免空闲时 100ms 空转求值。
+        // 注意:构造期脚本尚未装载(setImageTask 在构造之后调用),这里判定必然为假,
+        // 因此 setImageTask/脚本变更后必须重新判定——否则 on_timed_update 脚本永久失效。
         if(ui->scriptsWidget->hasTimedUpdateScripts()) {
             m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
         }
     }
+    /// timed-update 轮询定时器按需启停:脚本装载/变更后都要重新判定(构造期脚本尚未装载,判定必为假)
+    void syncScriptUpdateTimer()
+    {
+        if(ui->scriptsWidget->hasTimedUpdateScripts()) {
+            if(!m_scriptEngineUpdateTimer.isActive()) {
+                m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
+            }
+        } else if(m_scriptEngineUpdateTimer.isActive()) {
+            m_scriptEngineUpdateTimer.stop();
+        }
+    }
+
+    /// 合帧到期后的场景刷新:只渲染 didStep 栅栏内取的位图快照,不读 worker 的活位图
+    void flushPendingSceneUpdate()
+    {
+        m_sceneUpdatePending = false;
+        if(m_task == nullptr || m_replayInFlight) {
+            // 重放在途:位图正被 worker 重写,didReplay 会做权威刷新
+            m_pendingSceneShapes.clear();
+            return;
+        }
+        if(m_pendingBitmap.getWidth() == 0U || m_pendingBitmap.getHeight() == 0U) {
+            return; // 尚无快照(如刚切换任务):等下一次 append 在栅栏内取快照后再排定
+        }
+        const QPixmap pixmap{image::createPixmap(m_pendingBitmap)};
+        m_sceneManager.updateScenes(pixmap, m_pendingSceneShapes);
+        m_pendingSceneShapes.clear();
+    }
+
     ImageTaskWindowImpl& operator=(const ImageTaskWindowImpl&) = delete;
     ImageTaskWindowImpl(const ImageTaskWindowImpl&) = delete;
     ~ImageTaskWindowImpl()
     {
+        // 先停合帧定时器:回调持有 this(Impl),Impl 析构后不得再触发
+        m_sceneUpdateTimer.stop();
         // Sets the task in the UI etc to nothing (potentially autosaving stuff etc), then dispose of the task
         task::ImageTask* lastTask = getImageTask();
         setImageTask(nullptr);
@@ -731,6 +759,8 @@ public:
         q->willSwitchImageTask(lastTask, nextTask);
         m_task = nextTask;
         q->didSwitchImageTask(lastTask, nextTask);
+        // 任务切换后脚本集合随之变化(构造期判定为假):重新判定轮询是否需要运行
+        syncScriptUpdateTimer();
     }
 
     void revealLaunchWindow()
@@ -1125,6 +1155,10 @@ private:
     // 场景刷新节流:33ms 合帧期内累积的新形状,到期一次性渲染(见 signal_afterAppendShapes 连接处)
     bool m_sceneUpdatePending{false};
     std::vector<geometrize::ShapeResult> m_pendingSceneShapes;
+    // 位图快照:合帧回调不读 worker 的活位图——worker 步进时会就地改写同一缓冲(落画/回滚),
+    // 主线程此刻读它是数据竞争(实测撕裂帧)。改为在 didStep 栅栏内取一份快照,回调只渲染快照。
+    geometrize::Bitmap m_pendingBitmap;
+    QTimer m_sceneUpdateTimer; ///> 33ms 合帧定时器(单发);Impl 析构时显式停止,避免回调触碰已析构的 Impl
 };
 
 ImageTaskWindow::ImageTaskWindow() :

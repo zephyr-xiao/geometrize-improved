@@ -67,7 +67,10 @@ public:
         if(!comAvailable) {
             return;
         }
-        m_comOwned = SUCCEEDED(coInit);
+        // S_FALSE(本线程已按同一套间模型初始化过)时引用计数未增加,此时配对 CoUninitialize
+        // 会去减别人的计数(Qt 平台插件已 OleInitialize),可能把 OLE 提前拆掉。
+        // 只有本次真正初始化成功(S_OK)才由我们负责配对释放。
+        m_comOwned = (coInit == S_OK);
         const HRESULT hr{::CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskbarList3, reinterpret_cast<void**>(&m_taskbar))};
         if(FAILED(hr)) {
             m_taskbar = nullptr;
@@ -365,6 +368,11 @@ private:
             return;
         }
         const void* id{window.data()};
+        // 批次重置后迟到的完成信号(m_managedIds 已清)不得计入新批次:否则标题出现 "2/1" 这类
+        // 计数,且导出时查不到源图路径会回落到字面量 "task" 文件名(与销毁兜底同口径)
+        if(m_managedIds.find(id) == m_managedIds.end()) {
+            return;
+        }
         if(std::find(m_completedIds.begin(), m_completedIds.end(), id) != m_completedIds.end()) {
             return;
         }
@@ -475,10 +483,12 @@ private:
         const std::uint32_t width{current.getWidth()};
         const std::uint32_t height{current.getHeight()};
 
+        bool exportOk{true};
         if(config.png) {
             const QString pngPath{outputDir.filePath(uniqueName + ".png")};
             if(!geometrize::exporter::exportBitmap(current, pngPath.toStdString())) {
                 qWarning() << "Failed to export batch PNG:" << pngPath;
+                exportOk = false;
             }
         }
         if(config.svg) {
@@ -486,10 +496,18 @@ private:
             const std::vector<geometrize::ShapeResult>& shapes{window->getShapes()};
             const std::string svgData{geometrize::exporter::exportSVG(shapes, width, height)};
             if(!svgData.empty()) {
-                util::writeStringToFile(svgData, svgPath.toStdString());
+                if(!util::writeStringToFile(svgData, svgPath.toStdString())) {
+                    qWarning() << "Failed to export batch SVG:" << svgPath;
+                    exportOk = false;
+                }
             } else {
                 qWarning() << "Failed to export batch SVG:" << svgPath;
+                exportOk = false;
             }
+        }
+        if(!exportOk) {
+            // 此前写盘失败只进 qWarning:磁盘满/目录只读时进度条照走 N/N,用户会以为导出成功
+            q->statusBar()->showMessage(tr("Failed to export some results to %1").arg(config.directory), 8000);
         }
     }
 

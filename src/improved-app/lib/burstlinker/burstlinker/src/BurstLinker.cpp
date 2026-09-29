@@ -13,7 +13,8 @@ BurstLinker::~BurstLinker() {
 
 bool BurstLinker::init(const char *path, uint16_t width, uint16_t height, uint32_t loopCount, uint32_t threadNum) {
     gifEncoder = new GifEncoder();
-    return gifEncoder->init(path, width, height, 0, threadNum);
+    // loopCount 必须透传:此前写死 0 使"Loop Forever"勾选框完全失效(GIF 恒为无限循环)
+    return gifEncoder->init(path, width, height, loopCount, threadNum);
 }
 
 bool BurstLinker::connect(uint32_t *imagePixel, uint32_t delay,

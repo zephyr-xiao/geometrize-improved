@@ -170,10 +170,13 @@ bool exportGIF(
     std::size_t frameBegin = 0;
     std::size_t keptIndex = 0;
     for(std::size_t i = 0; i < data.size(); i++) {
-        if(frameSkipPredicate(i)) {
+        const bool isLast{(i == data.size() - 1U)};
+        // 末帧必取:末索引若被 frameSkipPredicate 提前 continue 掉,末帧与结尾停顿会一起丢失
+        // (默认 frameStep=20 时"形状数不是 20 的倍数"就是常态,等于该分支基本不可达)
+        if(frameSkipPredicate(i) && !isLast) {
             continue;
         }
-        const bool takeFrame = (keptIndex % frameStride == 0) || (i == data.size() - 1U); // 末帧必取
+        const bool takeFrame = (keptIndex % frameStride == 0) || isLast; // 末帧必取
         keptIndex++;
 
         // 固定帧率模式:统一延迟(下限 20ms,GIF 播放器对更短延迟的兼容性差);
@@ -181,7 +184,7 @@ bool exportGIF(
         std::uint32_t delayMs = (frameDelayMs > 0)
             ? std::max(20U, frameDelayMs)
             : (i == 0 ? 0U : std::max(20, static_cast<std::int32_t>(1000 / (i + 1))));
-        if(endPauseMs > 0 && i == data.size() - 1U) {
+        if(endPauseMs > 0 && isLast) {
             delayMs = endPauseMs; // Extra delay at end of animation
         }
 

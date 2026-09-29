@@ -141,10 +141,13 @@ public:
                 return nullptr;
             }
 
-            // 前条件脚本直接跑在主脚本引擎上,而库会在多个 hill-climb 线程并发调它 ——
-            // 与引擎逐线程克隆的设计冲突,构成数据竞争。启用时强制本步单线程恢复正确性
-            // (m_preconditionScriptsActive 已在上方按脚本清单置位)。
-            const geometrize::ShapeAcceptancePreconditionFunction g = [this, scripts](double lastScore,
+            // 前条件脚本跑在"每步克隆一次"的引擎上:库会在 hill-climb 线程里调它,而主线程
+            // 同时可能在 timed-update/hover 脚本上求值同一个主引擎 —— 直接跑主引擎是数据竞争。
+            // 与 shapeCreator 同法克隆;配合下方强制单线程,克隆引擎任一时刻只有一个 worker 在用。
+            auto preconditionEngine = std::make_shared<geometrize::script::GeometrizerEngine>(m_geometrizer.getEngine()->get_state());
+            preconditionEngine->installScripts(m_preferences.getScripts());
+
+            const geometrize::ShapeAcceptancePreconditionFunction g = [scripts, preconditionEngine](double lastScore,
                  double newScore,
                  const geometrize::Shape& shape,
                  const std::vector<geometrize::Scanline>& lines,
@@ -154,17 +157,17 @@ public:
                  const geometrize::Bitmap& target) {
                 std::vector<bool> retValues;
                 try {
-                    m_geometrizer.getEngine()->set_global(chaiscript::var(lastScore), "candidateShapeLastScore");
-                    m_geometrizer.getEngine()->set_global(chaiscript::var(newScore), "candidateShapeNextScore");
-                    m_geometrizer.getEngine()->set_global(chaiscript::var(shape), "candidateShape");
-                    m_geometrizer.getEngine()->set_global(chaiscript::var(lines), "candidateScanlines");
-                    m_geometrizer.getEngine()->set_global(chaiscript::var(color), "candidateShapeColor");
-                    m_geometrizer.getEngine()->set_global(chaiscript::var(before), "beforeBitmap");
-                    m_geometrizer.getEngine()->set_global(chaiscript::var(after), "afterBitmap");
-                    m_geometrizer.getEngine()->set_global(chaiscript::var(target), "targetBitmap");
+                    preconditionEngine->getEngine()->set_global(chaiscript::var(lastScore), "candidateShapeLastScore");
+                    preconditionEngine->getEngine()->set_global(chaiscript::var(newScore), "candidateShapeNextScore");
+                    preconditionEngine->getEngine()->set_global(chaiscript::var(shape), "candidateShape");
+                    preconditionEngine->getEngine()->set_global(chaiscript::var(lines), "candidateScanlines");
+                    preconditionEngine->getEngine()->set_global(chaiscript::var(color), "candidateShapeColor");
+                    preconditionEngine->getEngine()->set_global(chaiscript::var(before), "beforeBitmap");
+                    preconditionEngine->getEngine()->set_global(chaiscript::var(after), "afterBitmap");
+                    preconditionEngine->getEngine()->set_global(chaiscript::var(target), "targetBitmap");
 
                     for(const auto& script : scripts) {
-                        retValues.emplace_back(m_geometrizer.getEngine()->eval<bool>(script.second));
+                        retValues.emplace_back(preconditionEngine->getEngine()->eval<bool>(script.second));
                     }
                     return std::all_of(retValues.begin(), retValues.end(), [](const bool b) { return b == true; });
                 } catch(std::exception& e) {

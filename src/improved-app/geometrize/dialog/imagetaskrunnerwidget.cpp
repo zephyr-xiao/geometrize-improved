@@ -184,11 +184,10 @@ public:
         ui->errorGuideCheckbox->blockSignals(false);
         ui->segmentColorsCheckbox->blockSignals(false);
 
-        // 区域优先:模式勾选是会话操作态不回填;计数标签反映当前任务的区域列表
+        // 区域优先:模式勾选是会话操作态不回填(窗口侧的 m_regionSelectMode 只由该勾选框的
+        // 信号驱动)。此前用 blockSignals + setChecked(false) "回填为未勾选",会让界面显示
+        // 与实际模式相反:用户以为已退出,继续 Ctrl+拖仍在写区域。
         // (成员 tr:QObject::tr 会让 context 落到 QObject,翻译查不到该条目)
-        ui->selectPriorityRegionCheckbox->blockSignals(true);
-        ui->selectPriorityRegionCheckbox->setChecked(false);
-        ui->selectPriorityRegionCheckbox->blockSignals(false);
         ui->priorityRegionsLabel->setText(tr("Priority Regions: %1").arg(opts.priorityRegions.size()));
     }
 
