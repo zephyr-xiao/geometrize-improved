@@ -29,7 +29,12 @@ std::shared_ptr<geometrize::Shape> RotatedEllipse::clone() const
     ellipse->mutate = mutate;
     ellipse->mutateScaled = mutateScaled;
     ellipse->rasterize = rasterize;
-    ellipse->rasterizeInto = [rf = ellipse->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
+    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
+    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
+    ellipse->rasterizeInto = rasterizeInto;
+    if(!ellipse->rasterizeInto && rasterize) {
+        ellipse->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
+    }
     return ellipse;
 }
 

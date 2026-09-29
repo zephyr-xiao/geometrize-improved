@@ -30,7 +30,12 @@ std::shared_ptr<geometrize::Shape> QuadraticBezier::clone() const
     bezier->mutate = mutate;
     bezier->mutateScaled = mutateScaled;
     bezier->rasterize = rasterize;
-    bezier->rasterizeInto = [rf = bezier->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
+    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
+    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
+    bezier->rasterizeInto = rasterizeInto;
+    if(!bezier->rasterizeInto && rasterize) {
+        bezier->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
+    }
     return bezier;
 }
 

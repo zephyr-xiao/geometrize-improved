@@ -31,7 +31,8 @@ std::string exportShapeJson(const std::vector<geometrize::ShapeResult>& data)
         stream << "{" << "\"type\":" << static_cast<std::underlying_type<geometrize::ShapeTypes>::type>(type) << ", \"data\":[";
         for(std::size_t d = 0; d < shapeData.size(); d++) {
             stream << shapeData[d];
-            if(d <= shapeData.size() - 2) {
+            // d+1 < size 而非 d <= size-2:单元素时 size_t 下溢会让条件恒真,输出尾逗号(非法 JSON)
+            if(d + 1 < shapeData.size()) {
                 stream << ",";
             }
         }
@@ -61,7 +62,8 @@ std::string exportShapeJson(const std::vector<geometrize::ShapeResult>& data)
 
         stream << "}";
 
-        if(i <= data.size() - 2) {
+        // 同上:i+1 < size 保证单形状时不输出尾逗号
+        if(i + 1 < data.size()) {
             stream << ",\n";
         }
     }

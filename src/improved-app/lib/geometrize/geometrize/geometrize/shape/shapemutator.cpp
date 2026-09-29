@@ -656,12 +656,12 @@ void scale(geometrize::QuadraticBezier& s, const float scaleFactor)
     const float xMid = (s.m_x1 + s.m_cx + s.m_x2) / 3.0f;
     const float yMid = (s.m_y1 + s.m_cy + s.m_y2) / 3.0f;
 
-    s.m_x1 = static_cast<std::int32_t>((s.m_x1 - xMid) * scaleFactor + xMid);
-    s.m_y1 = static_cast<std::int32_t>((s.m_y1 - yMid) * scaleFactor + yMid);
-    s.m_cx = static_cast<std::int32_t>((s.m_cx - xMid) * scaleFactor + xMid);
-    s.m_cy = static_cast<std::int32_t>((s.m_cy - yMid) * scaleFactor + yMid);
-    s.m_x2 = static_cast<std::int32_t>((s.m_x2 - xMid) * scaleFactor + xMid);
-    s.m_y2 = static_cast<std::int32_t>((s.m_y2 - yMid) * scaleFactor + yMid);
+    s.m_x1 = (s.m_x1 - xMid) * scaleFactor + xMid;
+    s.m_y1 = (s.m_y1 - yMid) * scaleFactor + yMid;
+    s.m_cx = (s.m_cx - xMid) * scaleFactor + xMid;
+    s.m_cy = (s.m_cy - yMid) * scaleFactor + yMid;
+    s.m_x2 = (s.m_x2 - xMid) * scaleFactor + xMid;
+    s.m_y2 = (s.m_y2 - yMid) * scaleFactor + yMid;
 }
 
 void scale(geometrize::Rectangle& s, const float scaleFactor)

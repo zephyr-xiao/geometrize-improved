@@ -31,7 +31,12 @@ std::shared_ptr<geometrize::Shape> Triangle::clone() const
     triangle->mutate = mutate;
     triangle->mutateScaled = mutateScaled;
     triangle->rasterize = rasterize;
-    triangle->rasterizeInto = [rf = triangle->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
+    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
+    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
+    triangle->rasterizeInto = rasterizeInto;
+    if(!triangle->rasterizeInto && rasterize) {
+        triangle->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
+    }
     return triangle;
 }
 

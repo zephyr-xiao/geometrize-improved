@@ -45,9 +45,11 @@ geometrize::rgba getAverageImageColor(const geometrize::Bitmap& image)
 
     const std::size_t numPixels{size / 4U};
 
-    std::uint32_t totalRed{0};
-    std::uint32_t totalGreen{0};
-    std::uint32_t totalBlue{0};
+    // 累加器用 64 位:255 * numPixels 在 4096×4096 以上亮图会溢出 uint32,
+    // 溢出后均值(决定 m_current 初始背景色)整体偏移,起始分数与整条轨迹都被污染
+    std::uint64_t totalRed{0};
+    std::uint64_t totalGreen{0};
+    std::uint64_t totalBlue{0};
     for(std::size_t i = 0; i < size; i += 4U) {
         totalRed += data[i];
         totalGreen += data[i + 1U];
@@ -83,8 +85,11 @@ std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t> mapShapeBound
     // fixOffByOne 走文档契约的排他语义:百分比按整幅像素跨度换算,整图即 (0, 0, width, height)。
     const std::int32_t imageWidth{static_cast<std::int32_t>(image.getWidth())};
     const std::int32_t imageHeight{static_cast<std::int32_t>(image.getHeight())};
-    const std::int32_t widthExtent{fixOffByOne ? imageWidth : imageWidth - 1};
-    const std::int32_t heightExtent{fixOffByOne ? imageHeight : imageHeight - 1};
+    // 排他上界至少为 1:1×1 图在默认语义下 imageWidth-1 为 0,消费侧 randomRange(xMin, xMax-1)
+    // 会拿到 max < min,违反该函数前置条件(Release 下 uniform_int_distribution 行为未定义,
+    // 实测 1×1 图直接挂死)。W≥2 时 max(1, W-1) 与上游语义逐位一致,bit-exact 不受影响。
+    const std::int32_t widthExtent{(std::max)(1, fixOffByOne ? imageWidth : imageWidth - 1)};
+    const std::int32_t heightExtent{(std::max)(1, fixOffByOne ? imageHeight : imageHeight - 1)};
 
     if(!options.enabled) {
         return { 0, 0, widthExtent, heightExtent };

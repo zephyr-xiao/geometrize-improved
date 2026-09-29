@@ -294,6 +294,9 @@ geometrize::State hillClimbScratchEnhanced(
     std::uint32_t age{0};
     // rejectHalveInterval==0 时 age % 0 是模零 UB(结构体公开可构造,入口无校验),钳回默认 8
     const std::uint32_t rejectInterval{enhancements.rejectHalveInterval == 0U ? 8U : enhancements.rejectHalveInterval};
+    // maxStepShift 同为公开可设:≥32 时 -16 >> shift 的移位量达到类型宽度,是 UB。钳到 30,
+    // 远超有效深度(shift≥5 时步长已退化为 0),不改变任何有效配置下的行为
+    const std::int32_t maxStepShift{geometrize::commonutil::clamp(enhancements.maxStepShift, 0, 30)};
     while(age < maxAge) {
         const geometrize::State undo{s.mutate(enhancements.adaptiveStep ? stepShift : 0)};
         rasterizeIntoVector(*s.m_shape, lines);
@@ -318,7 +321,7 @@ geometrize::State hillClimbScratchEnhanced(
         age++;
         // age 本身就是"连续拒绝计数"(接受时被 -1 清零):每满 rejectHalveInterval 升一档
         if(enhancements.adaptiveStep && age > 0 && (age % rejectInterval) == 0
-                && stepShift < enhancements.maxStepShift) {
+                && stepShift < maxStepShift) {
             stepShift++;
         }
     }

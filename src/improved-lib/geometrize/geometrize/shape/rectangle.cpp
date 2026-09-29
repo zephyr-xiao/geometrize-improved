@@ -27,7 +27,12 @@ std::shared_ptr<geometrize::Shape> Rectangle::clone() const
     rect->mutate = mutate;
     rect->mutateScaled = mutateScaled;
     rect->rasterize = rasterize;
-    rect->rasterizeInto = [rf = rect->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
+    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
+    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
+    rect->rasterizeInto = rasterizeInto;
+    if(!rect->rasterizeInto && rasterize) {
+        rect->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
+    }
     return rect;
 }
 

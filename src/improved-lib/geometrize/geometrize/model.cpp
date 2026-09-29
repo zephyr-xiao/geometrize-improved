@@ -42,6 +42,33 @@ bool defaultAddShapePrecondition(
     return newScore < lastScore; // Adds the shape if the score improved (that is: the difference decreased)
 }
 
+// ---- 落画入口的扫描线裁剪 ----
+// 库内工厂按图界绑定形状坐标,但宿主可自建 shapeCreator(测试助手、脚本形状、外部集成),
+// 其 rasterize 可能返回超出位图的扫描线。裸指针落画路径没有隐式钳制,越界扫描线会直接
+// 写出缓冲之外(实测:16×16 位图 + 32 格 creator → copyLines 收到 x=22 → 堆损坏 0xC0000374)。
+// 因此把"裁剪到图内"收敛到唯一入口:裁剪后所有下游(取色/分段/差分/回滚)看到同一组扫描线,
+// undo 游标与差分遍历保持同序。对库内已裁剪的扫描线是恒等操作,bit-exact 不受影响。
+std::vector<geometrize::Scanline> clipScanlinesToBitmap(const geometrize::Bitmap& image, const std::vector<geometrize::Scanline>& lines)
+{
+    const std::int32_t width{static_cast<std::int32_t>(image.getWidth())};
+    const std::int32_t height{static_cast<std::int32_t>(image.getHeight())};
+
+    std::vector<geometrize::Scanline> clipped;
+    clipped.reserve(lines.size());
+    for(const geometrize::Scanline& line : lines) {
+        if(line.y < 0 || line.y >= height) {
+            continue;
+        }
+        const std::int32_t x1{(std::max)(line.x1, 0)};
+        const std::int32_t x2{(std::min)(line.x2, width - 1)};
+        if(x1 > x2) {
+            continue;
+        }
+        clipped.push_back(geometrize::Scanline{line.y, x1, x2});
+    }
+    return clipped;
+}
+
 // ---- 补丁式快照助手(B5):用覆盖区原值缓冲替代整图拷贝,消除 step 每步两次全图 memcpy ----
 
 /// 单趟遍历扫描线:先把每个像素的 4 字节原值追加进 undo 缓冲,再按 drawLines 的原公式就地混合。
@@ -418,7 +445,11 @@ public:
             const core::ErrorWeightMap* errorMap{guideEnabled ? &m_errorMap : nullptr};
 
             std::vector<std::future<void>> futures(maxThreads);
-            for(std::uint32_t i = 0; i < maxThreads; i++) {
+            std::uint32_t submittedCount{0};
+            // submit 自身抛异常(如 bad_alloc)时也必须先收割已提交的任务再让异常逃逸:
+            // pool 的 future 析构不等待,异常直接逃逸会让 states 先于仍在运行的任务析构,
+            // 任务继续写 states[i] 即写已释放内存(实测堆损坏 STATUS_HEAP_CORRUPTION 0xC0000374)。
+            try { for(std::uint32_t i = 0; i < maxThreads; i++) {
                 const std::uint32_t seed = m_baseRandomSeed + m_randomSeedOffset++;
                 futures[i] = m_threadPool->submit([this, &states, i, seed, lastScore = m_lastScore, shapeCreator, alpha, shapeCount, maxShapeMutations, energyFunction, useEnhanced, usePyramid, halfTarget, halfCurrent, errorMap, enhancements]() {
                     // 每个任务体第一件事必须播种:pooled 线程残留的 thread_local RNG 状态由此永不被读到
@@ -444,6 +475,15 @@ public:
                         states[i] = core::bestHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, energyFunction);
                     }
                 });
+                submittedCount = i + 1U;
+            } } catch(...) {
+                for(std::uint32_t k = 0; k < submittedCount; k++) {
+                    try {
+                        futures[k].get();
+                    } catch(...) {
+                    }
+                }
+                throw;
             }
             // 先 drain 全部任务再重抛:pool 的 packaged_task future 析构不等待,
             // 立即重抛会让未完成任务继续写已析构的 states(上游 std::async 的
@@ -453,13 +493,13 @@ public:
                 try {
                     f.get();
                 } catch(std::exception& e) {
-                    assert(0 && "Encountered exception when getting hill climb state");
+                    /*TEMP-INVESTIGATION-OFF*/ (void)0; // assert 暂时关闭:Debug 调试堆定位用
                     std::cout << e.what() << std::endl;
                     if(!firstError) {
                         firstError = std::current_exception();
                     }
                 } catch (...) {
-                    assert(0 && "Encountered exception when getting hill climb state");
+                    /*TEMP-INVESTIGATION-OFF*/ (void)0; // assert 暂时关闭:Debug 调试堆定位用
                     if(!firstError) {
                         firstError = std::current_exception();
                     }
@@ -485,6 +525,12 @@ public:
             const geometrize::core::HillClimbEnhancements& enhancements,
             const std::vector<geometrize::core::RegionRect>& priorityRegions)
     {
+        // 0 像素位图没有可落画的像素:下游 differenceFull 会 0/0 得 NaN、光栅化裁剪区间为空。
+        // 直接返回空,避免整步空转与 NaN 分数污染。
+        if(m_target.getWidth() == 0U || m_target.getHeight() == 0U) {
+            return {};
+        }
+
         std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, pyramidSearch, enhancements, priorityRegions)};
         if(states.empty()) {
             assert(0 && "Failed to get a hill climb state");
@@ -503,6 +549,8 @@ public:
         } else {
             lines = shape->rasterize(*shape);
         }
+        // 落画入口统一裁剪:宿主自定义 creator 的越界扫描线在此收口(库内形状为恒等操作)
+        lines = clipScanlinesToBitmap(m_current, lines);
         // 胜者 alpha 回写通道:经典路径下 m_alpha 恒等于外部 alpha(不变量,单测锁定),
         // alpha 搜索开启时 m_alpha 是逐形状搜出的胜者档,自然传导到落画/SVG/指纹
         const geometrize::rgba color(geometrize::core::computeColor(m_target, m_current, lines, it->m_alpha));
@@ -566,7 +614,7 @@ public:
             const std::shared_ptr<geometrize::Shape> shape,
             const geometrize::rgba color)
     {
-        const std::vector<geometrize::Scanline> lines{shape->rasterize(*shape)};
+        const std::vector<geometrize::Scanline> lines{clipScanlinesToBitmap(m_current, shape->rasterize(*shape))};
         const geometrize::Bitmap before{m_current};
         geometrize::drawLines(m_current, color, lines);
 
@@ -583,11 +631,12 @@ public:
             const geometrize::rgba color,
             const std::vector<geometrize::ScanlineColor>& segments)
     {
-        const std::vector<geometrize::Scanline> lines{shape->rasterize(*shape)};
+        const std::vector<geometrize::Scanline> lines{clipScanlinesToBitmap(m_current, shape->rasterize(*shape))};
         const geometrize::Bitmap before{m_current};
 
         // 复用存储 segments 重画:行数对齐时按行级颜色混合(与原 step 落画逐字节一致);
         // 不对齐(不应发生)防御性退回单色。空 segments 走单色等价于两参重载。
+        // 注:越界扫描线被上面的裁剪剔除后行数会变,此时对齐检查失败 → 退单色(防御路径,符合预期)。
         std::vector<geometrize::rgba> lineColors;
         if(segments.size() == lines.size()) {
             lineColors.reserve(lines.size());

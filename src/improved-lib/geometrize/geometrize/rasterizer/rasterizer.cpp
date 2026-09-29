@@ -101,14 +101,23 @@ void drawLines(geometrize::Bitmap& image, const geometrize::rgba color, const st
     // 裸指针行游标:公式与舍入次序逐像素保持,仅消除逐像素函数调用与索引重算
     auto* data = image.getDataRefMut().data();
     const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
+    // 裸指针路径没有 getPixel/setPixel 的隐式钳制,未裁剪的扫描线会直接写出缓冲:
+    // 本函数是导出到 rasterizer.h 的公共 API,入口自守(库内调用已先 trimScanlines,逐位不变)
+    const std::int32_t width{static_cast<std::int32_t>(image.getWidth())};
+    const std::int32_t height{static_cast<std::int32_t>(image.getHeight())};
 
     for(const geometrize::Scanline& line : lines) {
-        if(line.y < 0) {
+        if(line.y < 0 || line.y >= height) {
+            continue;
+        }
+        const std::int32_t x1{(std::max)(line.x1, 0)};
+        const std::int32_t x2{(std::min)(line.x2, width - 1)};
+        if(x1 > x2) {
             continue;
         }
         auto* row = data + rowStride * static_cast<std::size_t>(line.y);
 
-        for(std::int32_t x = line.x1; x <= line.x2; x++) {
+        for(std::int32_t x = x1; x <= x2; x++) {
             const std::size_t offset{static_cast<std::size_t>(x) * 4U};
 
             const std::uint32_t d_r{row[offset]};
@@ -134,11 +143,18 @@ void drawLinesSegmented(geometrize::Bitmap& image, const std::vector<geometrize:
     // 裸指针行游标:公式与舍入次序逐像素与 drawLines 一致,仅预乘提到行循环(每行一次)
     auto* data = image.getDataRefMut().data();
     const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
+    const std::int32_t width{static_cast<std::int32_t>(image.getWidth())};
+    const std::int32_t height{static_cast<std::int32_t>(image.getHeight())};
     const std::uint32_t m{UINT16_MAX};
 
     for(std::size_t i = 0; i < lines.size(); i++) {
         const geometrize::Scanline& line = lines[i];
-        if(line.y < 0) {
+        if(line.y < 0 || line.y >= height) {
+            continue;
+        }
+        const std::int32_t x1{(std::max)(line.x1, 0)};
+        const std::int32_t x2{(std::min)(line.x2, width - 1)};
+        if(x1 > x2) {
             continue;
         }
         const geometrize::rgba color = colors[i];
@@ -162,7 +178,7 @@ void drawLinesSegmented(geometrize::Bitmap& image, const std::vector<geometrize:
 
         auto* row = data + rowStride * static_cast<std::size_t>(line.y);
 
-        for(std::int32_t x = line.x1; x <= line.x2; x++) {
+        for(std::int32_t x = x1; x <= x2; x++) {
             const std::size_t offset{static_cast<std::size_t>(x) * 4U};
 
             const std::uint32_t d_r{row[offset]};
@@ -185,18 +201,28 @@ void copyLines(geometrize::Bitmap& destination, const geometrize::Bitmap& source
     }
 
     // 行段连续区直接 memcpy;数据布局行宽恰为 width*4 无 padding,行内 [x1,x2] 对应连续 4*(x2-x1+1) 字节。
+    // 源按源图自身宽度取行距:上游逐像素版用 source.getPixel 按源宽度索引,共用目标行距会在两图
+    // 宽度不同时读错源偏移(库内调用点均为同尺寸,不影响 bit-exact)。越界扫描线一律跳过。
     auto* dstData = destination.getDataRefMut().data();
     const auto* srcData = source.getDataRef().data();
-    const std::size_t rowStride{static_cast<std::size_t>(destination.getWidth()) * 4U};
+    const std::size_t dstStride{static_cast<std::size_t>(destination.getWidth()) * 4U};
+    const std::size_t srcStride{static_cast<std::size_t>(source.getWidth()) * 4U};
+    const std::int32_t width{static_cast<std::int32_t>((std::min)(destination.getWidth(), source.getWidth()))};
+    const std::int32_t height{static_cast<std::int32_t>((std::min)(destination.getHeight(), source.getHeight()))};
 
     for(const geometrize::Scanline& line : lines) {
-        if(line.y < 0 || line.x1 > line.x2) {
+        if(line.y < 0 || line.y >= height || line.x1 > line.x2) {
             continue;
         }
-        const std::size_t startOffset{static_cast<std::size_t>(line.x1) * 4U};
-        const std::size_t lengthBytes{static_cast<std::size_t>(line.x2 - line.x1 + 1) * 4U};
-        std::memcpy(dstData + rowStride * static_cast<std::size_t>(line.y) + startOffset,
-                    srcData + rowStride * static_cast<std::size_t>(line.y) + startOffset,
+        const std::int32_t x1{(std::max)(line.x1, 0)};
+        const std::int32_t x2{(std::min)(line.x2, width - 1)};
+        if(x1 > x2) {
+            continue;
+        }
+        const std::size_t startOffset{static_cast<std::size_t>(x1) * 4U};
+        const std::size_t lengthBytes{static_cast<std::size_t>(x2 - x1 + 1) * 4U};
+        std::memcpy(dstData + dstStride * static_cast<std::size_t>(line.y) + startOffset,
+                    srcData + srcStride * static_cast<std::size_t>(line.y) + startOffset,
                     lengthBytes);
     }
 }
@@ -355,7 +381,9 @@ std::vector<geometrize::Scanline> rasterize(const geometrize::Ellipse& s, const 
             continue;
         }
 
-        const std::int32_t v{static_cast<std::int32_t>(std::sqrt(s.m_ry * s.m_ry - dy * dy) * aspect)};
+        // dy*dy 走 int32 乘法:图高超过 46340 时有符号溢出 UB。提升到 float 与左侧 m_ry*m_ry 同域,
+        // 在无溢出域内与原来"精确整数积再转 float"逐位一致
+        const std::int32_t v{static_cast<std::int32_t>(std::sqrt(s.m_ry * s.m_ry - static_cast<float>(dy) * static_cast<float>(dy)) * aspect)};
         std::int32_t x1{static_cast<std::int32_t>(s.m_x) - v};
         std::int32_t x2{static_cast<std::int32_t>(s.m_x) + v};
         if (x1 < xMin) {
