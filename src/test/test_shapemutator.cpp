@@ -281,5 +281,100 @@ TEST_CASE("shiftShapeCenter:polyline 空点集不平移不崩溃")
     geometrize::shiftShapeCenter(empty, 100.0F, 100.0F);
     CHECK(empty.m_points.empty());
 }
+
+TEST_CASE("scale 家族:绕质心、float 不截断、因子 1.0 恒等")
+{
+    // 回归点:scale(QuadraticBezier) 曾把六个 float 成员 static_cast 成 int32(其余 8 个重载保留 float),
+    // 亚像素被截断、负值向零截断。scale 家族此前零测试覆盖,是这条不一致能长期存活的直接原因。
+    SUBCASE("QuadraticBezier:因子 1.0 恒等且保留小数")
+    {
+        geometrize::QuadraticBezier bezier;
+        bezier.m_x1 = 1.5F;   bezier.m_y1 = 2.25F;
+        bezier.m_cx = 10.75F; bezier.m_cy = 20.125F;
+        bezier.m_x2 = 31.5F;  bezier.m_y2 = 40.0625F;
+
+        const geometrize::QuadraticBezier before{bezier};
+        geometrize::scale(bezier, 1.0F);
+        CHECK(bezier.m_x1 == before.m_x1);
+        CHECK(bezier.m_y1 == before.m_y1);
+        CHECK(bezier.m_cx == before.m_cx);
+        CHECK(bezier.m_cy == before.m_cy);
+        CHECK(bezier.m_x2 == before.m_x2);
+        CHECK(bezier.m_y2 == before.m_y2);
+
+        // 0.5 倍:质心 y=(2.25+20.125+40.0625)/3=20.8125 → (2.25-20.8125)*0.5+20.8125=11.53125
+        geometrize::scale(bezier, 0.5F);
+        CHECK(bezier.m_y1 == doctest::Approx(11.53125F));
+        CHECK(static_cast<float>(static_cast<std::int32_t>(bezier.m_y1)) != bezier.m_y1); // 截断成 int32 会丢掉小数
+    }
+
+    SUBCASE("Polyline:缩放后质心不动、点数不变")
+    {
+        geometrize::Polyline polyline;
+        polyline.m_points = {{0.0F, 0.0F}, {10.0F, 20.0F}, {30.0F, 40.0F}};
+
+        geometrize::scale(polyline, 2.0F);
+        REQUIRE(polyline.m_points.size() == 3U);
+
+        float mx{0.0F};
+        float my{0.0F};
+        for(const auto& point : polyline.m_points) {
+            mx += point.first;
+            my += point.second;
+        }
+        CHECK(mx / 3.0F == doctest::Approx(40.0F / 3.0F));
+        CHECK(my / 3.0F == doctest::Approx(20.0F));
+    }
+
+    SUBCASE("Circle:半径按因子缩放、圆心不动")
+    {
+        geometrize::Circle circle{12.0F, 34.0F, 8.0F};
+        geometrize::scale(circle, 2.5F);
+        CHECK(circle.m_r == doctest::Approx(20.0F));
+        CHECK(circle.m_x == doctest::Approx(12.0F));
+        CHECK(circle.m_y == doctest::Approx(34.0F));
+    }
+}
+
+TEST_CASE("rasterizeInto 与 rasterize 逐位等价(含 clone 拷贝语义)")
+{
+    // B6 复用入口的正确性此前只靠端到端位精确兜底:某个形状的 rasterizeInto 绑定错(绑错 bounds)
+    // 时函数级门禁不报。这里对 9 种形状直接比对两条路径,并验证 clone 不重建该句柄。
+    constexpr std::int32_t xMin{0};
+    constexpr std::int32_t yMin{0};
+    constexpr std::int32_t xMax{512};
+    constexpr std::int32_t yMax{384};
+
+    std::size_t nonEmptyTypes{0};
+    for(const geometrize::ShapeTypes type : {
+            geometrize::ShapeTypes::RECTANGLE, geometrize::ShapeTypes::ROTATED_RECTANGLE,
+            geometrize::ShapeTypes::TRIANGLE, geometrize::ShapeTypes::ELLIPSE,
+            geometrize::ShapeTypes::ROTATED_ELLIPSE, geometrize::ShapeTypes::CIRCLE,
+            geometrize::ShapeTypes::LINE, geometrize::ShapeTypes::QUADRATIC_BEZIER,
+            geometrize::ShapeTypes::POLYLINE}) {
+        const auto creator = geometrize::createDefaultShapeCreator(type, xMin, yMin, xMax, yMax);
+        std::shared_ptr<geometrize::Shape> shape{creator()};
+        shape->setup(*shape);
+
+        REQUIRE(static_cast<bool>(shape->rasterize));
+        REQUIRE(static_cast<bool>(shape->rasterizeInto));
+
+        const std::vector<geometrize::Scanline> direct{shape->rasterize(*shape)};
+        std::vector<geometrize::Scanline> viaInto;
+        shape->rasterizeInto(*shape, viaInto);
+        CHECK(direct == viaInto);
+        if(!direct.empty()) {
+            nonEmptyTypes++;
+        }
+
+        // clone 拷贝 rasterizeInto,且克隆体上两条路径仍等价
+        const std::shared_ptr<geometrize::Shape> cloned{shape->clone()};
+        REQUIRE(static_cast<bool>(cloned->rasterizeInto));
+        std::vector<geometrize::Scanline> clonedInto;
+        cloned->rasterizeInto(*cloned, clonedInto);
+        CHECK(clonedInto == direct);
+    }
+    CHECK(nonEmptyTypes > 0U); // 防"两侧都空"的恒真通过
+}
 #endif
 

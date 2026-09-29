@@ -169,7 +169,7 @@ TEST_CASE("T14 bestHillClimbStateEnhanced 确定性:同 seed 两调用输出全�
     CHECK(a1.m_score == a2.m_score);
 }
 
-TEST_CASE("T15 alpha 搜索:返回 state 的 m_alpha ∈ 规范化档位集")
+TEST_CASE("T15 alpha 搜索:胜者档必须来自候选档位集")
 {
     const auto target = makeGradientBitmap(48, 48);
     geometrize::commonutil::seedRandomGenerator(909);
@@ -180,12 +180,14 @@ TEST_CASE("T15 alpha 搜索:返回 state 的 m_alpha ∈ 规范化档位集")
     geometrize::core::HillClimbEnhancements enhancements;
     enhancements.alphaSearch = true;
     enhancements.alphaCandidates = {64U, 128U, 192U};
-    const std::uint8_t userAlpha = 200U;
+    // 用户 alpha 取 1(近乎全透明):在高对比 target 上不可能是最优档。
+    // 旧断言把 userAlpha 也算作"合格档",于是档位穷举完全失效(原样回吐用户 alpha)时照样通过。
+    const std::uint8_t userAlpha = 1U;
 
     const auto state = geometrize::core::bestHillClimbStateEnhanced(creator, userAlpha, 4, 20, target, current, buffer, 0.5, 0, 0, enhancements);
-    const bool inTiers = (state.m_alpha == 64U) || (state.m_alpha == 128U)
-        || (state.m_alpha == 192U) || (state.m_alpha == userAlpha);
-    CHECK(inTiers);
+    const bool inCandidates = (state.m_alpha == 64U) || (state.m_alpha == 128U) || (state.m_alpha == 192U);
+    CHECK(inCandidates);
+    CHECK(state.m_alpha != userAlpha);
 }
 
 // ---- A2.4 分段颜色纯函数 ----
@@ -369,5 +371,52 @@ TEST_CASE("JSON 导出:segments 可选字段与结构")
     CHECK(json.find("\"segments\":[") != std::string::npos);
     CHECK(json.find("{\"y\":5,\"x1\":2,\"x2\":9,\"color\":[10,20,30,128]}") != std::string::npos);
     CHECK(json.find("{\"y\":6,\"x1\":3,\"x2\":8,\"color\":[40,50,60,128]}") != std::string::npos);
+}
+
+TEST_CASE("JSON 导出:良构性(单元素数组不得出现尾逗号)")
+{
+    // 回归点:外层循环曾用 `i <= size() - 2`,size()==1 时 size_t 下溢使条件恒真,
+    // 单形状导出输出 "[{...},\n\n]}" —— 严格 JSON 解析器一律拒绝。子串断言抓不到,必须查良构性。
+    const auto malformed = [](const std::string& json) {
+        if(json.find(",]") != std::string::npos || json.find(",}") != std::string::npos) {
+            return true;
+        }
+        int depth = 0;
+        for(const char c : json) {
+            if(c == '[' || c == '{') {
+                depth++;
+            } else if(c == ']' || c == '}') {
+                depth--;
+            }
+            if(depth < 0) {
+                return true;
+            }
+        }
+        return depth != 0;
+    };
+
+    auto ellipse = std::make_shared<geometrize::Ellipse>(8.0f, 8.0f, 4.0f, 4.0f);
+
+    // 单形状、无 segments:曾经唯一可触发的形态
+    std::vector<geometrize::ShapeResult> single;
+    single.emplace_back(geometrize::ShapeResult{0.5, geometrize::rgba{1, 2, 3, 255}, ellipse});
+    const std::string singleJson = geometrize::exporter::exportShapeJson(single);
+    CHECK(!malformed(singleJson));
+    CHECK(singleJson.find(",\n\n]") == std::string::npos);
+
+    // 单形状 + 单段 segments:外层与内层两处循环都要守住
+    std::vector<geometrize::ScanlineColor> oneSegment;
+    oneSegment.push_back(geometrize::ScanlineColor{5, 2, 9, geometrize::rgba{10, 20, 30, 128}});
+    std::vector<geometrize::ShapeResult> singleSeg;
+    singleSeg.emplace_back(geometrize::ShapeResult{0.5, geometrize::rgba{1, 2, 3, 128}, ellipse, oneSegment});
+    CHECK(!malformed(geometrize::exporter::exportShapeJson(singleSeg)));
+
+    // 多形状:分隔逗号必须仍在(防"修过头"把合法分隔符也删掉)
+    std::vector<geometrize::ShapeResult> pair;
+    pair.emplace_back(geometrize::ShapeResult{0.5, geometrize::rgba{1, 2, 3, 255}, ellipse});
+    pair.emplace_back(geometrize::ShapeResult{0.4, geometrize::rgba{4, 5, 6, 255}, ellipse});
+    const std::string pairJson = geometrize::exporter::exportShapeJson(pair);
+    CHECK(!malformed(pairJson));
+    CHECK(pairJson.find("},\n{") != std::string::npos);
 }
 #endif

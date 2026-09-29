@@ -59,12 +59,14 @@ TEST_CASE("Ellipse 非对称视口分叉点(宏分流锁定)")
     checkBounds(lines, 10, 0, 40, 24);
 
 #if defined(GEOTEST_FAST)
-    // 改进版:顶部行(y = m_y - dy)正确保留 —— 最小 y 应为 ceil 方向可触及的顶部
+    // 改进版:顶部行(y = m_y - dy)正确保留。dy=9 时 y1=3 且 v=2 仍在视口内,
+    // 故最小 y 必须恰为 3 —— 只写 "<= 12" 的话,笔误回归时上游行为(10)也能通过,
+    // 这个用例就锁不住它唯一要锁的东西
     std::int32_t minY = INT32_MAX;
     for(const auto& line : lines) {
         minY = (line.y < minY) ? line.y : minY;
     }
-    CHECK(minY <= 12); // 椭圆上半个(m_y=12 之上)必须有行存活
+    CHECK(minY == 3);
 #elif defined(GEOTEST_BASE)
     // 上游怪癖:y1 与 xMin 错位比较导致顶部行系统性丢失
     std::int32_t minY = INT32_MAX;

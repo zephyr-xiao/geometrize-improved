@@ -9,6 +9,8 @@
 #include "geometrize/rasterizer/scanline.h"
 #include "geometrize/shape/circle.h"
 #include "geometrize/shape/shape.h"
+#include "geometrize/shape/shapefactory.h"
+#include "geometrize/shape/shapetypes.h"
 #include "geometrize/state.h"
 
 namespace
@@ -60,10 +62,11 @@ TEST_CASE("State 参数构造:setup 恰好调用一次")
 
 TEST_CASE("State 拷贝构造:深克隆(指针不同、互不影响)")
 {
-    auto shape = std::make_shared<geometrize::Circle>(10.0f, 10.0f, 5.0f);
-    shape->setup = [](geometrize::Shape&) {};
-    shape->mutate = [](geometrize::Shape&) {};
-    shape->rasterize = [](const geometrize::Shape&) { return std::vector<geometrize::Scanline>{}; };
+    // 用 factory 绑定真实 setup/mutate/rasterize:旧版把 rasterize 覆写成恒返回空,
+    // 于是下面"克隆体与原体光栅化一致"恒真(空==空),等于没有断言
+    const auto creator = geometrize::createDefaultShapeCreator(geometrize::ShapeTypes::CIRCLE, 0, 0, 64, 64);
+    std::shared_ptr<geometrize::Shape> shape{creator()};
+    shape->setup(*shape);
 
     geometrize::State original{shape, 128};
     original.m_score = 0.5;
@@ -74,12 +77,24 @@ TEST_CASE("State 拷贝构造:深克隆(指针不同、互不影响)")
     CHECK(copy.m_alpha == original.m_alpha);
     CHECK(copy.m_score == doctest::Approx(0.5));
 
-    // 克隆体与原体光栅化一致(值相等)
-    std::vector<geometrize::Scanline> originalLines;
-    std::vector<geometrize::Scanline> copyLines;
-    originalLines = original.m_shape->rasterize(*original.m_shape);
-    copyLines = copy.m_shape->rasterize(*copy.m_shape);
+    // 克隆体与原体光栅化一致(非空且逐行相等)
+    const std::vector<geometrize::Scanline> originalLines{original.m_shape->rasterize(*original.m_shape)};
+    const std::vector<geometrize::Scanline> copyLines{copy.m_shape->rasterize(*copy.m_shape)};
+    REQUIRE(!originalLines.empty());
     CHECK(originalLines == copyLines);
+
+#if defined(GEOTEST_FAST)
+    // clone 必须拷贝 rasterizeInto(而非按 rasterize 重建),否则调用方自定义的实现会被静默丢弃。
+    // rasterizeInto 是改进版独有的复用入口,base 快照的 Shape 没有该成员。
+    REQUIRE(static_cast<bool>(copy.m_shape->rasterizeInto));
+    std::vector<geometrize::Scanline> viaInto;
+    copy.m_shape->rasterizeInto(*copy.m_shape, viaInto);
+    CHECK(viaInto == originalLines);
+#endif
+
+    // 独立性:直接改克隆体字段,原体不受影响
+    static_cast<geometrize::Circle&>(*copy.m_shape).m_r = 999.0f;
+    CHECK(static_cast<const geometrize::Circle&>(*original.m_shape).m_r != 999.0f);
 }
 
 TEST_CASE("State 拷贝赋值:自赋值保护与深克隆")

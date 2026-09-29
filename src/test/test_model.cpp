@@ -471,8 +471,6 @@ TEST_CASE("误差图引导高拒绝率:纯色 target 收敛后连续空返回、
     CHECK(model.getCurrent().copyData() == initialData);
 }
 
-#if 0 // CD
-#if 0 // CD
 TEST_CASE("误差图引导 reset 后继续 step 确定性:重建时序覆盖")
 {
     // reset 置脏 → 下次 step 提交前按 reset 后的 m_current 重建误差图;
@@ -497,11 +495,6 @@ TEST_CASE("误差图引导 reset 后继续 step 确定性:重建时序覆盖")
     CHECK(first == second);
 }
 
-#endif // CD
-#if 0 // CD
-#if 0 // CD
-#if 0 // CD
-#endif // CD
 TEST_CASE("增强全组合(errorGuide+adaptive+alpha+pyramid)step 确定性:两跑位图一致")
 {
     // 四开关全开:引导采样坐标全分辨率、评估半分辨率——锁定组合坐标系自洽
@@ -524,12 +517,6 @@ TEST_CASE("增强全组合(errorGuide+adaptive+alpha+pyramid)step 确定性:两�
 }
 
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("T7 不变量:经典 step 后 ShapeResult.color.a == 传入 alpha(双变体)")
 {
     // 锁定"m_alpha 恒等于外部 alpha"不变量 —— step() 落画改用 it->m_alpha 的安全前提。
@@ -552,12 +539,6 @@ TEST_CASE("T7 不变量:经典 step 后 ShapeResult.color.a == 传入 alpha(双�
     CHECK(acceptedCount > 0);
 }
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("drawShape 无条件绘制、reset 恢复基线")
 {
     const auto target = makeGradientBitmap(16, 16);
@@ -580,14 +561,11 @@ TEST_CASE("drawShape 无条件绘制、reset 恢复基线")
     CHECK(model.getCurrent().getPixel(0, 0).a == 255);
 }
 
-#endif // CD
-#if 0 // CD
-#if 0 // CD
-#endif // CD
-#endif // CD
 TEST_CASE("step 异常传播:shapeCreator 抛异常不吞掉、池存活可继续")
 {
-    const auto target = makeGradientBitmap(16, 16);
+    // 图尺寸必须与 creator 的 gridSize 一致:creator 的坐标可达 gridSize-1、rasterize 也按
+    // gridSize 界绑定,配小图会让它产出越界扫描线(该组合曾触发间歇性堆损坏 0xC0000374)
+    const auto target = makeGradientBitmap(32, 32);
     geometrize::Model model{target};
 
     int callCount = 0;
@@ -612,12 +590,39 @@ TEST_CASE("step 异常传播:shapeCreator 抛异常不吞掉、池存活可继�
 #endif
 }
 
+TEST_CASE("越界扫描线裁剪:宿主 creator 超出图界不写穿缓冲(回归)")
+{
+    // 回归点:16×16 位图 + 32 格 creator(坐标可达 23、rasterize 按 32 界绑定)曾让 copyLines
+    // 收到 x=22,裸指针落画直接写穿缓冲 → 堆损坏 0xC0000374(间歇触发,run_ab 的单侧重试还会
+    // 把它洗成 PASS)。库侧现在在落画入口统一裁剪。
+    const auto target = makeGradientBitmap(16, 16);
+    geometrize::Model model{target};
+
+    // 确定性部分:完全在图外的形状 → 裁剪后无像素落画,位图逐字节不变
+    auto outside = std::make_shared<geometrize::Circle>(40.0f, 40.0f, 5.0f);
+    outside->setup = [](geometrize::Shape&) {};
+    outside->mutate = [](geometrize::Shape&) {};
+    outside->rasterize = [](const geometrize::Shape& s) {
+        return geometrize::rasterize(static_cast<const geometrize::Circle&>(s), 0, 0, 64, 64);
+    };
+    const auto before = model.getCurrent().copyData();
+    const auto result = model.drawShape(outside, geometrize::rgba{255, 0, 0, 255});
+    CHECK(result.shape.get() != nullptr);
+    CHECK(model.getCurrent().copyData() == before);
+
+    // 部分越界:creator 坐标超界,越界部分被裁剪,位图尺寸/内容保持自洽(能跑完即无越界写)
+    DeterministicShapeCreator creator{32};
+    for(int i = 0; i < 4; i++) {
+        const auto results = model.step(creator, 128, 2, 10, 2);
+        (void)results;
+    }
+    CHECK(model.getCurrent().getWidth() == 16U);
+    CHECK(model.getCurrent().getHeight() == 16U);
+    CHECK(model.getCurrent().getDataRef().size() == 16U * 16U * 4U);
+}
+
 // ---- F3.2 区域优先绘制 ----
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("区域优先哨兵:区域 on 与 off 输出必须不同")
 {
     // 抓"区域被静默忽略"(透传断裂/rebuild 未接 regions/m_lastRegions 比较失效)
@@ -644,10 +649,6 @@ TEST_CASE("区域优先哨兵:区域 on 与 off 输出必须不同")
     CHECK(without != with);
 }
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("区域优先 step 确定性:同配置两跑位图一致")
 {
     const auto runOnce = [] {
@@ -667,10 +668,6 @@ TEST_CASE("区域优先 step 确定性:同配置两跑位图一致")
     CHECK(first == second);
 }
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("区域优先:errorGuide 关时区域无效(逐位一致)")
 {
     // 锁定语义:区域是误差图引导的修饰参数,引导关 = 区域完全不参与(连 rebuild 都不做)
@@ -694,11 +691,6 @@ TEST_CASE("区域优先:errorGuide 关时区域无效(逐位一致)")
     CHECK(without == with);
 }
 
-#endif // CD
-#if 0 // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("区域优先:区域中途变化触发重建生效")
 {
     // 先空区域 3 步(建立基线)→ 换区域继续;与"全程带区域"对比,中途区域必须产生效应
@@ -729,12 +721,6 @@ TEST_CASE("区域优先:区域中途变化触发重建生效")
 
 // ---- A2.4 分段颜色:落画传导、确定性、分叉哨兵、线型旁路、重放复现 ----
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("分段落画传导:segmentColors on 时接受结果携带对齐 segments")
 {
     geometrize::core::HillClimbEnhancements enhancements;
@@ -767,12 +753,6 @@ TEST_CASE("分段落画传导:segmentColors on 时接受结果携带对齐 segme
     CHECK(acceptedCount > 0); // 梯度图上必能接受若干形状,否则传导无从检验
 }
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("分段 step 确定性:同配置两跑位图一致(单线程+过订阅)")
 {
     const auto runOnce = [](std::uint32_t maxThreads) {
@@ -790,12 +770,6 @@ TEST_CASE("分段 step 确定性:同配置两跑位图一致(单线程+过订阅
     CHECK(runOnce(64) == runOnce(64));
 }
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("分段颜色分叉哨兵:segmentColors on 与 off 输出必须不同")
 {
     // 与金字塔/自适应步长/alpha 搜索/误差图哨兵同款:抓"增强开关被静默忽略"
@@ -818,12 +792,6 @@ TEST_CASE("分段颜色分叉哨兵:segmentColors on 与 off 输出必须不同"
     CHECK(plain != segmented);
 }
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("分段纯色高拒绝:target 纯色时行级取色与单色等价,连续空返回")
 {
     // 纯色 target 上分段取色每行结果相同,接受行为应与开关关一致(高拒绝)
@@ -853,12 +821,6 @@ TEST_CASE("分段纯色高拒绝:target 纯色时行级取色与单色等价,连
     (void)acceptedCount; // 纯色上接受率可高可低,此处只验证行为一致性
 }
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("Line 形状 segments 为空:线型旁路保持单色语义")
 {
     geometrize::core::HillClimbEnhancements enhancements;
@@ -881,12 +843,6 @@ TEST_CASE("Line 形状 segments 为空:线型旁路保持单色语义")
     CHECK(acceptedCount > 0);
 }
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("分段重放逐位复现:三参 drawShape 复用存储 segments 复原位图与分数链")
 {
     // 锁"分段颜色依赖落画时刻位图,重放必须复用存档不能重算"的设计裁决
@@ -922,12 +878,6 @@ TEST_CASE("分段重放逐位复现:三参 drawShape 复用存储 segments 复�
     CHECK(replayed.getCurrent().copyData() == originalBitmap);
 }
 
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
-#endif // CD
-#if 0 // CD
 TEST_CASE("分段组合确定性:segmentColors+adaptive+alpha+pyramid 两跑一致")
 {
     const auto runOnce = [] {
@@ -946,8 +896,5 @@ TEST_CASE("分段组合确定性:segmentColors+adaptive+alpha+pyramid 两跑一�
     CHECK(runOnce() == runOnce());
 }
 
-#endif
 
-#endif // CD
-#endif // CD
 #endif // CD
