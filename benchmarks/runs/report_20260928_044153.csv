@@ -1,0 +1,2 @@
+﻿"case","img","steps","threads","types","fastExtra","verdict","sha_match","fingerprint_match","self_consistent","expect_diff","base_ms","fast_ms","speedup","note"
+"fix_bounds_explicit_fork","tiny_64.png","30","4","rect","--fix-shape-bounds","PASS","False","False","True","True","108","43","2.512","EXPECTED_DIFF:C.1.4 显式 bounds 路径(百分比按整幅像素跨度换算)分叉锁定"

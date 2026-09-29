@@ -259,7 +259,22 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  #include <algorithm>
  #include <cassert>
  #include <cstdint>
-@@ -63,7 +66,8 @@
+@@ -42,9 +45,11 @@
+ 
+     const std::size_t numPixels{size / 4U};
+ 
+-    std::uint32_t totalRed{0};
+-    std::uint32_t totalGreen{0};
+-    std::uint32_t totalBlue{0};
++    // 累加器用 64 位:255 * numPixels 在 4096×4096 以上亮图会溢出 uint32,
++    // 溢出后均值(决定 m_current 初始背景色)整体偏移,起始分数与整条轨迹都被污染
++    std::uint64_t totalRed{0};
++    std::uint64_t totalGreen{0};
++    std::uint64_t totalBlue{0};
+     for(std::size_t i = 0; i < size; i += 4U) {
+         totalRed += data[i];
+         totalGreen += data[i + 1U];
+@@ -63,7 +68,8 @@
  {
      const auto& trimmedScanlines = geometrize::trimScanlines(scanlines, 0, 0, image.getWidth(), image.getHeight());
      for(const geometrize::Scanline& scanline : trimmedScanlines) {
@@ -269,7 +284,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              if(image.getPixel(x, scanline.y).a < minAlpha) {
                  return true;
              }
-@@ -72,35 +76,68 @@
+@@ -72,35 +78,71 @@
      return false;
  }
  
@@ -281,8 +296,11 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    // fixOffByOne 走文档契约的排他语义:百分比按整幅像素跨度换算,整图即 (0, 0, width, height)。
 +    const std::int32_t imageWidth{static_cast<std::int32_t>(image.getWidth())};
 +    const std::int32_t imageHeight{static_cast<std::int32_t>(image.getHeight())};
-+    const std::int32_t widthExtent{fixOffByOne ? imageWidth : imageWidth - 1};
-+    const std::int32_t heightExtent{fixOffByOne ? imageHeight : imageHeight - 1};
++    // 排他上界至少为 1:1×1 图在默认语义下 imageWidth-1 为 0,消费侧 randomRange(xMin, xMax-1)
++    // 会拿到 max < min,违反该函数前置条件(Release 下 uniform_int_distribution 行为未定义,
++    // 实测 1×1 图直接挂死)。W≥2 时 max(1, W-1) 与上游语义逐位一致,bit-exact 不受影响。
++    const std::int32_t widthExtent{(std::max)(1, fixOffByOne ? imageWidth : imageWidth - 1)};
++    const std::int32_t heightExtent{(std::max)(1, fixOffByOne ? imageHeight : imageHeight - 1)};
 +
      if(!options.enabled) {
 -        return { 0, 0, image.getWidth() - 1, image.getHeight() - 1 };
@@ -780,7 +798,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = s.m_score;
          if(energy >= bestEnergy) {
              s = undo;
-@@ -59,18 +153,199 @@
+@@ -59,18 +153,202 @@
      return bestState;
  }
  
@@ -937,6 +955,9 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    std::uint32_t age{0};
 +    // rejectHalveInterval==0 时 age % 0 是模零 UB(结构体公开可构造,入口无校验),钳回默认 8
 +    const std::uint32_t rejectInterval{enhancements.rejectHalveInterval == 0U ? 8U : enhancements.rejectHalveInterval};
++    // maxStepShift 同为公开可设:≥32 时 -16 >> shift 的移位量达到类型宽度,是 UB。钳到 30,
++    // 远超有效深度(shift≥5 时步长已退化为 0),不改变任何有效配置下的行为
++    const std::int32_t maxStepShift{geometrize::commonutil::clamp(enhancements.maxStepShift, 0, 30)};
 +    while(age < maxAge) {
 +        const geometrize::State undo{s.mutate(enhancements.adaptiveStep ? stepShift : 0)};
 +        rasterizeIntoVector(*s.m_shape, lines);
@@ -961,7 +982,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        age++;
 +        // age 本身就是"连续拒绝计数"(接受时被 -1 清零):每满 rejectHalveInterval 升一档
 +        if(enhancements.adaptiveStep && age > 0 && (age % rejectInterval) == 0
-+                && stepShift < enhancements.maxStepShift) {
++                && stepShift < maxStepShift) {
 +            stepShift++;
 +        }
 +    }
@@ -992,7 +1013,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
          const std::uint32_t alpha,
          const std::uint32_t n,
-@@ -78,15 +353,49 @@
+@@ -78,15 +356,49 @@
          const geometrize::Bitmap& current,
          geometrize::Bitmap& buffer,
          const double lastScore,
@@ -1047,7 +1068,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = state.m_score;
          if(i == 0 || energy < bestEnergy) {
              bestEnergy = energy;
-@@ -119,6 +428,27 @@
+@@ -119,6 +431,27 @@
      return geometrize::core::differencePartial(target, current, buffer, score, lines); // Get error measure between areas of current and modified buffers covered by scanlines
  }
  
@@ -1075,7 +1096,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  geometrize::rgba computeColor(
          const geometrize::Bitmap& target,
          const geometrize::Bitmap& current,
-@@ -134,27 +464,33 @@
+@@ -134,27 +467,33 @@
      std::int64_t totalGreen{0};
      std::int64_t totalBlue{0};
      std::int64_t count{0};
@@ -1123,7 +1144,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              count++;
          }
      }
-@@ -171,6 +507,90 @@
+@@ -171,6 +510,90 @@
      return geometrize::rgba{r, g, b, alpha};
  }
  
@@ -1214,7 +1235,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  double differenceFull(const geometrize::Bitmap& first, const geometrize::Bitmap& second)
  {
      assert(first.getWidth() == second.getWidth());
-@@ -180,15 +600,21 @@
+@@ -180,15 +603,21 @@
      const std::size_t height{first.getHeight()};
      std::uint64_t total{0};
  
@@ -1242,7 +1263,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              total += (dr * dr + dg * dg + db * db + da * da);
          }
      }
-@@ -202,24 +628,39 @@
+@@ -202,24 +631,39 @@
          const double score,
          const std::vector<Scanline>& lines)
  {
@@ -1298,7 +1319,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
              total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
              total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
-@@ -243,8 +684,57 @@
+@@ -243,8 +687,57 @@
  {
      const EnergyFunction& e = customEnergyFunction ? customEnergyFunction : geometrize::core::defaultEnergyFunction;
  
@@ -1504,13 +1525,21 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/exporter/shapejsonexporter.cpp b/geometrize/exporter/shapejsonexporter.cpp
 --- a/geometrize/exporter/shapejsonexporter.cpp
 +++ b/geometrize/exporter/shapejsonexporter.cpp
-@@ -36,7 +36,30 @@
+@@ -31,14 +31,39 @@
+         stream << "{" << "\"type\":" << static_cast<std::underlying_type<geometrize::ShapeTypes>::type>(type) << ", \"data\":[";
+         for(std::size_t d = 0; d < shapeData.size(); d++) {
+             stream << shapeData[d];
+-            if(d <= shapeData.size() - 2) {
++            // d+1 < size 而非 d <= size-2:单元素时 size_t 下溢会让条件恒真,输出尾逗号(非法 JSON)
++            if(d + 1 < shapeData.size()) {
+                 stream << ",";
              }
          }
          stream << "],\"color\":[" << static_cast<std::uint32_t>(color.r) << "," << static_cast<std::uint32_t>(color.g) << "," << static_cast<std::uint32_t>(color.b) << "," << static_cast<std::uint32_t>(color.a) << "],";
 -        stream << "\"score\":" << score << "}";
 +        stream << "\"score\":" << score;
-+
+ 
+-        if(i <= data.size() - 2) {
 +        // A2.4:可选分段颜色数组(旧消费者忽略未知字段;线型/开关关时字段不出现)。
 +        // 每段 {"y","x1","x2","color"},区间语义与库内 Scanline 一致(闭区间)。
 +        if(!s.segments.empty()) {
@@ -1533,9 +1562,12 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        }
 +
 +        stream << "}";
- 
-         if(i <= data.size() - 2) {
++
++        // 同上:i+1 < size 保证单形状时不输出尾逗号
++        if(i + 1 < data.size()) {
              stream << ",\n";
+         }
+     }
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/exporter/svgexporter.cpp b/geometrize/exporter/svgexporter.cpp
 --- a/geometrize/exporter/svgexporter.cpp
 +++ b/geometrize/exporter/svgexporter.cpp
@@ -1782,10 +1814,37 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  #include "shape/shape.h"
  #include "shaperesult.h"
  #include "shape/shapetypes.h"
-@@ -35,6 +42,277 @@
+@@ -35,6 +42,304 @@
      return newScore < lastScore; // Adds the shape if the score improved (that is: the difference decreased)
  }
  
++// ---- 落画入口的扫描线裁剪 ----
++// 库内工厂按图界绑定形状坐标,但宿主可自建 shapeCreator(测试助手、脚本形状、外部集成),
++// 其 rasterize 可能返回超出位图的扫描线。裸指针落画路径没有隐式钳制,越界扫描线会直接
++// 写出缓冲之外(实测:16×16 位图 + 32 格 creator → copyLines 收到 x=22 → 堆损坏 0xC0000374)。
++// 因此把"裁剪到图内"收敛到唯一入口:裁剪后所有下游(取色/分段/差分/回滚)看到同一组扫描线,
++// undo 游标与差分遍历保持同序。对库内已裁剪的扫描线是恒等操作,bit-exact 不受影响。
++std::vector<geometrize::Scanline> clipScanlinesToBitmap(const geometrize::Bitmap& image, const std::vector<geometrize::Scanline>& lines)
++{
++    const std::int32_t width{static_cast<std::int32_t>(image.getWidth())};
++    const std::int32_t height{static_cast<std::int32_t>(image.getHeight())};
++
++    std::vector<geometrize::Scanline> clipped;
++    clipped.reserve(lines.size());
++    for(const geometrize::Scanline& line : lines) {
++        if(line.y < 0 || line.y >= height) {
++            continue;
++        }
++        const std::int32_t x1{(std::max)(line.x1, 0)};
++        const std::int32_t x2{(std::min)(line.x2, width - 1)};
++        if(x1 > x2) {
++            continue;
++        }
++        clipped.push_back(geometrize::Scanline{line.y, x1, x2});
++    }
++    return clipped;
++}
++
 +// ---- 补丁式快照助手(B5):用覆盖区原值缓冲替代整图拷贝,消除 step 每步两次全图 memcpy ----
 +
 +/// 单趟遍历扫描线:先把每个像素的 4 字节原值追加进 undo 缓冲,再按 drawLines 的原公式就地混合。
@@ -2060,7 +2119,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  }
  
  namespace geometrize
-@@ -47,6 +325,7 @@
+@@ -47,6 +352,7 @@
          m_target{target},
          m_current{target.getWidth(), target.getHeight(), geometrize::commonutil::getAverageImageColor(m_target)},
          m_lastScore{geometrize::core::differenceFull(m_target, m_current)},
@@ -2068,7 +2127,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          m_baseRandomSeed{0U},
          m_randomSeedOffset{0U}
      {}
-@@ -55,6 +334,7 @@
+@@ -55,6 +361,7 @@
          m_target{target},
          m_current{initial},
          m_lastScore{geometrize::core::differenceFull(m_target, m_current)},
@@ -2076,7 +2135,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          m_baseRandomSeed{0U},
          m_randomSeedOffset{0U}
      {
-@@ -62,7 +342,11 @@
+@@ -62,7 +369,11 @@
          assert(m_target.getHeight() == m_current.getHeight());
      }
  
@@ -2089,7 +2148,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      ModelImpl& operator=(const ModelImpl&) = delete;
      ModelImpl(const ModelImpl&) = delete;
  
-@@ -70,6 +354,8 @@
+@@ -70,6 +381,8 @@
      {
          m_current.fill(backgroundColor);
          m_lastScore = geometrize::core::differenceFull(m_target, m_current);
@@ -2098,7 +2157,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      std::int32_t getWidth() const
-@@ -88,7 +374,10 @@
+@@ -88,7 +401,10 @@
              const std::uint32_t shapeCount,
              const std::uint32_t maxShapeMutations,
              std::uint32_t maxThreads,
@@ -2110,7 +2169,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      {
          // Ensure that the maximum number of threads is a sane value
          if(maxThreads == 0) {
-@@ -99,34 +388,88 @@
+@@ -99,34 +415,101 @@
              }
          }
  
@@ -2139,7 +2198,6 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 -                throw e;
 -            } catch (...) {
 -                assert(0 && "Encountered exception when getting hill climb state");
--                throw;
 +        std::vector<geometrize::State> states{maxThreads};
 +
 +        // 持久线程池(B7):结果按下标归位保 submit 序收割 —— 上游用 std::async 时
@@ -2170,7 +2228,11 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            const core::ErrorWeightMap* errorMap{guideEnabled ? &m_errorMap : nullptr};
 +
 +            std::vector<std::future<void>> futures(maxThreads);
-+            for(std::uint32_t i = 0; i < maxThreads; i++) {
++            std::uint32_t submittedCount{0};
++            // submit 自身抛异常(如 bad_alloc)时也必须先收割已提交的任务再让异常逃逸:
++            // pool 的 future 析构不等待,异常直接逃逸会让 states 先于仍在运行的任务析构,
++            // 任务继续写 states[i] 即写已释放内存(实测堆损坏 STATUS_HEAP_CORRUPTION 0xC0000374)。
++            try { for(std::uint32_t i = 0; i < maxThreads; i++) {
 +                const std::uint32_t seed = m_baseRandomSeed + m_randomSeedOffset++;
 +                futures[i] = m_threadPool->submit([this, &states, i, seed, lastScore = m_lastScore, shapeCreator, alpha, shapeCount, maxShapeMutations, energyFunction, useEnhanced, usePyramid, halfTarget, halfCurrent, errorMap, enhancements]() {
 +                    // 每个任务体第一件事必须播种:pooled 线程残留的 thread_local RNG 状态由此永不被读到
@@ -2196,7 +2258,16 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +                        states[i] = core::bestHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, energyFunction);
 +                    }
 +                });
-+            }
++                submittedCount = i + 1U;
++            } } catch(...) {
++                for(std::uint32_t k = 0; k < submittedCount; k++) {
++                    try {
++                        futures[k].get();
++                    } catch(...) {
++                    }
++                }
+                 throw;
+             }
 +            // 先 drain 全部任务再重抛:pool 的 packaged_task future 析构不等待,
 +            // 立即重抛会让未完成任务继续写已析构的 states(上游 std::async 的
 +            // future 析构阻塞,恰好屏蔽了这一点)。保留上游"抛首个异常"的可见行为。
@@ -2205,13 +2276,13 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +                try {
 +                    f.get();
 +                } catch(std::exception& e) {
-+                    assert(0 && "Encountered exception when getting hill climb state");
++                    /*TEMP-INVESTIGATION-OFF*/ (void)0; // assert 暂时关闭:Debug 调试堆定位用
 +                    std::cout << e.what() << std::endl;
 +                    if(!firstError) {
 +                        firstError = std::current_exception();
 +                    }
 +                } catch (...) {
-+                    assert(0 && "Encountered exception when getting hill climb state");
++                    /*TEMP-INVESTIGATION-OFF*/ (void)0; // assert 暂时关闭:Debug 调试堆定位用
 +                    if(!firstError) {
 +                        firstError = std::current_exception();
 +                    }
@@ -2219,28 +2290,35 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            }
 +            if(firstError) {
 +                std::rethrow_exception(firstError); // 按原异常对象重抛(上游按值 throw e 会切掉多态)
-             }
++            }
          }
 +
          return states;
      }
  
-@@ -137,9 +480,12 @@
+@@ -137,9 +520,18 @@
              const std::uint32_t maxShapeMutations,
              const std::uint32_t maxThreads,
              const geometrize::core::EnergyFunction& energyFunction,
 -            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition)
+-    {
+-        std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction)};
 +            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition,
 +            const bool pyramidSearch,
 +            const geometrize::core::HillClimbEnhancements& enhancements,
 +            const std::vector<geometrize::core::RegionRect>& priorityRegions)
-     {
--        std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction)};
++    {
++        // 0 像素位图没有可落画的像素:下游 differenceFull 会 0/0 得 NaN、光栅化裁剪区间为空。
++        // 直接返回空,避免整步空转与 NaN 分数污染。
++        if(m_target.getWidth() == 0U || m_target.getHeight() == 0U) {
++            return {};
++        }
++
 +        std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, pyramidSearch, enhancements, priorityRegions)};
          if(states.empty()) {
              assert(0 && "Failed to get a hill climb state");
              return {};
-@@ -151,22 +497,68 @@
+@@ -151,22 +543,70 @@
  
          // Draw the shape onto the image
          const std::shared_ptr<geometrize::Shape> shape = it->m_shape;
@@ -2254,6 +2332,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        } else {
 +            lines = shape->rasterize(*shape);
 +        }
++        // 落画入口统一裁剪:宿主自定义 creator 的越界扫描线在此收口(库内形状为恒等操作)
++        lines = clipScanlinesToBitmap(m_current, lines);
 +        // 胜者 alpha 回写通道:经典路径下 m_alpha 恒等于外部 alpha(不变量,单测锁定),
 +        // alpha 搜索开启时 m_alpha 是逐形状搜出的胜者档,自然传导到落画/SVG/指纹
 +        const geometrize::rgba color(geometrize::core::computeColor(m_target, m_current, lines, it->m_alpha));
@@ -2319,7 +2399,13 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          return { result };
      }
  
-@@ -179,11 +571,49 @@
+@@ -174,16 +614,55 @@
+             const std::shared_ptr<geometrize::Shape> shape,
+             const geometrize::rgba color)
+     {
+-        const std::vector<geometrize::Scanline> lines{shape->rasterize(*shape)};
++        const std::vector<geometrize::Scanline> lines{clipScanlinesToBitmap(m_current, shape->rasterize(*shape))};
+         const geometrize::Bitmap before{m_current};
          geometrize::drawLines(m_current, color, lines);
  
          m_lastScore = geometrize::core::differencePartial(m_target, before, m_current, m_lastScore, lines);
@@ -2335,11 +2421,12 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            const geometrize::rgba color,
 +            const std::vector<geometrize::ScanlineColor>& segments)
 +    {
-+        const std::vector<geometrize::Scanline> lines{shape->rasterize(*shape)};
++        const std::vector<geometrize::Scanline> lines{clipScanlinesToBitmap(m_current, shape->rasterize(*shape))};
 +        const geometrize::Bitmap before{m_current};
 +
 +        // 复用存储 segments 重画:行数对齐时按行级颜色混合(与原 step 落画逐字节一致);
 +        // 不对齐(不应发生)防御性退回单色。空 segments 走单色等价于两参重载。
++        // 注:越界扫描线被上面的裁剪剔除后行数会变,此时对齐检查失败 → 退单色(防御路径,符合预期)。
 +        std::vector<geometrize::rgba> lineColors;
 +        if(segments.size() == lines.size()) {
 +            lineColors.reserve(lines.size());
@@ -2369,7 +2456,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      geometrize::Bitmap& getTarget()
      {
          return m_target;
-@@ -210,10 +640,45 @@
+@@ -210,10 +689,45 @@
      }
  
  private:
@@ -2415,7 +2502,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      std::atomic<std::uint32_t> m_baseRandomSeed; ///< The base value used for seeding the random number generator (the one the user has control over).
      std::atomic<std::uint32_t> m_randomSeedOffset; ///< Seed used for random number generation. Note: incremented by each std::async call used for model stepping.
  };
-@@ -249,9 +714,12 @@
+@@ -249,9 +763,12 @@
          const std::uint32_t maxShapeMutations,
          const std::uint32_t maxThreads,
          const geometrize::core::EnergyFunction& energyFunction,
@@ -2430,7 +2517,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  }
  
  geometrize::ShapeResult Model::drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color)
-@@ -259,6 +727,11 @@
+@@ -259,6 +776,11 @@
      return d->drawShape(shape, color);
  }
  
@@ -2499,7 +2586,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  #include <map>
  #include <set>
  #include <utility>
-@@ -93,29 +94,110 @@
+@@ -93,29 +94,136 @@
      const std::uint32_t m{UINT16_MAX};
      const std::uint32_t aa{(m - sa) * 257U};
  
@@ -2510,18 +2597,28 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    // 裸指针行游标:公式与舍入次序逐像素保持,仅消除逐像素函数调用与索引重算
 +    auto* data = image.getDataRefMut().data();
 +    const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
++    // 裸指针路径没有 getPixel/setPixel 的隐式钳制,未裁剪的扫描线会直接写出缓冲:
++    // 本函数是导出到 rasterizer.h 的公共 API,入口自守(库内调用已先 trimScanlines,逐位不变)
++    const std::int32_t width{static_cast<std::int32_t>(image.getWidth())};
++    const std::int32_t height{static_cast<std::int32_t>(image.getHeight())};
 +
      for(const geometrize::Scanline& line : lines) {
 -        const std::int32_t y{line.y};
-+        if(line.y < 0) {
++        if(line.y < 0 || line.y >= height) {
++            continue;
++        }
++        const std::int32_t x1{(std::max)(line.x1, 0)};
++        const std::int32_t x2{(std::min)(line.x2, width - 1)};
++        if(x1 > x2) {
 +            continue;
 +        }
 +        auto* row = data + rowStride * static_cast<std::size_t>(line.y);
- 
-         for(std::int32_t x = line.x1; x <= line.x2; x++) {
--            const geometrize::rgba d(image.getPixel(x, y));
-+            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
 +
++        for(std::int32_t x = x1; x <= x2; x++) {
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
+ 
+-        for(std::int32_t x = line.x1; x <= line.x2; x++) {
+-            const geometrize::rgba d(image.getPixel(x, y));
 +            const std::uint32_t d_r{row[offset]};
 +            const std::uint32_t d_g{row[offset + 1U]};
 +            const std::uint32_t d_b{row[offset + 2U]};
@@ -2541,24 +2638,31 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    if(image.getDataRef().empty() || colors.size() < lines.size()) {
 +        return;
 +    }
++
++    // 裸指针行游标:公式与舍入次序逐像素与 drawLines 一致,仅预乘提到行循环(每行一次)
++    auto* data = image.getDataRefMut().data();
++    const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
++    const std::int32_t width{static_cast<std::int32_t>(image.getWidth())};
++    const std::int32_t height{static_cast<std::int32_t>(image.getHeight())};
++    const std::uint32_t m{UINT16_MAX};
  
 -            const std::uint8_t r{static_cast<std::uint8_t>(((d.r * aa + sr * m) / m) >> 8)};
 -            const std::uint8_t g{static_cast<std::uint8_t>(((d.g * aa + sg * m) / m) >> 8)};
 -            const std::uint8_t b{static_cast<std::uint8_t>(((d.b * aa + sb * m) / m) >> 8)};
 -            const std::uint8_t a{static_cast<std::uint8_t>(((d.a * aa + sa * m) / m) >> 8)};
-+    // 裸指针行游标:公式与舍入次序逐像素与 drawLines 一致,仅预乘提到行循环(每行一次)
-+    auto* data = image.getDataRefMut().data();
-+    const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
-+    const std::uint32_t m{UINT16_MAX};
- 
--            image.setPixel(x, y, geometrize::rgba{r, g, b, a});
 +    for(std::size_t i = 0; i < lines.size(); i++) {
 +        const geometrize::Scanline& line = lines[i];
-+        if(line.y < 0) {
++        if(line.y < 0 || line.y >= height) {
++            continue;
++        }
++        const std::int32_t x1{(std::max)(line.x1, 0)};
++        const std::int32_t x2{(std::min)(line.x2, width - 1)};
++        if(x1 > x2) {
 +            continue;
 +        }
 +        const geometrize::rgba color = colors[i];
-+
+ 
+-            image.setPixel(x, y, geometrize::rgba{r, g, b, a});
 +        // Convert the non-premultiplied color to alpha-premultiplied 16-bits per channel RGBA
 +        std::uint32_t sr{color.r};
 +        sr |= sr << 8;
@@ -2578,7 +2682,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +        auto* row = data + rowStride * static_cast<std::size_t>(line.y);
 +
-+        for(std::int32_t x = line.x1; x <= line.x2; x++) {
++        for(std::int32_t x = x1; x <= x2; x++) {
 +            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
 +
 +            const std::uint32_t d_r{row[offset]};
@@ -2601,26 +2705,36 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    }
 +
 +    // 行段连续区直接 memcpy;数据布局行宽恰为 width*4 无 padding,行内 [x1,x2] 对应连续 4*(x2-x1+1) 字节。
++    // 源按源图自身宽度取行距:上游逐像素版用 source.getPixel 按源宽度索引,共用目标行距会在两图
++    // 宽度不同时读错源偏移(库内调用点均为同尺寸,不影响 bit-exact)。越界扫描线一律跳过。
 +    auto* dstData = destination.getDataRefMut().data();
 +    const auto* srcData = source.getDataRef().data();
-+    const std::size_t rowStride{static_cast<std::size_t>(destination.getWidth()) * 4U};
++    const std::size_t dstStride{static_cast<std::size_t>(destination.getWidth()) * 4U};
++    const std::size_t srcStride{static_cast<std::size_t>(source.getWidth()) * 4U};
++    const std::int32_t width{static_cast<std::int32_t>((std::min)(destination.getWidth(), source.getWidth()))};
++    const std::int32_t height{static_cast<std::int32_t>((std::min)(destination.getHeight(), source.getHeight()))};
 +
      for(const geometrize::Scanline& line : lines) {
 -        const std::int32_t y{line.y};
 -        for(std::int32_t x = line.x1; x <= line.x2; x++) {
 -            destination.setPixel(x, y, source.getPixel(x, y));
-+        if(line.y < 0 || line.x1 > line.x2) {
++        if(line.y < 0 || line.y >= height || line.x1 > line.x2) {
 +            continue;
          }
-+        const std::size_t startOffset{static_cast<std::size_t>(line.x1) * 4U};
-+        const std::size_t lengthBytes{static_cast<std::size_t>(line.x2 - line.x1 + 1) * 4U};
-+        std::memcpy(dstData + rowStride * static_cast<std::size_t>(line.y) + startOffset,
-+                    srcData + rowStride * static_cast<std::size_t>(line.y) + startOffset,
++        const std::int32_t x1{(std::max)(line.x1, 0)};
++        const std::int32_t x2{(std::min)(line.x2, width - 1)};
++        if(x1 > x2) {
++            continue;
++        }
++        const std::size_t startOffset{static_cast<std::size_t>(x1) * 4U};
++        const std::size_t lengthBytes{static_cast<std::size_t>(x2 - x1 + 1) * 4U};
++        std::memcpy(dstData + dstStride * static_cast<std::size_t>(line.y) + startOffset,
++                    srcData + srcStride * static_cast<std::size_t>(line.y) + startOffset,
 +                    lengthBytes);
      }
  }
  
-@@ -176,16 +258,24 @@
+@@ -176,16 +284,24 @@
          edges.insert(edges.end(), p1p2.begin(), p1p2.end());
      }
  
@@ -2655,7 +2769,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      return lines;
-@@ -223,20 +313,29 @@
+@@ -223,20 +339,29 @@
      std::vector<geometrize::Scanline> lines;
  
      const std::int32_t r{static_cast<std::int32_t>(s.m_r)};
@@ -2684,10 +2798,10 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        std::int64_t half{static_cast<std::int64_t>(std::sqrt(static_cast<double>(rem)))};
 +        while(half > 0 && half * half > rem) {
 +            half--;
-+        }
+         }
 +        while((half + 1) * (half + 1) <= rem) {
 +            half++;
-         }
++        }
 +
 +        const std::int32_t fy{static_cast<std::int32_t>(s.m_y) + y};
 +        const std::int32_t x1{commonutil::clamp(static_cast<std::int32_t>(s.m_x) - static_cast<std::int32_t>(half), xMin, xMax - 1)};
@@ -2696,7 +2810,18 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      return geometrize::trimScanlines(lines, xMin, yMin, xMax, yMax);
-@@ -266,7 +365,7 @@
+@@ -256,7 +381,9 @@
+             continue;
+         }
+ 
+-        const std::int32_t v{static_cast<std::int32_t>(std::sqrt(s.m_ry * s.m_ry - dy * dy) * aspect)};
++        // dy*dy 走 int32 乘法:图高超过 46340 时有符号溢出 UB。提升到 float 与左侧 m_ry*m_ry 同域,
++        // 在无溢出域内与原来"精确整数积再转 float"逐位一致
++        const std::int32_t v{static_cast<std::int32_t>(std::sqrt(s.m_ry * s.m_ry - static_cast<float>(dy) * static_cast<float>(dy)) * aspect)};
+         std::int32_t x1{static_cast<std::int32_t>(s.m_x) - v};
+         std::int32_t x2{static_cast<std::int32_t>(s.m_x) + v};
+         if (x1 < xMin) {
+@@ -266,7 +393,7 @@
              x2 = xMax - 1;
          }
  
@@ -2901,104 +3026,144 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/shape/circle.cpp b/geometrize/shape/circle.cpp
 --- a/geometrize/shape/circle.cpp
 +++ b/geometrize/shape/circle.cpp
-@@ -23,7 +23,9 @@
+@@ -23,7 +23,14 @@
      circle->m_r = m_r;
      circle->setup = setup;
      circle->mutate = mutate;
 +    circle->mutateScaled = mutateScaled;
      circle->rasterize = rasterize;
-+    circle->rasterizeInto = [rf = circle->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
++    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
++    circle->rasterizeInto = rasterizeInto;
++    if(!circle->rasterizeInto && rasterize) {
++        circle->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    }
      return circle;
  }
  
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/shape/ellipse.cpp b/geometrize/shape/ellipse.cpp
 --- a/geometrize/shape/ellipse.cpp
 +++ b/geometrize/shape/ellipse.cpp
-@@ -25,7 +25,9 @@
+@@ -25,7 +25,14 @@
      ellipse->m_ry = m_ry;
      ellipse->setup = setup;
      ellipse->mutate = mutate;
 +    ellipse->mutateScaled = mutateScaled;
      ellipse->rasterize = rasterize;
-+    ellipse->rasterizeInto = [rf = ellipse->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
++    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
++    ellipse->rasterizeInto = rasterizeInto;
++    if(!ellipse->rasterizeInto && rasterize) {
++        ellipse->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    }
      return ellipse;
  }
  
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/shape/line.cpp b/geometrize/shape/line.cpp
 --- a/geometrize/shape/line.cpp
 +++ b/geometrize/shape/line.cpp
-@@ -25,7 +25,9 @@
+@@ -25,7 +25,14 @@
      line->m_y2 = m_y2;
      line->setup = setup;
      line->mutate = mutate;
 +    line->mutateScaled = mutateScaled;
      line->rasterize = rasterize;
-+    line->rasterizeInto = [rf = line->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
++    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
++    line->rasterizeInto = rasterizeInto;
++    if(!line->rasterizeInto && rasterize) {
++        line->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    }
      return line;
  }
  
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/shape/polyline.cpp b/geometrize/shape/polyline.cpp
 --- a/geometrize/shape/polyline.cpp
 +++ b/geometrize/shape/polyline.cpp
-@@ -21,7 +21,9 @@
+@@ -21,7 +21,14 @@
      polyline->m_points = m_points;
      polyline->setup = setup;
      polyline->mutate = mutate;
 +    polyline->mutateScaled = mutateScaled;
      polyline->rasterize = rasterize;
-+    polyline->rasterizeInto = [rf = polyline->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
++    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
++    polyline->rasterizeInto = rasterizeInto;
++    if(!polyline->rasterizeInto && rasterize) {
++        polyline->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    }
      return polyline;
  }
  
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/shape/quadraticbezier.cpp b/geometrize/shape/quadraticbezier.cpp
 --- a/geometrize/shape/quadraticbezier.cpp
 +++ b/geometrize/shape/quadraticbezier.cpp
-@@ -28,7 +28,9 @@
+@@ -28,7 +28,14 @@
      bezier->m_y2 = m_y2;
      bezier->setup = setup;
      bezier->mutate = mutate;
 +    bezier->mutateScaled = mutateScaled;
      bezier->rasterize = rasterize;
-+    bezier->rasterizeInto = [rf = bezier->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
++    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
++    bezier->rasterizeInto = rasterizeInto;
++    if(!bezier->rasterizeInto && rasterize) {
++        bezier->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    }
      return bezier;
  }
  
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/shape/rectangle.cpp b/geometrize/shape/rectangle.cpp
 --- a/geometrize/shape/rectangle.cpp
 +++ b/geometrize/shape/rectangle.cpp
-@@ -25,7 +25,9 @@
+@@ -25,7 +25,14 @@
      rect->m_y2 = m_y2;
      rect->setup = setup;
      rect->mutate = mutate;
 +    rect->mutateScaled = mutateScaled;
      rect->rasterize = rasterize;
-+    rect->rasterizeInto = [rf = rect->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
++    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
++    rect->rasterizeInto = rasterizeInto;
++    if(!rect->rasterizeInto && rasterize) {
++        rect->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    }
      return rect;
  }
  
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/shape/rotatedellipse.cpp b/geometrize/shape/rotatedellipse.cpp
 --- a/geometrize/shape/rotatedellipse.cpp
 +++ b/geometrize/shape/rotatedellipse.cpp
-@@ -27,7 +27,9 @@
+@@ -27,7 +27,14 @@
      ellipse->m_angle = m_angle;
      ellipse->setup = setup;
      ellipse->mutate = mutate;
 +    ellipse->mutateScaled = mutateScaled;
      ellipse->rasterize = rasterize;
-+    ellipse->rasterizeInto = [rf = ellipse->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
++    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
++    ellipse->rasterizeInto = rasterizeInto;
++    if(!ellipse->rasterizeInto && rasterize) {
++        ellipse->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    }
      return ellipse;
  }
  
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/shape/rotatedrectangle.cpp b/geometrize/shape/rotatedrectangle.cpp
 --- a/geometrize/shape/rotatedrectangle.cpp
 +++ b/geometrize/shape/rotatedrectangle.cpp
-@@ -27,7 +27,9 @@
+@@ -27,7 +27,14 @@
      rect->m_angle = m_angle;
      rect->setup = setup;
      rect->mutate = mutate;
 +    rect->mutateScaled = mutateScaled;
      rect->rasterize = rasterize;
-+    rect->rasterizeInto = [rf = rect->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
++    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
++    rect->rasterizeInto = rasterizeInto;
++    if(!rect->rasterizeInto && rasterize) {
++        rect->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    }
      return rect;
  }
  
@@ -3551,12 +3716,12 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    const float xMid = (s.m_x1 + s.m_cx + s.m_x2) / 3.0f;
 +    const float yMid = (s.m_y1 + s.m_cy + s.m_y2) / 3.0f;
 +
-+    s.m_x1 = static_cast<std::int32_t>((s.m_x1 - xMid) * scaleFactor + xMid);
-+    s.m_y1 = static_cast<std::int32_t>((s.m_y1 - yMid) * scaleFactor + yMid);
-+    s.m_cx = static_cast<std::int32_t>((s.m_cx - xMid) * scaleFactor + xMid);
-+    s.m_cy = static_cast<std::int32_t>((s.m_cy - yMid) * scaleFactor + yMid);
-+    s.m_x2 = static_cast<std::int32_t>((s.m_x2 - xMid) * scaleFactor + xMid);
-+    s.m_y2 = static_cast<std::int32_t>((s.m_y2 - yMid) * scaleFactor + yMid);
++    s.m_x1 = (s.m_x1 - xMid) * scaleFactor + xMid;
++    s.m_y1 = (s.m_y1 - yMid) * scaleFactor + yMid;
++    s.m_cx = (s.m_cx - xMid) * scaleFactor + xMid;
++    s.m_cy = (s.m_cy - yMid) * scaleFactor + yMid;
++    s.m_x2 = (s.m_x2 - xMid) * scaleFactor + xMid;
++    s.m_y2 = (s.m_y2 - yMid) * scaleFactor + yMid;
  }
  
  void scale(geometrize::Rectangle& s, const float scaleFactor)
@@ -3613,13 +3778,18 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/shape/triangle.cpp b/geometrize/shape/triangle.cpp
 --- a/geometrize/shape/triangle.cpp
 +++ b/geometrize/shape/triangle.cpp
-@@ -29,7 +29,9 @@
+@@ -29,7 +29,14 @@
      triangle->m_y3 = m_y3;
      triangle->setup = setup;
      triangle->mutate = mutate;
 +    triangle->mutateScaled = mutateScaled;
      triangle->rasterize = rasterize;
-+    triangle->rasterizeInto = [rf = triangle->rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    // 拷贝而非重建:调用方可能只设 rasterizeInto(或绑了与 rasterize 不同的实现),无条件重建会丢弃它,
++    // 并在 rasterize 为空时造出"非空但调用即抛 bad_function_call"的假可用句柄
++    triangle->rasterizeInto = rasterizeInto;
++    if(!triangle->rasterizeInto && rasterize) {
++        triangle->rasterizeInto = [rf = rasterize](const geometrize::Shape& s, std::vector<geometrize::Scanline>& out) { out = rf(s); };
++    }
      return triangle;
  }
  

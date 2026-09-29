@@ -1,0 +1,2 @@
+﻿"case","img","steps","threads","types","fastExtra","verdict","sha_match","fingerprint_match","self_consistent","expect_diff","base_ms","fast_ms","speedup","note"
+"error_guide_combo","gradnoise_512.png","40","8","ellipse","--error-guide --pyramid --adaptive-step --alpha-search","PASS","False","False","True","True","16323","3981","4.1","EXPECTED_DIFF:误差图引导与金字塔/增强全组合分叉锁定"

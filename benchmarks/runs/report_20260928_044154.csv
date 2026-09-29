@@ -1,0 +1,2 @@
+﻿"case","img","steps","threads","types","fastExtra","verdict","sha_match","fingerprint_match","self_consistent","expect_diff","base_ms","fast_ms","speedup","note"
+"tiny64_edge","tiny_64.png","40","4","ellipse,line","","FAIL","False","False","False","False","0","0","0","小图边界退化; exe 无输出(含一次重试)"

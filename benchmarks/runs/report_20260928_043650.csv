@@ -1,0 +1,3 @@
+﻿"case","img","steps","threads","types","fastExtra","verdict","sha_match","fingerprint_match","self_consistent","expect_diff","base_ms","fast_ms","speedup","note"
+"fix_bounds_fork","tiny_64.png","40","4","ellipse,rect,line","--fix-shape-bounds","PASS","False","False","True","True","154","66","2.333","EXPECTED_DIFF:C.1.4 形状边界 off-by-one 修复分叉锁定(整图排他上界,最右列/最下行可落画),修复失效(输出变同)即红"
+"fix_bounds_explicit_fork","tiny_64.png","30","4","rect","--fix-shape-bounds","PASS","False","False","True","True","107","44","2.432","EXPECTED_DIFF:C.1.4 显式 bounds 路径(百分比按整幅像素跨度换算)分叉锁定"

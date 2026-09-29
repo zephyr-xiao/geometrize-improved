@@ -1,0 +1,2 @@
+﻿"case","img","steps","threads","types","fastExtra","verdict","sha_match","fingerprint_match","self_consistent","expect_diff","base_ms","fast_ms","speedup","note"
+"tiny64_edge","tiny_64.png","40","4","ellipse,line","","PASS","True","True","True","False","163","67","2.433","小图边界退化"
