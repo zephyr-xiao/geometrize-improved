@@ -162,7 +162,7 @@ def patch_sections(patch_bytes):
     return sections
 
 
-def verify_side(name, baseline_src, improved_src, regen_path, app_mode=False, keep=False, init=False):
+def verify_side(name, baseline_src, improved_src, regen_path, app_mode=False, keep=False, init=False, accept_drift=""):
     """单侧验证:返回 (ok, 漂移行)。G1 重放复现 + G2 归档新鲜度。"""
     tmp = tempfile.mkdtemp(prefix="geometrize_verify_%s_" % name)
     print("\n== %s 侧(tmp: %s)" % (name, tmp))
@@ -199,12 +199,34 @@ def verify_side(name, baseline_src, improved_src, regen_path, app_mode=False, ke
         if archived == now:
             print("[PASS] G2 归档新鲜度:已提交补丁与工作树现生成一致")
         elif init:
-            # 显式重建:工作树改动经确认后,按当前树重写归档(带回读校验)
-            for _ in range(2):
-                shutil.copy(os.path.join(tmp, "regen_now.diff"), regen_path)
-                if open(regen_path, "rb").read() == now:
-                    break
-            print("[INIT] 显式重建:已按当前工作树重新生成规范补丁 %s" % os.path.relpath(regen_path, REPO))
+            # 显式重建:工作树改动经确认后,按当前树重写归档(带回读校验)。
+            # 重建归档 = 把当前工作树当作新真相源,因此必须由人给出理由,并先把"被吞掉的漂移"
+            # 完整打印出来——否则一次误编辑 + 一次 --init 就把错的洗成对的(且此刻恰恰最需要证据)。
+            old_s, new_s = patch_sections(archived), patch_sections(now)
+            if not accept_drift:
+                ok = False
+                print("[FAIL] --init 被拒绝:工作树与归档存在漂移,重建等于把当前工作树当作新真相源。")
+                print("       请先核对以下被吞掉的漂移;确认无误后加 --accept-drift <原因> 再执行:")
+                for t in sorted(set(old_s) - set(new_s)):
+                    print("         归档独有(工作树已无此差异): %s" % t)
+                for t in sorted(set(new_s) - set(old_s)):
+                    print("         新增差异文件: %s" % t)
+                for t in sorted(set(old_s) & set(new_s)):
+                    if old_s[t] != new_s[t]:
+                        print("         补丁内容有变: %s" % t)
+            else:
+                for _ in range(2):
+                    shutil.copy(os.path.join(tmp, "regen_now.diff"), regen_path)
+                    if open(regen_path, "rb").read() == now:
+                        break
+                print("")
+                print("=" * 78)
+                print("[INIT] 已按当前工作树重建归档(非验证通过!)理由: %s" % accept_drift)
+                print("       漂移项: 归档独有 %d / 新增 %d / 内容有变 %d"
+                      % (len(set(old_s) - set(new_s)), len(set(new_s) - set(old_s)),
+                         len([t for t in set(old_s) & set(new_s) if old_s[t] != new_s[t]])))
+                print("=" * 78)
+                print("[INIT] 已按当前工作树重新生成规范补丁 %s" % os.path.relpath(regen_path, REPO))
         else:
             ok = False
             old_s, new_s = patch_sections(archived), patch_sections(now)
@@ -252,7 +274,11 @@ def verify_side(name, baseline_src, improved_src, regen_path, app_mode=False, ke
             print("       %s" % b)
 
     if not keep:
-        shutil.rmtree(tmp, ignore_errors=True)
+        if ok:
+            shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            # FAIL 时保留现场:解释失败所需的 regen_now.diff / apply 漂移默认被删会让排查必须原样重跑
+            print("[保留] 失败现场保留在 %s(排查完可手工删除)" % tmp)
     return ok
 
 
@@ -262,28 +288,40 @@ def main():
     ap.add_argument("--keep-temp", action="store_true", help="保留临时目录供排查")
     ap.add_argument("--init", action="store_true",
                     help="显式建档/重建:归档缺失或与工作树漂移时,按当前工作树重写规范补丁(缺省时缺失/漂移=FAIL)")
+    ap.add_argument("--accept-drift", default="", metavar="REASON",
+                    help="配合 --init:给出重建归档的理由(漂移已人工确认)。缺省时 --init 在漂移场景被拒绝")
+    ap.add_argument("--allow-app-drift", action="store_true",
+                    help="app 侧 FAIL 时仍以 exit 0 结束(缺省时 app 侧 FAIL 返回 exit 2,与 lib 的 exit 1 区分)")
     args = ap.parse_args()
 
     lib_ok = verify_side("lib",
                          os.path.join(REPO, "src", "baseline-lib", "geometrize"),
                          os.path.join(REPO, "src", "improved-lib", "geometrize"),
-                         LIB_REGEN, app_mode=False, keep=args.keep_temp, init=args.init)
+                         LIB_REGEN, app_mode=False, keep=args.keep_temp, init=args.init,
+                         accept_drift=args.accept_drift)
 
     app_ok = True
     if not args.skip_app:
         app_ok = verify_side("app",
                              os.path.join(REPO, "upstream", "geometrize-app"),
                              os.path.join(REPO, "src", "improved-app"),
-                             APP_REGEN, app_mode=True, keep=args.keep_temp, init=args.init)
+                             APP_REGEN, app_mode=True, keep=args.keep_temp, init=args.init,
+                             accept_drift=args.accept_drift)
         if not app_ok:
-            print("\n[WARN] app 侧存在差异(报告口径,不失败):构建产物/第三方 pin/二进制已豁免,"
-                  "其余逐文件差异请人工分类")
+            print("\n[FAIL] app 侧存在差异(交付物就是应用层,不能只告警):构建产物/第三方 pin/二进制已豁免,"
+                  "其余逐文件差异请人工分类;确认可放行时用 --allow-app-drift")
 
     if lib_ok and app_ok:
         print("\n== 全部门禁 PASS ==")
         return 0
-    print("\n== lib 门禁 FAIL(禁止合入)== " if not lib_ok else "\n== lib PASS,app 侧有报告项 ==")
-    return 0 if lib_ok else 1
+    if not lib_ok:
+        print("\n== lib 门禁 FAIL(禁止合入)==")
+        return 1
+    if args.allow_app_drift:
+        print("\n== lib PASS,app 侧有漂移(已显式放行)==")
+        return 0
+    print("\n== lib PASS,app 侧 FAIL(exit 2:交付物侧门禁未过)==")
+    return 2
 
 
 if __name__ == "__main__":

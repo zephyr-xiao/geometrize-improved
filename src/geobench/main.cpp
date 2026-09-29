@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include "geometrize/runner/imagerunner.h"
 #include "geometrize/runner/imagerunneroptions.h"
 #include "geometrize/exporter/shapejsonexporter.h"
+#include "geometrize/rasterizer/scanline.h"
 #include "geometrize/shape/shape.h"
 #include "geometrize/shaperesult.h"
 
@@ -91,6 +93,32 @@ void printUsage()
         "  -v                 逐步打印分数\n");
 }
 
+// 数值参数统一校验:空值/非数字/负号/超范围一律 exit 1。
+// 旧实现直接用 std::stoul:拼错的值会被静默接受("-3" → 4294967293 步)或直接 abort(无错误信息),
+// 前者让用例实际空转却仍以"哈希相同"判 PASS
+std::uint32_t parseU32Arg(const char* name, const std::string& token, std::uint32_t maxValue)
+{
+    if(token.empty()) {
+        std::fprintf(stderr, "%s 缺少取值\n", name);
+        std::exit(1);
+    }
+    if(token.find_first_not_of("0123456789") != std::string::npos) {
+        std::fprintf(stderr, "%s 应为非负整数: %s\n", name, token.c_str());
+        std::exit(1);
+    }
+    try {
+        const unsigned long value = std::stoul(token);
+        if(value > static_cast<unsigned long>(maxValue)) {
+            std::fprintf(stderr, "%s 超出上限 %u: %s\n", name, maxValue, token.c_str());
+            std::exit(1);
+        }
+        return static_cast<std::uint32_t>(value);
+    } catch(const std::exception&) {
+        std::fprintf(stderr, "%s 数值溢出: %s\n", name, token.c_str());
+        std::exit(1);
+    }
+}
+
 std::uint32_t parseShapeTypes(const std::string& spec)
 {
     if(spec == "all") {
@@ -112,11 +140,18 @@ std::uint32_t parseShapeTypes(const std::string& spec)
     while(pos < spec.size()) {
         const std::size_t comma = spec.find(',', pos);
         const std::string token = spec.substr(pos, (comma == std::string::npos) ? std::string::npos : comma - pos);
+        bool matched = false;
         for(const auto& entry : table) {
             if(token == entry.first) {
                 types |= entry.second;
+                matched = true;
                 break;
             }
+        }
+        // 未知形状名必须报错:静默忽略会让 types=0,一步都不画,两侧哈希相同 → 门禁判 PASS
+        if(!matched) {
+            std::fprintf(stderr, "未知形状类型: '%s'(可用: all 或 rect,rrect,tri,ellipse,rellipse,circle,line,bezier,polyline)\n", token.c_str());
+            std::exit(1);
         }
         if(comma == std::string::npos) {
             break;
@@ -151,27 +186,37 @@ Options parseArgs(int argc, char** argv)
         const std::string arg{argv[i]};
         const auto next = [&]() -> std::string { return (i + 1 < argc) ? std::string{argv[++i]} : std::string{}; };
         if(arg == "--input") opts.inputPath = next();
-        else if(arg == "--steps") opts.steps = static_cast<std::uint32_t>(std::stoul(next()));
-        else if(arg == "--alpha") opts.alpha = static_cast<std::uint32_t>(std::stoul(next()));
-        else if(arg == "--shape-count") opts.shapeCount = static_cast<std::uint32_t>(std::stoul(next()));
-        else if(arg == "--max-mutations") opts.maxMutations = static_cast<std::uint32_t>(std::stoul(next()));
-        else if(arg == "--seed") opts.seed = static_cast<std::uint32_t>(std::stoul(next()));
-        else if(arg == "--threads") opts.threads = static_cast<std::uint32_t>(std::stoul(next()));
+        else if(arg == "--steps") opts.steps = parseU32Arg("--steps", next(), 1000000000U);
+        else if(arg == "--alpha") opts.alpha = parseU32Arg("--alpha", next(), 255U);
+        else if(arg == "--shape-count") opts.shapeCount = parseU32Arg("--shape-count", next(), 1000000U);
+        else if(arg == "--max-mutations") opts.maxMutations = parseU32Arg("--max-mutations", next(), 1000000U);
+        else if(arg == "--seed") opts.seed = parseU32Arg("--seed", next(), 0xFFFFFFFFU);
+        else if(arg == "--threads") opts.threads = parseU32Arg("--threads", next(), 1024U);
         else if(arg == "--types") opts.shapeTypes = parseShapeTypes(next());
         else if(arg == "--shape-bounds") {
             // 四个逗号分隔百分比,即 ImageRunnerShapeBoundsOptions 的启用形态
             const std::string spec = next();
-            const auto parseAt = [&spec](std::size_t& pos) -> double {
+            double vals[4] = {0.0, 0.0, 0.0, 0.0};
+            std::size_t pos = 0;
+            for(int k = 0; k < 4; k++) {
                 const std::size_t comma = spec.find(',', pos);
                 const std::string token = spec.substr(pos, (comma == std::string::npos) ? std::string::npos : comma - pos);
                 pos = (comma == std::string::npos) ? spec.size() : comma + 1;
-                return std::stod(token);
-            };
-            std::size_t pos = 0;
-            opts.boundsXMinPercent = parseAt(pos);
-            opts.boundsYMinPercent = parseAt(pos);
-            opts.boundsXMaxPercent = parseAt(pos);
-            opts.boundsYMaxPercent = parseAt(pos);
+                try {
+                    std::size_t consumed = 0;
+                    vals[k] = std::stod(token, &consumed);
+                    if(consumed != token.size() || vals[k] < 0.0 || vals[k] > 100.0) {
+                        throw std::invalid_argument("range");
+                    }
+                } catch(const std::exception&) {
+                    std::fprintf(stderr, "--shape-bounds 应为四个 0-100 的百分比 x1,y1,x2,y2: '%s'\n", spec.c_str());
+                    std::exit(1);
+                }
+            }
+            opts.boundsXMinPercent = vals[0];
+            opts.boundsYMinPercent = vals[1];
+            opts.boundsXMaxPercent = vals[2];
+            opts.boundsYMaxPercent = vals[3];
             opts.hasBounds = true;
         }
         else if(arg == "--dump-final") opts.dumpFinalPath = next();
@@ -180,25 +225,19 @@ Options parseArgs(int argc, char** argv)
         else if(arg == "--alpha-search") opts.alphaSearch = true;
         else if(arg == "--alpha-tiers") {
             for(const std::string& token : splitCsv(next())) {
-                const std::uint32_t tier = static_cast<std::uint32_t>(std::stoul(token));
-                if(tier < 1 || tier > 255) {
+                const std::uint32_t tier = parseU32Arg("--alpha-tiers", token, 255U);
+                if(tier < 1U) {
                     std::fprintf(stderr, "alpha 档位超出 1-255: %s\n", token.c_str());
                     std::exit(1);
                 }
                 opts.alphaTiers.push_back(tier);
             }
         }
-        else if(arg == "--quality-report") opts.qualityReportInterval = static_cast<std::uint32_t>(std::stoul(next()));
+        else if(arg == "--quality-report") opts.qualityReportInterval = parseU32Arg("--quality-report", next(), 100000U);
         else if(arg == "--error-guide") opts.errorGuide = true;
         else if(arg == "--segment-colors") opts.segmentColors = true;
         else if(arg == "--fix-shape-bounds") opts.fixShapeBounds = true;
-        else if(arg == "--guide-epsilon") {
-            opts.guideEpsilonPermill = static_cast<std::uint32_t>(std::stoul(next()));
-            if(opts.guideEpsilonPermill > 1000U) {
-                std::fprintf(stderr, "guide-epsilon 超出 0-1000: %u\n", opts.guideEpsilonPermill);
-                std::exit(1);
-            }
-        }
+        else if(arg == "--guide-epsilon") opts.guideEpsilonPermill = parseU32Arg("--guide-epsilon", next(), 1000U);
         else if(arg == "--priority-region") {
             // x1,y1,x2,y2 百分比(0-100);格式非法/越界 exit 1
             const std::string spec = next();
@@ -217,6 +256,13 @@ Options parseArgs(int argc, char** argv)
         }
         else if(arg == "-v") opts.verbose = true;
         else if(arg == "--help" || arg == "-h") { printUsage(); std::exit(0); }
+        else {
+            // 未知参数一律报错:拼错的 flag 被静默忽略会让用例退化成默认配置,而门禁只比对哈希,
+            // 结果"验的是另一组参数"却照样 PASS
+            std::fprintf(stderr, "未知参数: %s\n", arg.c_str());
+            printUsage();
+            std::exit(1);
+        }
     }
     if(opts.inputPath.empty()) {
         printUsage();
@@ -304,7 +350,8 @@ int main(int argc, char** argv)
         options.shapeBounds.yMaxPercent = opts.boundsYMaxPercent;
     }
 
-    std::uint64_t stepFingerprint = 1469598103934665603ULL; // FNV offset basis
+    std::uint64_t stepFingerprint = 0xcbf29ce484222325ULL; // FNV-1a 64 位 offset basis
+    std::uint64_t totalShapes{0}; // 累计接受的形状数:报告留证"这一步到底画了东西没有"
 
     const auto startTime = std::chrono::steady_clock::now();
 
@@ -325,12 +372,36 @@ int main(int argc, char** argv)
             }
             continue;
         }
+        totalShapes += results.size();
 
         for(const geometrize::ShapeResult& result : results) {
-            // 形状 JSON 串折进指纹(形状几何参数逐值变化都会反映到 JSON 上)
-            const std::string json = geometrize::exporter::exportShapeJson(results);
-            mixBytes(stepFingerprint, json.data(), json.size());
-            break; // step 至多返回一个结果,取一次 JSON 即可覆盖
+            // 形状轨迹签名:形状类型 + 光栅化扫描线(实际落画的几何)+ 分数 + 颜色。
+            // 只用两套库都有的 API,不再复用 exportShapeJson 的文本——那是调试用序列化,
+            // 其格式缺陷修正(单元素数组尾逗号)不应改变门禁口径,否则"修好一个导出 bug"会误判成轨迹分叉。
+            const std::uint32_t typeBits{static_cast<std::uint32_t>(
+                static_cast<std::underlying_type<geometrize::ShapeTypes>::type>(result.shape->getType()))};
+            mixBytes(stepFingerprint, &typeBits, sizeof(typeBits));
+            const std::vector<geometrize::Scanline> shapeLines{result.shape->rasterize(*result.shape)};
+            const std::uint64_t lineCount{shapeLines.size()};
+            mixBytes(stepFingerprint, &lineCount, sizeof(lineCount));
+            for(const geometrize::Scanline& line : shapeLines) {
+                mixBytes(stepFingerprint, &line.y, sizeof(line.y));
+                mixBytes(stepFingerprint, &line.x1, sizeof(line.x1));
+                mixBytes(stepFingerprint, &line.x2, sizeof(line.x2));
+            }
+#if defined(GEBENCH_FAST)
+            // 分段色是改进版独有字段(base 无此概念);经典路径下恒为空,故不影响 bit-exact 口径
+            for(const geometrize::ScanlineColor& segment : result.segments) {
+                mixBytes(stepFingerprint, &segment.y, sizeof(segment.y));
+                mixBytes(stepFingerprint, &segment.x1, sizeof(segment.x1));
+                mixBytes(stepFingerprint, &segment.x2, sizeof(segment.x2));
+                const std::uint32_t segmentColorBits =
+                    segment.color.r | (static_cast<std::uint32_t>(segment.color.g) << 8)
+                    | (static_cast<std::uint32_t>(segment.color.b) << 16) | (static_cast<std::uint32_t>(segment.color.a) << 24);
+                mixBytes(stepFingerprint, &segmentColorBits, sizeof(segmentColorBits));
+            }
+#endif
+            break; // step 至多返回一个结果,取一次签名即可覆盖
         }
         for(const geometrize::ShapeResult& result : results) {
             mixScore(stepFingerprint, result.score);
@@ -353,6 +424,7 @@ int main(int argc, char** argv)
 
     std::printf("FINAL_SHA256 %s\n", finalHash.c_str());
     std::printf("STEP_FINGERPRINT %016llx\n", static_cast<unsigned long long>(stepFingerprint));
+    std::printf("SHAPES_TOTAL %llu\n", static_cast<unsigned long long>(totalShapes));
     std::printf("TIME_MS %lld\n", static_cast<long long>(elapsedMs));
     std::printf("STEPS_PER_SEC %.2f\n", opts.steps / seconds);
 
