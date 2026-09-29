@@ -79,6 +79,27 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
   步进刷新 33ms 合帧节流、SVG item 设备缓存、无 timed-update 脚本不启 100ms 轮询、
   加载链去三次整图拷贝、前条件脚本数据竞争强制单线程、默认缩放阈值 256→1024
 
+**审查轮修复(2026-09-29,六路并行深审 + 逐条实测复现)**:
+- 库:submit 抛异常时 `states` 先于仍在运行的任务析构 → **write-after-free**(实测堆损坏 0xC0000374);
+  落画入口统一裁剪扫描线(宿主自定义 creator 越界时裸指针写穿缓冲,实测 16×16 图配 32 格 creator);
+  1×1 图 + 库默认语义 → `randomRange(0,-1)` 违反前置条件(**实测挂死**);
+  `exportShapeJson` 单元素数组输出尾逗号 → 非法 JSON;`getAverageImageColor` uint32 累加溢出(>4096² 亮图);
+  drawLines/drawLinesSegmented/copyLines 补边界自守;copyLines 源图行距改用源宽度;
+  `scale(QuadraticBezier)` 去掉 int32 截断;`rasterize(Ellipse)` 的 `dy*dy` 提升到 float 域;
+  clone 改为拷贝 `rasterizeInto`;`maxStepShift` 钳位(≥32 时移位 UB);0 像素位图直接返回空
+- 单测:启用 16 个 `#if 0 // CD` 的 Model 级哨兵(**暴露并修掉上述堆损坏**,原 15~30% 触发率归零);
+  Ellipse 分叉的 fast 侧断言收紧为精确值;alpha 搜索断言不再把用户 alpha 当合格档;
+  新增越界裁剪回归、scale 家族、rasterizeInto≡rasterize 等价用例(111 × fast / 39 × base)
+- 工具链:`run_ab.ps1` 增 golden 值锁定(`-AcceptGolden` 显式重采并打印旧→新)、重试即 FAIL、
+  退出码/超时、基线快照预检、被测 exe 陈旧拒绝、报告含 exe 哈希与 SHAPES_TOTAL;
+  geobench 严格参数校验(未知 flag/形状名、非数字、超范围一律 exit 1);
+  `verify_patches.py` 的 `--init` 需 `--accept-drift` 理由且先打印被吞掉的漂移、FAIL 保留排查现场、app 侧失败 exit 2
+- 应用层:33ms 合帧改渲染**栅栏内取的位图快照**(消除与 worker 步进写位图的数据竞争)、合帧定时器改 Impl 持有(析构即停)、
+  timed-update 轮询在脚本装载后重新判定(此前构造期判定必为假 → `on_timed_update` 脚本永久失效)、
+  区域优先勾选框不再被强制回填(界面显示与真实模式相反)、GIF 末帧必取(此前被 frameSkipPredicate 提前丢弃)、
+  BurstLinker 透传 loopCount("Loop Forever" 勾选恢复生效)、`CoInitialize` 只在 S_OK 时配对 Uninitialize、
+  SvgItem 提升 maximumCacheSize(Qt 默认 1024×768 会让设备坐标缓存整体旁路)、前条件脚本改跑克隆引擎(消除主引擎竞争)
+
 ## 目录结构
 
 ```
@@ -91,11 +112,13 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 │   ├─ baseline-lib\           # 上游库快照(只读,对拍基准)
 │   ├─ improved-lib\           # 全部补丁后的库(geobench-fast / geotest-fast 链接它)
 │   ├─ geobench\               # CLI 基准器 + CMake 统一构建入口(SHA-256 + FNV 滚动指纹双口径对拍)
-│   ├─ test\                   # doctest 单元测试(双变体链接,89 用例 × fast / 39 × base,
-│   │                          #   另有 16 个 Model 级用例暂以 #if 0 // CD 禁用,见 src\test\test_model.cpp)
+│   ├─ test\                   # doctest 单元测试(双变体链接,111 用例 × fast / 39 × base;
+│   │                          #   Model 级哨兵(区域/分段/组合/异常传播/越界裁剪)已全部启用)
 │   └─ improved-app\           # 应用改进工作树(含改进版库 + 全部应用层 patch,可 qmake 构建)
-├─ tools\run_ab.ps1             # A/B 对拍矩阵(26 用例,全 PASS 才允许合入;11 bit-exact + 15 EXPECTED_DIFF 分叉哨兵)
-├─ tools\verify_patches.py      # 补丁↔工作树一致性双门禁(重放复现 + 归档新鲜度,lib 侧失败禁合入)
+├─ tools\run_ab.ps1             # A/B 对拍矩阵(26 用例:11 bit-exact + 15 EXPECTED_DIFF 分叉哨兵)
+│                               #   + tools\goldens.csv 值级锁定(双端双口径哈希逐值比对)
+├─ tools\goldens.csv            # 对拍 golden:只断言"与 base 不同"抓不到"分叉的值变了",值级锁定靠它
+├─ tools\verify_patches.py      # 补丁↔工作树一致性双门禁(重放复现 + 归档新鲜度;lib 失败 exit 1,app 失败 exit 2)
 ├─ tools\svgscene-bench\        # 矢量视图渲染开销离屏基准(四方案对比 + 画面等价性,见 F3.9)
 ├─ benchmarks\report.md         # 性能报告(分阶段数据 + 大图可行性)
 └─ docs\                        # 等价性论证 / bug 分级 / Qt 评估
@@ -108,27 +131,34 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 cd src\geobench
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
+cd ..\..                      # 门禁脚本按仓库根定位自身,PSScriptRoot 无关,但路径写成 tools\ 便于阅读
 powershell -ExecutionPolicy Bypass -File tools\run_ab.ps1   # 26/26 PASS(含 15 个 EXPECTED_DIFF 分叉锁定用例)
-# geobench 额外参数:--shape-bounds x1,y1,x2,y2(百分比视口)、--dump-final PATH(位图留痕)
-# 算法增强轨道:--pyramid(金字塔搜索)、--adaptive-step(自适应步长)、--alpha-search( alpha 档位搜索)、
-#   --quality-report N(每 N 步打印相似度分数)
-# 修复开关:--fix-shape-bounds(C.1.4 形状边界 off-by-one;默认关 = 上游语义,应用侧已固定开启)
-# run_ab.ps1 可加 -BaselineExe <exe> 对拍任意外部基线,失败自动保存双方 .raw 供 diff
+# 判据三层:结构断言(bit-exact 必须相同 / EXPECTED_DIFF 必须不同)+ base 双跑自洽 + golden 值比对
+#   tools\goldens.csv 记录每条用例的 base/fast 双口径哈希;值漂移 = FAIL,重采要显式:
+#   powershell -File tools\run_ab.ps1 -AcceptGolden     # 打印每条旧→新差异后重写 goldens.csv
+# 其它开关:-Case <子串> 只跑匹配用例;-BaselineExe <exe> 对拍外部基线;失败自动留双方 .raw 供 diff
+# 预检:基线快照必须与 upstream\geometrize-lib 逐字节一致、被测 exe 必须比源码新(漏编译即拒绝跑)
+# 报告含两个 exe 的 SHA-256/mtime、重试次数、SHAPES_TOTAL;发生重试即按 FAIL 计(偶发故障不静默放过)
+# geobench 参数:--shape-bounds x1,y1,x2,y2(百分比视口)、--dump-final PATH(位图留痕);
+#   算法增强轨道 --pyramid / --adaptive-step / --alpha-search / --error-guide / --segment-colors;
+#   修复开关 --fix-shape-bounds(C.1.4;默认关 = 上游语义,应用侧已固定开启)
+#   参数拼错会直接报错 exit 1(未知形状名/未知 flag/非数字值/超范围值),不再静默空转成"哈希相同"
 
 # 补丁↔工作树一致性校验(双门禁:G1 重放复现 + G2 归档新鲜度;改库/改应用后必须重跑并重新提交 patches\regen\)
-python tools\verify_patches.py   # lib 门禁失败 exit 1;app 侧报告口径(--skip-app 只跑 lib,--keep-temp 留排查现场)
-# 归档缺失默认 FAIL(防"删归档静默过门禁");首次建档或工作树确认后重新导出用 --init:
-python tools\verify_patches.py --init
+python tools\verify_patches.py   # lib 失败 exit 1;app 侧失败 exit 2(--allow-app-drift 显式放行,--skip-app 只跑 lib)
+# 归档缺失默认 FAIL(防"删归档静默过门禁");确认工作树后重新导出:
+python tools\verify_patches.py --init --accept-drift "改动原因"   # 漂移场景下必须给理由,且会先打印被吞掉的漂移明细
 
-# 单元测试(双变体:geotest-base 链上游快照 / geotest-fast 链改进版,89 用例 × fast / 39 × base;
-# 另有 16 个 Model 级用例暂以 #if 0 // CD 禁用,由 run_ab 的 EXPECTED_DIFF 哨兵端到端覆盖)
+# 单元测试(双变体:geotest-base 链上游快照 / geotest-fast 链改进版,111 用例 × fast / 39 × base)
 cmake --build build --config Release --target geotest-base geotest-fast
 ctest --test-dir build -C Release --output-on-failure        # 2/2 PASS
 # 双变体全绿 = 函数级 bit-exact 门禁;
 # 变体分叉点(Ellipse 边界笔误修复、scanlines 末像素、move 构造、异常重抛、线程池保序)
 # 用 GEOTEST_BASE / GEOTEST_FAST 宏各自锁定行为。
-# (注:test_goldens.h 为预留占位,golden 常量机制尚未接线,--dump-golden 暂无消费方;
-#  函数级等价由双变体行为断言 + run_ab.ps1 双口径哈希矩阵承载)
+# (注:test_goldens.h 仍是预留占位(无消费方);函数级等价由双变体行为断言承载,
+#  端到端值级锁定由 tools\goldens.csv 承载)
+# 注:Model 级用例在 Debug 构建下会被 drain 里的 assert(0) 中断(异常传播用例属预期路径),
+#    门禁一律用 Release(NDEBUG)跑
 
 # 应用构建(Qt 5.15.2 win64_msvc2019_64,用 aqtinstall 安装)
 cd src\improved-app

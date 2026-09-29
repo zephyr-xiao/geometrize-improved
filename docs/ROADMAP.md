@@ -14,14 +14,14 @@
 | 核心库 | B1-B7 全部落地 + P1.1 金字塔(opt-in) | 内联/memcpy/isqrt 圆/扁平化 polygon/补丁快照/scratch 复用/持久线程池;金字塔=搜索启发式轨道 |
 | 交付物 | `dist\Geometrize-Improved\` | 免安装绿色包(与 release exe 同步) |
 | 端到端门禁 | `tools\run_ab.ps1` **26 用例矩阵** | 11 个 bit-exact + 15 个 EXPECTED_DIFF(边界修复/增强/区域/分段哨兵);`-BaselineExe` 支持外部基线;FAIL 自动留痕 .raw,单侧无输出自动重试一次(陷阱 #11) |
-| 单测门禁 | `src\test\` doctest 双变体 | 89 用例 × fast / 39 × base(ctest);另有 16 个 Model 级用例暂禁用(§4 Q4.5);变体分叉宏分流锁定 |
+| 单测门禁 | `src\test\` doctest 双变体 | 111 用例 × fast / 39 × base(ctest);Model 级哨兵已全部启用(2026-09-29,原 16 个 `#if 0 // CD`);变体分叉宏分流锁定 |
 | 应用层 | 撤销重做 + 区域优先框选 + 增强五勾选框 + 分段颜色 + GIF/PNG 导出参数化 + F3.5 分辨率下拉 + 全量中文化 + 启动优化(网格铺满 0.5s)+ 动态线程 + 批处理增强(F3.3)+ 导出 O(N) 化(F3.7) | patches\qt 0001-0027 已归档 |
 | 构建链 | qmake(权威)+ **CMake 并行**(build_cmake.bat 一键含 windeployqt) | Qt6 迁移的硬前置已就绪 |
 | 翻译 | 300/300 全中文 | zh.ts 双 context(短名供 uic / 全名供嵌套类 tr) |
 | 已知残留 | 偏好文件旧值持久化 | 全局偏好 JSON 里旧字段会被沿用,改默认值时注意用户机已有文件 |
 
 **改动铁律**(每次迭代都适用):
-1. 每个 patch 独立、可 revert,落地即跑**双门禁**(ctest 2/2 + run_ab 24/24);
+1. 每个 patch 独立、可 revert,落地即跑**双门禁**(ctest 2/2 + run_ab 26/26,含 tools\goldens.csv 值级比对);
 2. 注释只写意图不写历史;
 3. 上游怪癖是可观察行为,不得"顺手修":bestRandomState off-by-one(RNG 消费 n+2 次)、`257.0f*255.0f/alpha` 唯一浮点点、drawLines 的 RGB 预计算公式——ellipse_bounds_fork 用例会替你盯着的;
 4. bat 必须 CRLF;qmake 构建须在 MSVC x64 环境;qrc 生成在 resources/ cwd 下跑;ChaiScript 保持 pin `2898ae6`;
@@ -214,11 +214,14 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 + 高 DPI 强制启用后的 UI 巡检(5.15 下未开高 DPI,Qt6 恒开,非 100% 缩放屏观感全变)。**建议不急**:
 待需要新 Qt 特性/新机部署时按报告步骤执行,报告即实施说明书。
 
-### Q4.5 Model 级禁用单测重启用 — □ 跟踪项(2026-09-28 建档)
-src\test\test_model.cpp 中 16 个 Model 级用例以 `#if 0 // CD` 禁用(区域优先、分段颜色、四开关组合
-确定性、T7 不变量、异常传播/池存活等),其行为当前由 run_ab.ps1 的 EXPECTED_DIFF 哨兵端到端覆盖。
-禁用是逐块叠加的(同文件内多组 #if/#endif 配对),重启用前需先清理嵌套再逐用例核对断言口径;
-重启用时 README 与本文件的用例数口径从 89/39 改回 105/39。
+### Q4.5 Model 级禁用单测重启用 — ✅ 已完成(2026-09-29,审查轮)
+16 个 Model 级用例(区域优先、分段颜色、四开关组合确定性、T7 不变量、异常传播/池存活、drawShape/reset 等)
+已全部启用:删除 test_model.cpp 内全部 `#if 0 // CD` 配对(43 对,保留内层合法的 GEOTEST_FAST/BASE 宏分叉)。
+启用后**立即暴露一条真实缺陷**:`step 异常传播` 用例给 16×16 的 Model 配了 32 格 creator,形状扫描线越界
+(x=22 > 15),而库的裸指针落画路径不裁剪 → 写穿位图缓冲 → 堆损坏 0xC0000374(实测 15~30% 触发率)。
+修复 = 落画入口统一裁剪(clipScanlinesToBitmap)+ 该用例改用 32×32 图;修复后 60 连跑 0 复现。
+用例数口径:89/39 → **111/39**(含本轮新增的越界裁剪回归、scale 家族、rasterizeInto 等价用例)。
+教训:禁用单测不是"暂时省事",而是把该覆盖的缺陷藏起来——本条正是靠复活的用例才被挖出来的。
 
 ---
 
@@ -323,8 +326,8 @@ src\test\test_model.cpp 中 16 个 Model 级用例以 `#if 0 // CD` 禁用(区�
 7. PowerShell 脚本要 UTF-8 BOM;给 cmd 的 bat 要 CRLF;**bash 里调 ps1 用正斜杠路径**(`tools/run_ab.ps1`,反斜杠会被吞);
 8. 跑长矩阵前先 `Stop-Process -Name geotest-*,geobench-*` 清残留,否则编译期 LNK1104;
 9. **Qt 翻译双 context**:嵌套类 Impl 里 `tr()` 的 context 是带命名空间全名(`geometrize::dialog::LaunchWindow`),uic retranslateUi 用短名——同一文案两处用则 ts 两个 context 都要放条目;
-10. **写测试的坑**:doctest 比较 shared_ptr 用 `.get()`(直接比较触发 stringification 编译错);DeterministicShapeCreator 的 gridSize 必须 >16(内部 `% (gridSize-16)`,16 会除零);变体分弋试 `GEOTEST_BASE/GEOTEST_FAST` 宏分流,勿"顺手统一"。
-11. **编译产物瞬态异常**:0xC0000374 堆损坏若在增量编译后出现且源码回退无效,先 `cmake --build --clean-first` 干净重建再怀疑代码(第八批实测:回退全部新代码仍 18% 崩,干净重建后 220+ 次 0 复现,疑似 obj 不一致)。run_ab 门禁已内建防护(2026-09-28):单侧无输出自动重跑一次,仍无输出记 FAIL 继续跑完矩阵——此前会 InvokeMethodOnNull 中断整个矩阵。
+10. **写测试的坑**:doctest 比较 shared_ptr 用 `.get()`(直接比较触发 stringification 编译错);DeterministicShapeCreator 的 gridSize 必须 >16(内部 `% (gridSize-16)`,16 会除零),**且必须与 Model 的图尺寸一致**——creator 的坐标可达 gridSize-1、rasterize 也按 gridSize 界绑定,配小图就会产出越界扫描线(2026-09-29 实测:16×16 图配 32 格 → 堆损坏 0xC0000374);变体分叉用 `GEOTEST_BASE/GEOTEST_FAST` 宏分流,勿"顺手统一"。另:中文用例名无法用 `-tc=` 过滤(MSVC 按 936 代码页转 argv),需要按用例定位时用 `-s` 打印断言流或临时插桩。
+11. **0xC0000374 堆损坏**:2026-09-29 审查轮已定位到真实根因——**宿主自定义 shapeCreator 产出越界扫描线时,库的裸指针落画路径写穿位图缓冲**(16×16 图配 32 格 creator 即触发,15~30% 概率)。修复:落画入口 `clipScanlinesToBitmap` 统一裁剪 + 三个 undo 助手与 rasterize 三件套补边界自守。**此前"疑似 obj 不一致"的归因不成立**(干净重建后仍复现,直到修掉越界写才归零)。定位手法(可复用):给 6 处 `getDataRefMut` 写入点插越界校验(越界即 fprintf+abort),比等堆报告快得多;Debug 构建下 `_CrtSetDbgFlag(_CRTDBG_CHECK_ALWAYS_DF)` 太慢(3 分钟跑不到第 3 个用例),不实用。run_ab 的门禁策略已改:**单侧无输出重试非零即按 FAIL 计**(旧行为把偶发故障洗成 PASS,正是它掩盖了本条)。
 12. **裸形状必须绑 rasterize**:`std::make_shared<Rectangle>(...)` 等不经 shapefactory 的形状,其 `rasterize` std::function 为空,drawShape 调用即 UB/崩溃——照 GUI `drawBackgroundRectangle` 先绑定。椭圆光栅化输出 y 不升序(从中心向两边),导出/统计侧须 stable_sort。
 13. **CMake 链专用**:target_link_options 传含空格的链接选项(/MANIFESTDEPENDENCY)会被 VS 生成器拆成假输入文件(LNK1104)——用 .manifest 文件走源列表(app.manifest 先例);bat 里用 Python 写 Windows 路径必须 raw string(`\b`/`\5` 会被转义吃掉);CMake 版 exe 未经 windeployqt 启动会弹缺 DLL 错误框且进程挂着不退,**勿把 HasExited=False 误判为运行正常**(看 startup_timing.log 是否新增)。
 14. **QPointer 在 Qt5 无 qHash**:`QSet<QPointer<T>>`/`QHash<QPointer<T>,V>` 编译报 qHash 无重载——受管窗口集合用 `QVector<QPointer<T>>` 线性查找(F3.3 先例);QPointer 作 connect lambda 捕获 + receiver 传宿主窗口,WA_DeleteOnClose 的 sender 销毁时 Qt 自动断连,回调不悬空;嵌套类非 QObject 的 Impl 里 `connect` 是全局五参函数直接可用。
