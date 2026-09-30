@@ -60,11 +60,16 @@ void ImageTaskPixmapGraphicsItem::hoverMoveEvent(QGraphicsSceneHoverEvent* event
 
 void ImageTaskPixmapGraphicsItem::mousePressEvent(QGraphicsSceneMouseEvent* event)
 {
-    if (!event->modifiers().testFlag(Qt::ControlModifier)) {
-        event->setAccepted(false);
-    }
-
     QGraphicsPixmapItem::mousePressEvent(event);
+
+    // 本 item 不可选、不可移动,基类实现会 event->ignore() —— 场景于是不把它设为 mouse grabber,
+    // 后续 move/release 全被视图的 ScrollHandDrag 接管,区域框选(Ctrl+拖拽)因此永远提交不了
+    // (表现为:按下有反应、松手什么都不发生)。Ctrl 按下时必须显式接受按下事件才能拿到 release。
+    if (event->modifiers().testFlag(Qt::ControlModifier)) {
+        event->accept();
+    } else {
+        event->setAccepted(false); // 保持原行为:非 Ctrl 让视图平移
+    }
     emit signal_onMousePressEvent(event->scenePos().x(), event->scenePos().y(), event->modifiers() & Qt::ControlModifier);
 }
 
