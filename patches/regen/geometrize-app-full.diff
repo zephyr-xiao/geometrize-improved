@@ -1842,7 +1842,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void setMenuItemKey(QListWidgetItem* item, const QString& key) const
-@@ -180,6 +315,220 @@
+@@ -180,6 +315,235 @@
          ui->scrollArea->setWidget(m_scriptEditorWidget);
      }
  
@@ -1899,6 +1899,11 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            return;
 +        }
 +        const void* id{window.data()};
++        // 批次重置后迟到的完成信号(m_managedIds 已清)不得计入新批次:否则标题出现 "2/1" 这类
++        // 计数,且导出时查不到源图路径会回落到字面量 "task" 文件名(与销毁兜底同口径)
++        if(m_managedIds.find(id) == m_managedIds.end()) {
++            return;
++        }
 +        if(std::find(m_completedIds.begin(), m_completedIds.end(), id) != m_completedIds.end()) {
 +            return;
 +        }
@@ -2009,10 +2014,12 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        const std::uint32_t width{current.getWidth()};
 +        const std::uint32_t height{current.getHeight()};
 +
++        bool exportOk{true};
 +        if(config.png) {
 +            const QString pngPath{outputDir.filePath(uniqueName + ".png")};
 +            if(!geometrize::exporter::exportBitmap(current, pngPath.toStdString())) {
 +                qWarning() << "Failed to export batch PNG:" << pngPath;
++                exportOk = false;
 +            }
 +        }
 +        if(config.svg) {
@@ -2020,10 +2027,18 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            const std::vector<geometrize::ShapeResult>& shapes{window->getShapes()};
 +            const std::string svgData{geometrize::exporter::exportSVG(shapes, width, height)};
 +            if(!svgData.empty()) {
-+                util::writeStringToFile(svgData, svgPath.toStdString());
++                if(!util::writeStringToFile(svgData, svgPath.toStdString())) {
++                    qWarning() << "Failed to export batch SVG:" << svgPath;
++                    exportOk = false;
++                }
 +            } else {
 +                qWarning() << "Failed to export batch SVG:" << svgPath;
++                exportOk = false;
 +            }
++        }
++        if(!exportOk) {
++            // 此前写盘失败只进 qWarning:磁盘满/目录只读时进度条照走 N/N,用户会以为导出成功
++            q->statusBar()->showMessage(tr("Failed to export some results to %1").arg(config.directory), 8000);
 +        }
 +    }
 +
@@ -2063,7 +2078,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      void populateUi()
      {
      }
-@@ -191,6 +540,21 @@
+@@ -191,6 +555,21 @@
  
      const std::string defaultScriptName{ "default" };
      std::map<std::string, std::string> m_scripts;
@@ -3070,6 +3085,30 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      bool isScriptModeEnabled() const;
      void setScriptModeEnabled(bool enabled);
      void setScript(const std::string& scriptName, const std::string& code);
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/scene/imagetaskpixmapgraphicsitem.cpp b/geometrize/scene/imagetaskpixmapgraphicsitem.cpp
+--- a/geometrize/scene/imagetaskpixmapgraphicsitem.cpp
++++ b/geometrize/scene/imagetaskpixmapgraphicsitem.cpp
+@@ -60,11 +60,16 @@
+ 
+ void ImageTaskPixmapGraphicsItem::mousePressEvent(QGraphicsSceneMouseEvent* event)
+ {
+-    if (!event->modifiers().testFlag(Qt::ControlModifier)) {
+-        event->setAccepted(false);
+-    }
+-
+     QGraphicsPixmapItem::mousePressEvent(event);
++
++    // 本 item 不可选、不可移动,基类实现会 event->ignore() —— 场景于是不把它设为 mouse grabber,
++    // 后续 move/release 全被视图的 ScrollHandDrag 接管,区域框选(Ctrl+拖拽)因此永远提交不了
++    // (表现为:按下有反应、松手什么都不发生)。Ctrl 按下时必须显式接受按下事件才能拿到 release。
++    if (event->modifiers().testFlag(Qt::ControlModifier)) {
++        event->accept();
++    } else {
++        event->setAccepted(false); // 保持原行为:非 Ctrl 让视图平移
++    }
+     emit signal_onMousePressEvent(event->scenePos().x(), event->scenePos().y(), event->modifiers() & Qt::ControlModifier);
+ }
+ 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/scene/imagetaskscenemanager.cpp b/geometrize/scene/imagetaskscenemanager.cpp
 --- a/geometrize/scene/imagetaskscenemanager.cpp
 +++ b/geometrize/scene/imagetaskscenemanager.cpp
@@ -3741,7 +3780,48 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/task/imagetaskworker.cpp b/geometrize/task/imagetaskworker.cpp
 --- a/geometrize/task/imagetaskworker.cpp
 +++ b/geometrize/task/imagetaskworker.cpp
-@@ -37,15 +37,30 @@
+@@ -13,6 +13,33 @@
+ namespace task
+ {
+ 
++namespace
++{
++
++/// 作用域守卫:进入即置位、任何退出路径(含异常)都复位。
++/// 手动 set/reset 在 runner.step 抛异常时会留下 m_working==true,使 isStepping() 永久为真 ——
++/// 按它门控的交互(区域框选 Ctrl+拖拽、撤销/重做按钮、任务延迟销毁)会一起失效。
++/// 另外它把复位推迟到 didStep 投递之后:步进处理期间 isStepping() 为真,撤销/重做按钮不再有可点窗口。
++struct WorkingGuard
++{
++    explicit WorkingGuard(std::atomic<bool>& flag) : m_flag{flag}
++    {
++        m_flag = true;
++    }
++
++    ~WorkingGuard()
++    {
++        m_flag = false;
++    }
++
++    WorkingGuard(const WorkingGuard&) = delete;
++    WorkingGuard& operator=(const WorkingGuard&) = delete;
++
++    std::atomic<bool>& m_flag;
++};
++
++}
++
+ ImageTaskWorker::ImageTaskWorker(Bitmap& bitmap) : QObject(), m_runner{bitmap}, m_working{false}
+ {
+ }
+@@ -31,21 +58,33 @@
+                            const geometrize::ShapeAcceptancePreconditionFunction addShapePreconditionFunction)
+ {
+     emit signal_willStep();
+-    m_working = true;
++    const WorkingGuard guard{m_working};
+     const std::vector<geometrize::ShapeResult> results{m_runner.step(options, shapeCreator, energyFunction, addShapePreconditionFunction)};
+-    m_working = false;
      emit signal_didStep(results);
  }
  
@@ -3749,25 +3829,25 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +void ImageTaskWorker::drawShape(const std::shared_ptr<geometrize::Shape> shape, const geometrize::rgba color, const std::vector<geometrize::ScanlineColor> segments)
  {
      emit signal_willStep();
-     m_working = true;
+-    m_working = true;
 -    const geometrize::ShapeResult result{m_runner.getModel().drawShape(shape, color)};
+-    m_working = false;
++    const WorkingGuard guard{m_working};
 +    // A2.4:segments 非空时按行级颜色重画(重做/重放复用存档,不重算)
 +    const geometrize::ShapeResult result{m_runner.getModel().drawShape(shape, color, segments)};
-     m_working = false;
      emit signal_didStep({ result });
  }
  
 +void ImageTaskWorker::replayShapes(std::vector<geometrize::ShapeResult> shapes, const geometrize::rgba resetColor)
 +{
 +    emit signal_willStep();
-+    m_working = true;
++    const WorkingGuard guard{m_working};
 +    geometrize::Model& model{m_runner.getModel()};
 +    model.reset(resetColor);
 +    // drawShape 无条件绘制且不消费 RNG:重放后的位图/分数链与原轨迹逐位一致
 +    for(const geometrize::ShapeResult& result : shapes) {
 +        model.drawShape(result.shape, result.color, result.segments);
 +    }
-+    m_working = false;
 +    emit signal_didReplay(shapes);
 +}
 +
@@ -11003,7 +11083,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      </message>
      <message>
          <source>Copy file path to clipboard</source>
-@@ -908,15 +1479,37 @@
+@@ -908,15 +1479,42 @@
      <message>
          <source>Remove from list</source>
          <comment>Text on a menu item the user presses to remove an item from a list of items</comment>
@@ -11036,6 +11116,11 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        <extracomment>Status bar message shown when the automatic export output directory could not be created</extracomment>
 +        <translation>无法创建输出目录:%1</translation>
 +    </message>
++    <message>
++        <source>Failed to export some results to %1</source>
++        <extracomment>Status bar message shown when one or more batch exports failed to write to disk (e.g. disk full or read-only directory)</extracomment>
++        <translation>部分结果导出失败:%1</translation>
++    </message>
 +</context>
 +<context>
 +    <name>geometrize::dialog::ImageTaskRunnerWidget</name>
@@ -11046,7 +11131,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      </message>
  </context>
  <context>
-@@ -941,6 +1534,10 @@
+@@ -941,6 +1539,10 @@
          <comment>Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer</comment>
          <translation>在文件导出程序中显示</translation>
      </message>
@@ -11057,7 +11142,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  </context>
  <context>
      <name>geometrize::dialog::WelcomeWindow</name>
-@@ -963,11 +1560,6 @@
+@@ -963,11 +1565,6 @@
          <translation>Geometrize 使用简单的几何形状重新创建照片，将其转换为独特的艺术作品。</translation>
      </message>
      <message>
@@ -11069,7 +11154,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          <source>Rectangles</source>
          <comment>Plural form of rectangle geometric shape</comment>
          <translation>矩形</translation>
-@@ -1017,5 +1609,10 @@
+@@ -1017,5 +1614,10 @@
          <comment>Plural form of an unknown type of shapes</comment>
          <translation>未知形状</translation>
      </message>
