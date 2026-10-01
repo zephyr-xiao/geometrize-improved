@@ -1,7 +1,7 @@
 # Geometrize Improved — 迭代路线图
 
 > 版本基准:2026-08-31 第十二次交付(F3.3 批处理增强落地;P1.4/P1.3 实测盖棺否决,ROADMAP 全清单至此全部处置完毕,本文件已按最终态整顿)
-> 下次会话:原 ROADMAP 清单已全部收官(功能轨/质量轨/性能轨/工程轨 + 第十二批 F3.3);可从 §5 的"后续可选方向"挑项或开新方向,动手前查 §7 陷阱速查(14 条)
+> 下次会话:原 ROADMAP 清单已全部收官(功能轨/质量轨/性能轨/工程轨 + 第十二批 F3.3);可从 §5 的"后续可选方向"挑项或开新方向,动手前查 §7 陷阱速查(18 条)
 > 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ Qt 5.15.2
 > 使用约定:**双轨制**——纯性能优化维持 bit-exact 门禁(与上游逐位一致);算法增强做成独立开关(默认关),不破坏验证体系。暂自用,不排开源工程项。
 
@@ -366,4 +366,6 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 13. **CMake 链专用**:target_link_options 传含空格的链接选项(/MANIFESTDEPENDENCY)会被 VS 生成器拆成假输入文件(LNK1104)——用 .manifest 文件走源列表(app.manifest 先例);bat 里用 Python 写 Windows 路径必须 raw string(`\b`/`\5` 会被转义吃掉);CMake 版 exe 未经 windeployqt 启动会弹缺 DLL 错误框且进程挂着不退,**勿把 HasExited=False 误判为运行正常**(看 startup_timing.log 是否新增)。
 14. **QPointer 在 Qt5 无 qHash**:`QSet<QPointer<T>>`/`QHash<QPointer<T>,V>` 编译报 qHash 无重载——受管窗口集合用 `QVector<QPointer<T>>` 线性查找(F3.3 先例);QPointer 作 connect lambda 捕获 + receiver 传宿主窗口,WA_DeleteOnClose 的 sender 销毁时 Qt 自动断连,回调不悬空;嵌套类非 QObject 的 Impl 里 `connect` 是全局五参函数直接可用。
 15. **形状边界是排他上界**:`setup`/`mutate`/各 `rasterize` 一律把边界元组的 max 当排他上界消费(内部 `randomRange(xMin, xMax-1)`、`clamp` 到 `xMax-1`、y 过滤在 `[yMin, yMax)`),整幅画布即 `(0, 0, width, height)`。`mapShapeBoundsToImage` 上游返回闭区间 `size-1`,错配使最右列/最下行永不落画(C.1.4);新代码写边界时**别照抄那个 -1**,脚本模板里的 `xMax - 1` 才是对的。
-16. **QGraphicsItem 的 DeviceCoordinateCache 吃全局 QPixmapCache 配额**(默认 10MB,约 5 个全画布图层):图层数超配额后每帧重新渲染而非命中缓存,帧耗时量级跳变(0.2ms→70ms)。给场景加 item 前先算图层数 × 单层设备像素;需要更多图层就 `QPixmapCache::setCacheLimit`(应用 main.cpp 已设 128MB)。诊断手法:离屏 `QGraphicsView::render` 计时 + 打印 item 数,见 F3.9。
+16. **QGraphicsItem 的 DeviceCoordinateCache 吃全局 QPixmapCache 配额**(默认 10MB,约 5 个全画布图层):图层数超配额后每帧重新渲染而非命中缓存,帧耗时量级跳变(0.2ms→70ms)。给场景加 item 前先算图层数 × 单层设备像素;需要更多图层就 `QPixmapCache::setCacheLimit`(应用 main.cpp 已设 128MB)。诊断手法:离屏 `QGraphicsView::render` 计时 + 打印 item 数,见 F3.9。另:`QGraphicsSvgItem` 自带 `maximumCacheSize`(默认 1024×768),设备矩形超上限时 QGraphicsScene 会**整体旁路**设备坐标缓存 —— 分块 SVG item 的 boundingRect 是整幅画布,所以视口/缩放一大缓存就失效,`QPixmapCache` 调多大都没用(需 `setMaximumCacheSize`)。
+17. **不可选/不可移动的 QGraphicsItem 收不到 release**:`QGraphicsItem::mousePressEvent` 对 `ItemIsSelectable == false` 的 item 走 `event->ignore()`,场景于是**不把它设为 mouse grabber**;图像视图开着 `ScrollHandDrag`,后续 move/release 全被视图接管 —— item 的 release 信号永不触发。表现极具迷惑性:**按下有反应(信号已发)、松手什么都不发生**。凡"Ctrl+拖拽/框选"这类靠 item 的 press+release 配对的交互,必须在 press 里显式 `event->accept()`(2026-10-01 区域框选就是这么坏的:README 记了功能、代码看着完整、纯静态审查也判"能用")。定位手法:item 的 press/release 与窗口侧处理器各插一条 stderr 日志,跑一次就能看到"只有 press 没有 release";反过来,"日志里看不到 release"本身就是该 bug 的症状,别误判成测试工具不可靠。
+18. **改完应用必须同步 dist**:用户实际运行 `dist\Geometrize-Improved\Geometrize.exe`(README「直接使用」指它),它**不会**随 `build_cmake.bat` 自动更新。只重建 `src\improved-app\build\Release` 就交给用户复测 = 他测的是旧包(2026-09-30 实测:dist 停在 9-22,用户报"新修的功能没生效"其实是旧构建)。让用户复测前先 `cp src\improved-app\build\Release\Geometrize.exe dist\Geometrize-Improved\` 并比对哈希;根目录那个 `Geometrize.exe` 是更旧的遗留物,别误用。另:应用资源(模板/脚本/翻译)全部编进 exe,同步 exe 即可。
