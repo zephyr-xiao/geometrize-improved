@@ -16,6 +16,7 @@
 | `*.gif` | `bytes-gif` | 逐字节严格（帧画面由位图切片累积，BurstLinker 纯 STL 编码） |
 | `*.bitmap.png` | `png-strict` | 解码后逐像素严格（位图直转 QImage，无绘制参与；文件字节受 PNG 编码器版本影响，不作判据） |
 | `*.raster.png` | `png-tolerant` | 走 QSvgRenderer 光栅化（Qt 6.7+ 重写过 SVG 模块）→ 量化：最大通道差 ≤ 16 且差异像素占比 ≤ 2%（阈值在 `tools/qt_render_ab.py` 顶部 `TOL_*`） |
+| `*.qtinput.png` | `png-qtinput` | 经过 Qt 图像缩放（`QImage::scaled`）的输入位图 → 跨 Qt 版本存在 1 LSB 取整差异**属预期**，compare 模式量化记录但不判失败；同版本内 `check` 仍按逐像素严格 |
 
 ## 用法
 
@@ -48,6 +49,10 @@ python tools\qt_render_ab.py accept --exe <exe>
 | `03_svg_raster` | SVG 光栅化（2× 放大） | `*.raster.png` |
 | `04_gif` | GIF 帧切片累积 + BurstLinker 编码 | `*.gif` |
 | `05_threads_bounds` | 固定 4 线程 + 形状边界窗口 | `*.bitmap.png` + `*.json` |
+| `06_image_scaling` | Qt 图像缩放输入（诊断：量化跨版本差异，不作断言） | `*.qtinput.png` |
+
+输入图复用 `src/testdata/images/`（`@IN@` 占位符）。严格用例一律走 `createBitmap`（位图直转，
+输入逐位同源）；凡是经过 Qt 缩放的输入都会带上 Qt 版本差异，必须走 `qtinput` 类别。
 
 ## 已知约束（踩过的坑）
 

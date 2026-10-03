@@ -1,9 +1,9 @@
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/CMakeLists.txt b/CMakeLists.txt
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -0,0 +1,84 @@
-+# Geometrize Qt 应用 CMake 构建(Q4.2)
-+# 与 geometrize.pro(qmake)并行的构建链路:qmake 仍是权威链路,本文件失败可随时弃用。
+@@ -0,0 +1,85 @@
++# Geometrize Qt 应用 CMake 构建(Q4.2;Qt6 迁移后为唯一在维护的构建链路)
++# geometrize.pro(qmake)保留但不再维护:Qt6 下 qmake 已被 CMake 取代,本文件失败可回退 Qt5 链路重建。
 +# 生成物全部落在 build/(out-of-source),不触碰 qmake 在源树的 obj/qt_gen/debug/release。
 +# 用法见 build_cmake.bat。
 +
@@ -18,9 +18,9 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +set(CMAKE_AUTOUIC ON)
 +set(CMAKE_AUTORCC ON)
 +
-+# Qt5 5.15.2:与 build_qt.bat 同一套安装;CMAKE_PREFIX_PATH 由 build_cmake.bat 传入
-+find_package(Qt5 5.15 REQUIRED COMPONENTS Core Gui Widgets Svg Network Concurrent)
-+# Qt6 迁移(ROADMAP Q4.4,仅评估):组件需改并增加 SvgWidgets,见 geometrize.pro 的 Qt6 分支
++# Qt6 6.8.3 LTS(msvc2022_64):CMAKE_PREFIX_PATH 由 build_cmake.bat 传入
++# SvgWidgets 是 Qt6 拆出的模块(QGraphicsSvgItem/QSvgWidget 从 QtSvg 移入),必须显式链接
++find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Svg SvgWidgets Network Concurrent)
 +
 +# ---- 源码收集(与各 .pri 的 $$files(..., true) 递归等价)----
 +# 应用源(geometrize/sources.pri)。排除 dataslinger/:可选 WebSocket 推流,
@@ -56,7 +56,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    ${GEOMETRIZE_FORMS}
 +    resources/app_icons/winicon.rc
 +    resources/app_icons/app.manifest)
-+# WIN32 = GUI 子系统;qtmain(WinMain→main 转发)由 Qt5Core 配置包按此属性自动链接
++# WIN32 = GUI 子系统;WinMain→main 转发由 Qt6::Core 按 WIN32_EXECUTABLE 属性自动链接
++# (Qt6CoreTargets 的 INTERFACE_LINK_LIBRARIES 里带 Qt6::EntryPointPrivate 生成式)
 +# app.manifest:Common-Controls SxS 依赖,MSVC 工具链把它当 linker input 自动合并进内嵌清单
 +# (等价于 qmake 的 /MANIFESTDEPENDENCY;target_link_options 传该选项在 VS 生成器下会被空格拆散)
 +
@@ -69,7 +70,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    "${CMAKE_CURRENT_SOURCE_DIR}/lib/burstlinker/burstlinker/src")
 +
 +target_link_libraries(Geometrize PRIVATE
-+    Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Svg Qt5::Network Qt5::Concurrent)
++    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Svg Qt6::SvgWidgets Qt6::Network Qt6::Concurrent)
 +
 +# 任务栏进度条(TaskQueueWindow 批处理进度):Win32 原生 COM ITaskbarList3
 +if(WIN32)
@@ -89,17 +90,21 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/build_cmake.bat b/build_cmake.bat
 --- a/build_cmake.bat
 +++ b/build_cmake.bat
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,14 @@
 +@echo off
-+rem Qt Ӧ�� CMake �����ű�(VS ������,���� vcvars64:MSBuild �Զ�λ������)
-+rem �÷�:˫����������ִ��;������ build\Release\Geometrize.exe
-+set PATH=C:\Program Files\CMake\bin;D:\Qt\5.15.2\msvc2019_64\bin;%PATH%
-+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH=D:/Qt/5.15.2/msvc2019_64 %*
++rem Qt 应用 CMake 构建脚本(VS 生成器,无需 vcvars64:MSBuild 自定位工具链)
++rem 用法:双击或命令行执行;产物在 build\Release\Geometrize.exe
++rem Qt6 迁移后本链路是唯一在维护的构建链(geometrize.pro/qmake 保留但不再维护);升 Qt 版本只改下面一行
++set QT_DIR=D:\Qt\6.8.3\msvc2022_64
++set PATH=C:\Program Files\CMake\bin;%QT_DIR%\bin;%PATH%
++rem %QT_DIR:\=/% 是 cmd 变量替换:把反斜杠换成斜杠,避免 CMake 参数里的转义歧义
++cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH=%QT_DIR:\=/% %*
 +if errorlevel 1 exit /b 1
 +cmake --build build --config Release --parallel
 +if errorlevel 1 exit /b 1
-+rem ���� Qt ����ʱ DLL �����Ŀ¼(���� exe ˫��ȱ Qt5*.dll)
-+windeployqt --no-compiler-runtime build\Release\Geometrize.exe
++rem 部署 Qt 运行时 DLL 到输出目录(否则 exe 双击缺 Qt6*.dll)
++rem --no-translations:应用自身翻译已编进 qrc,不需要 Qt 自带 qt_*.qm
++windeployqt --no-compiler-runtime --no-translations build\Release\Geometrize.exe
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/build_qt.bat b/build_qt.bat
 --- a/build_qt.bat
 +++ b/build_qt.bat
@@ -168,7 +173,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  {
  public:
 -    GeometrizeSplashScreen() : QSplashScreen{nullptr}, m_progress{0}
-+    GeometrizeSplashScreen() : QSplashScreen{static_cast<QWidget *>(nullptr)}, m_progress{0}
++    GeometrizeSplashScreen() : QSplashScreen{}, m_progress{0}
      {
          setWindowFlags(windowFlags() | Qt::WindowStaysOnTopHint);
          setPixmap(QPixmap(":/logos/splashscreen.png"));
@@ -3637,14 +3642,23 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          qRegisterMetaType<geometrize::ImageRunnerOptions>();
          qRegisterMetaType<std::function<std::shared_ptr<geometrize::Shape>()>>();
          qRegisterMetaType<std::shared_ptr<geometrize::Shape>>();
-@@ -274,16 +311,20 @@
+@@ -274,16 +311,27 @@
      {
          q->connect(q, &ImageTask::signal_step, &m_worker, &ImageTaskWorker::step, connectionType);
          q->connect(q, &ImageTask::signal_drawShape, &m_worker, &ImageTaskWorker::drawShape, connectionType);
+-        q->connect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep, Qt::BlockingQueuedConnection);
+-        q->connect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep, Qt::BlockingQueuedConnection);
 +        q->connect(q, &ImageTask::signal_replayShapes, &m_worker, &ImageTaskWorker::replayShapes, connectionType);
-         q->connect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep, Qt::BlockingQueuedConnection);
-         q->connect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep, Qt::BlockingQueuedConnection);
-+        q->connect(&m_worker, &ImageTaskWorker::signal_didReplay, q, &ImageTask::modelDidReplay, Qt::BlockingQueuedConnection);
++
++        // 回传连接与入向连接同型:DirectConnection(同步任务)下 worker 槽在调用线程执行,
++        // 回传若用 BlockingQueuedConnection 即同线程阻塞等自己 → 死锁;GUI 的 QueuedConnection
++        // 路径保持 BlockingQueuedConnection 的原有背压语义。
++        const Qt::ConnectionType resultConnectionType{connectionType == Qt::DirectConnection
++                ? Qt::DirectConnection
++                : Qt::BlockingQueuedConnection};
++        q->connect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep, resultConnectionType);
++        q->connect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep, resultConnectionType);
++        q->connect(&m_worker, &ImageTaskWorker::signal_didReplay, q, &ImageTask::modelDidReplay, resultConnectionType);
      }
  
      void disconnectAll()
@@ -3658,7 +3672,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      ImageTask* q;
-@@ -293,6 +334,7 @@
+@@ -293,6 +341,7 @@
      QThread m_workerThread; ///> Thread that the image task worker runs on.
      ImageTaskWorker m_worker; ///> The image task worker.
      geometrize::script::GeometrizerEngine m_geometrizer; ///> The script-based geometrizer for the image task.
@@ -3666,7 +3680,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  };
  
  ImageTask::ImageTask(Bitmap& target, Qt::ConnectionType workerConnectionType) : QObject(),
-@@ -374,11 +416,21 @@
+@@ -374,11 +423,21 @@
      d->drawShape(shape, color);
  }
  
@@ -3688,7 +3702,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  void ImageTask::modelWillStep()
  {
      d->modelWillStep();
-@@ -389,6 +441,11 @@
+@@ -389,6 +448,11 @@
      d->modelDidStep(shapes);
  }
  
