@@ -1,8 +1,8 @@
 # Geometrize Improved — 迭代路线图
 
-> 版本基准:2026-08-31 第十二次交付(F3.3 批处理增强落地;P1.4/P1.3 实测盖棺否决,ROADMAP 全清单至此全部处置完毕,本文件已按最终态整顿)
-> 下次会话:原 ROADMAP 清单已全部收官(功能轨/质量轨/性能轨/工程轨 + 第十二批 F3.3);可从 §5 的"后续可选方向"挑项或开新方向,动手前查 §7 陷阱速查(18 条)
-> 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ Qt 5.15.2
+> 版本基准:2026-10-03 第十四次交付(**Qt6 迁移落地**:Qt 6.8.3 LTS 单轨切换 + 同步任务脚本路径死锁修复 + Qt 渲染侧对拍工具入库)
+> 下次会话:Qt6 单轨已切换(docs/qt6-migration-report.md 为验收记录);§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(22 条)
+> 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ **Qt 6.8.3 LTS(msvc2022_64)**
 > 使用约定:**双轨制**——纯性能优化维持 bit-exact 门禁(与上游逐位一致);算法增强做成独立开关(默认关),不破坏验证体系。暂自用,不排开源工程项。
 
 ---
@@ -12,19 +12,20 @@
 | 项 | 状态 | 备注 |
 |---|---|---|
 | 核心库 | B1-B7 全部落地 + P1.1 金字塔(opt-in) | 内联/memcpy/isqrt 圆/扁平化 polygon/补丁快照/scratch 复用/持久线程池;金字塔=搜索启发式轨道 |
-| 交付物 | `dist\Geometrize-Improved\` | 免安装绿色包(与 release exe 同步) |
+| 交付物 | `dist\Geometrize-Improved\` | 免安装绿色包(与 release exe 同步);第十四批起为纯 Qt6 包(无 Qt5/ANGLE 残留) |
 | 端到端门禁 | `tools\run_ab.ps1` **26 用例矩阵** | 11 个 bit-exact + 15 个 EXPECTED_DIFF(边界修复/增强/区域/分段哨兵);`-BaselineExe` 支持外部基线;FAIL 自动留痕 .raw,单侧无输出自动重试一次(陷阱 #11) |
 | 单测门禁 | `src\test\` doctest 双变体 | 111 用例 × fast / 39 × base(ctest);Model 级哨兵已全部启用(2026-09-29,原 16 个 `#if 0 // CD`);变体分叉宏分流锁定 |
-| 应用层 | 撤销重做 + 区域优先框选 + 增强五勾选框 + 分段颜色 + GIF/PNG 导出参数化 + F3.5 分辨率下拉 + 全量中文化 + 启动优化(网格铺满 0.5s)+ 动态线程 + 批处理增强(F3.3)+ 导出 O(N) 化(F3.7) | patches\qt 0001-0027 已归档 |
-| 构建链 | qmake(权威)+ **CMake 并行**(build_cmake.bat 一键含 windeployqt) | Qt6 迁移的硬前置已就绪 |
+| Qt 渲染侧门禁 | `tools\qt_render_ab.py` + `tools\qt_goldens.csv` + `tools\qt_render_ref\` | 第十四批新增:headless 脚本对拍(6 用例,覆盖位图/透明/多线程/边界/GIF/SVG 光栅化);升级 Qt 或改应用层渲染后 `check` 对冻结参考校验 |
+| 应用层 | 撤销重做 + 区域优先框选 + 增强五勾选框 + 分段颜色 + GIF/PNG 导出参数化 + F3.5 分辨率下拉 + 全量中文化 + 启动优化(网格铺满 0.5s)+ 动态线程 + 批处理增强(F3.3)+ 导出 O(N) 化(F3.7)+ **Qt6 迁移(第十四批)** | patches\qt 0001-0028 已归档 |
+| 构建链 | **CMake 唯一维护链**(build_cmake.bat 一键含 windeployqt) | Qt6 迁移后 qmake/geometrize.pro **保留但冻结**(陷阱 #20);换 Qt 版本只改 bat 顶部 QT_DIR |
 | 翻译 | 300/300 全中文 | zh.ts 双 context(短名供 uic / 全名供嵌套类 tr) |
 | 已知残留 | 偏好文件旧值持久化 | 全局偏好 JSON 里旧字段会被沿用,改默认值时注意用户机已有文件 |
 
 **改动铁律**(每次迭代都适用):
-1. 每个 patch 独立、可 revert,落地即跑**双门禁**(ctest 2/2 + run_ab 26/26,含 tools\goldens.csv 值级比对);
+1. 每个 patch 独立、可 revert,落地即跑**双门禁**(ctest 2/2 + run_ab 26/26,含 tools\goldens.csv 值级比对);改应用层渲染相关代码/升级 Qt 追加 `python tools\qt_render_ab.py check`;
 2. 注释只写意图不写历史;
 3. 上游怪癖是可观察行为,不得"顺手修":bestRandomState off-by-one(RNG 消费 n+2 次)、`257.0f*255.0f/alpha` 唯一浮点点、drawLines 的 RGB 预计算公式——ellipse_bounds_fork 用例会替你盯着的;
-4. bat 必须 CRLF;qmake 构建须在 MSVC x64 环境;qrc 生成在 resources/ cwd 下跑;ChaiScript 保持 pin `2898ae6`;
+4. bat 必须 CRLF;应用构建走 CMake(VS 生成器自定位工具链,无需 vcvars);qrc 生成在 resources/ cwd 下跑;ChaiScript 保持 pin `2898ae6`;
 5. 涉及 UI 配色/新控件,先做预览确认再实施(项目惯例)。
 
 ---
@@ -214,6 +215,12 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 + 高 DPI 强制启用后的 UI 巡检(5.15 下未开高 DPI,Qt6 恒开,非 100% 缩放屏观感全变)。**建议不急**:
 待需要新 Qt 特性/新机部署时按报告步骤执行,报告即实施说明书。
 
+**→ 已落地(第十四批,2026-10-03,Q4.4 收官)**:目标版本改 **6.8.3 LTS**(6.5 线已 EOL);
+实际必改 = QSplashScreen 构造 1 处(SkipEmptyParts 有版本守卫,零改)+ CMake 模块迁移;另修
+同步任务脚本路径死锁(上游 bug,见陷阱 #21)。验收 = 三道门禁全绿 + headless 脚本对拍
+(Qt5 vs Qt6 严格项逐字节/逐像素一致,SVG 光栅化 0 像素差;Qt 图像缩放输入 1 LSB 属预期,
+见陷阱 #22)+ 真机巡检。细节与复现步骤:docs/qt6-migration-report.md。
+
 ### Q4.5 Model 级禁用单测重启用 — ✅ 已完成(2026-09-29,审查轮)
 16 个 Model 级用例(区域优先、分段颜色、四开关组合确定性、T7 不变量、异常传播/池存活、drawShape/reset 等)
 已全部启用:删除 test_model.cpp 内全部 `#if 0 // CD` 配对(43 对,保留内层合法的 GEOTEST_FAST/BASE 宏分叉)。
@@ -321,9 +328,18 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
     A2.5 新形状类型(SHAPE_COUNT/RNG 概率面联动,风险大于收益)
     Q4.4 Qt6 迁移(评估已完成,报告即实施说明书,时机成熟再动手)
     新方向:待定(可考虑 CLI 批处理模式、HTTP API、更多导出格式等应用层扩展)
+
+✅ 已完成(第十四批,2026-10-03:Qt6 迁移落地 + 同步任务死锁修复 + Qt 渲染侧对拍工具)
+  Q4.4 迁移落地(Qt 6.8.3 LTS msvc2022_64 单轨切换;CMake/bat 迁移 + QSplashScreen 构造适配;
+    qmake/.pro 保留但冻结;dist 换纯 Qt6 包;详见 docs/qt6-migration-report.md)
+  上游 bug 修复:同步任务(SynchronousImageTask)脚本路径死锁——worker→task 回传连接与
+    DirectConnection 同型化(GUI 路径语义不变;陷阱 #21)
+  验收基建入库:tools/qt_render_ab.py + 6 用例 + 冻结参考(qt_goldens.csv/qt_render_ref/),
+    对拍结论:严格项逐字节/逐像素一致、SVG 光栅化 0 像素差、Qt 缩放输入 1 LSB 属预期(陷阱 #22)
+  → 后续可选方向(未变):A2.5 新形状类型;新方向待定(CLI 批处理/HTTP API/更多导出格式)
 ```
 
-每批结束:双门禁全绿(ctest + run_ab)+ 发布包同步 + 补丁重编号导出 + MEMORY 更新。
+每批结束:双门禁全绿(ctest + run_ab;改应用层渲染相关代码或升级 Qt 追加 qt_render_ab check)+ 发布包同步 + 补丁重编号导出 + MEMORY 更新。
 
 ---
 
@@ -339,15 +355,17 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 | 单元测试 | src\test\(doctest 双变体,CMake target 在 src\geobench\CMakeLists.txt,ctest 门禁) |
 | 测试图 | src\testdata\images\(gen_test_images.py 可再生) |
 | 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间) |
-| 应用补丁 | patches\qt\0001-0027(0026 批处理增强/0027 导出性能,累计 diff 含附注) |
+| 应用补丁 | patches\qt\0001-0028(0026 批处理增强/0027 导出性能/0028 Qt6 迁移,累计 diff 含附注) |
+| Qt 渲染侧对拍 | tools\qt_render_ab.py(+ tools\qt_render_ab\cases\ 用例、tools\qt_goldens.csv 严格项哈希、tools\qt_render_ref\ 光栅化参考图;用法见 tools\qt_render_ab\README.md) |
 | 等价性论证 | docs\bitwise-equivalence-notes.md |
 | bug 分级 | docs\bugfix-triage.md |
 | Qt 评估 | docs\qt-app-findings.md |
-| Qt6 迁移评估 | docs\qt6-migration-assessment.md(Q4.4,2026-08-31) |
-| CMake 构建 | src\improved-app\CMakeLists.txt + build_cmake.bat(qt 0025;产物 build\Release\) |
+| Qt6 迁移评估 | docs\qt6-migration-assessment.md(Q4.4,2026-08-31;已落地,见下) |
+| Qt6 迁移报告 | docs\qt6-migration-report.md(第十四批实施+验收证据+换 Qt 版本复现步骤) |
+| CMake 构建 | src\improved-app\CMakeLists.txt + build_cmake.bat(qt 0025/0028;产物 build\Release\;换 Qt 版本改 bat 顶部 QT_DIR) |
 | 性能报告 | benchmarks\report.md(+ benchmarks\runs\ 每轮 CSV) |
-| 发布包 | dist\Geometrize-Improved\(windeployqt 产物,exe 与 release 同步复制) |
-| 构建脚本 | src\improved-app\build_qt.bat(D:\tmp\build_qt_all.bat 备份含环境) |
+| 发布包 | dist\Geometrize-Improved\(windeployqt 产物,exe 与 release 同步复制;第十四批起纯 Qt6) |
+| 构建脚本 | src\improved-app\build_qt.bat(qmake 链路,qt 后冻结;D:\tmp\build_qt_all.bat 备份含环境) |
 
 ## 7. 已知陷阱速查(新会话最容易踩)
 
@@ -369,3 +387,12 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 16. **QGraphicsItem 的 DeviceCoordinateCache 吃全局 QPixmapCache 配额**(默认 10MB,约 5 个全画布图层):图层数超配额后每帧重新渲染而非命中缓存,帧耗时量级跳变(0.2ms→70ms)。给场景加 item 前先算图层数 × 单层设备像素;需要更多图层就 `QPixmapCache::setCacheLimit`(应用 main.cpp 已设 128MB)。诊断手法:离屏 `QGraphicsView::render` 计时 + 打印 item 数,见 F3.9。另:`QGraphicsSvgItem` 自带 `maximumCacheSize`(默认 1024×768),设备矩形超上限时 QGraphicsScene 会**整体旁路**设备坐标缓存 —— 分块 SVG item 的 boundingRect 是整幅画布,所以视口/缩放一大缓存就失效,`QPixmapCache` 调多大都没用(需 `setMaximumCacheSize`)。
 17. **不可选/不可移动的 QGraphicsItem 收不到 release**:`QGraphicsItem::mousePressEvent` 对 `ItemIsSelectable == false` 的 item 走 `event->ignore()`,场景于是**不把它设为 mouse grabber**;图像视图开着 `ScrollHandDrag`,后续 move/release 全被视图接管 —— item 的 release 信号永不触发。表现极具迷惑性:**按下有反应(信号已发)、松手什么都不发生**。凡"Ctrl+拖拽/框选"这类靠 item 的 press+release 配对的交互,必须在 press 里显式 `event->accept()`(2026-10-01 区域框选就是这么坏的:README 记了功能、代码看着完整、纯静态审查也判"能用")。定位手法:item 的 press/release 与窗口侧处理器各插一条 stderr 日志,跑一次就能看到"只有 press 没有 release";反过来,"日志里看不到 release"本身就是该 bug 的症状,别误判成测试工具不可靠。
 18. **改完应用必须同步 dist**:用户实际运行 `dist\Geometrize-Improved\Geometrize.exe`(README「直接使用」指它),它**不会**随 `build_cmake.bat` 自动更新。只重建 `src\improved-app\build\Release` 就交给用户复测 = 他测的是旧包(2026-09-30 实测:dist 停在 9-22,用户报"新修的功能没生效"其实是旧构建)。让用户复测前先 `cp src\improved-app\build\Release\Geometrize.exe dist\Geometrize-Improved\` 并比对哈希;根目录那个 `Geometrize.exe` 是更旧的遗留物,别误用。另:应用资源(模板/脚本/翻译)全部编进 exe,同步 exe 即可。
+19. **Qt6 构建适配要点(迁移后新会话最易踩)**:
+    - `QGraphicsSvgItem`/`QSvgWidget` 在 Qt6 移入 **QtSvgWidgets** 模块(CMake 必须 `find_package(... SvgWidgets)` + 链 `Qt6::SvgWidgets`;头文件名不变);
+    - `QSplashScreen` **没有 `QWidget*` 父参重载**了(默认构造 + `setPixmap`);
+    - WinMain→main 转发**无需手工 EntryPoint**:`Qt6::Core` 的 INTERFACE 里带 `WIN32_EXECUTABLE → Qt6::EntryPointPrivate` 生成式,`add_executable(... WIN32 ...)` 自动吃到;
+    - windeployqt(Qt6):部署 `styles/qmodernwindowsstyle.dll`(取代 Qt5 的 windowsvista)与 `tls/`(取代 `bearer/`),默认**不部署** opengl32sw(raster widgets 不需要);`--no-translations` 可再瘦身(应用翻译已编进 qrc)。注意 **qtsvg 是 archive 不是 module,qtimageformats 才是 module**(webp/tiff/tga/icns 靠它,aqt 安装命令加 `-m qtimageformats`);
+    - 单轨切换后**旧 Qt5 残留必须清掉**(Qt5*.dll / bearer / libEGL / libGLESv2 / qwindowsvistastyle),否则包内两套 Qt 混放,排障时极易看错。
+20. **qmake 链路已冻结**:Qt6 后应用构建只维护 `CMakeLists.txt` + `build_cmake.bat`(换 Qt 版本只改 bat 顶部 `QT_DIR`);`geometrize.pro` 保留但不再跟随改动**,改应用新增文件时别再往 .pri/.pro 里补**(CMake 用 GLOB 递归收集,自动跟上)。
+21. **同步任务脚本路径死锁(上游 bug,已于第十四批修复)**:`ImageTask` 用 `Qt::DirectConnection`(SynchronousImageTask)时,worker→task 的 `signal_willStep/didStep/didReplay` 若用 `BlockingQueuedConnection` = **同线程阻塞等自己** → 控制台/脚本模式必死锁;**GUI 的 QueuedConnection 路径正常,所以这个 bug 潜伏很久**(上游自带示例 `imagejob.chai` 一样挂)。修法 = 回传连接与入向连接同型。定位手法:进程不退但 **CPU≈0 且无窗口标题**(与"脚本错误"区分:后者会弹「脚本评估失败」模态框、`MainWindowTitle` 有标题,且该模态框自带事件循环会一直挂着等点击——headless 跑脚本必须 try/catch + 带超时强杀)。
+22. **Qt 图像平滑缩放的跨版本差异(Qt5→Qt6 实测)**:`QImage` 平滑缩放在 5.15→6.8 间有 **1 个灰阶的取整差异**(512→256 实测 62.5% 像素差 1 LSB),该差异沿形状链混沌放大后最终输出不再逐位一致——**对拍矩阵必须把"过 Qt 缩放"的输入从严格项剥离**(tools\qt_render_ab 用例 06 专门量化记录);应用默认处理分辨率上限 1024,超过即走该路径。性质属 Qt 实现变更,不是缺陷、也不该"修回"。

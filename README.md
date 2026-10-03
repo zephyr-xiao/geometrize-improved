@@ -114,14 +114,17 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 │   ├─ geobench\               # CLI 基准器 + CMake 统一构建入口(SHA-256 + FNV 滚动指纹双口径对拍)
 │   ├─ test\                   # doctest 单元测试(双变体链接,111 用例 × fast / 39 × base;
 │   │                          #   Model 级哨兵(区域/分段/组合/异常传播/越界裁剪)已全部启用)
-│   └─ improved-app\           # 应用改进工作树(含改进版库 + 全部应用层 patch,可 qmake 构建)
+│   └─ improved-app\           # 应用改进工作树(含改进版库 + 全部应用层 patch;Qt6 迁移后走 CMake,见"复现")
 ├─ tools\run_ab.ps1             # A/B 对拍矩阵(26 用例:11 bit-exact + 15 EXPECTED_DIFF 分叉哨兵)
 │                               #   + tools\goldens.csv 值级锁定(双端双口径哈希逐值比对)
 ├─ tools\goldens.csv            # 对拍 golden:只断言"与 base 不同"抓不到"分叉的值变了",值级锁定靠它
+├─ tools\qt_render_ab.py        # Qt 渲染侧对拍(Qt 升级/应用层渲染改动时的验收工具,见 tools\qt_render_ab\README.md)
+├─ tools\qt_render_ab\cases\    #   用例脚本(headless ChaiScript,固定种子/线程)
+├─ tools\qt_goldens.csv         #   Qt 侧冻结参考哈希(严格项)+ tools\qt_render_ref\ 光栅化参考图
 ├─ tools\verify_patches.py      # 补丁↔工作树一致性双门禁(重放复现 + 归档新鲜度;lib 失败 exit 1,app 失败 exit 2)
 ├─ tools\svgscene-bench\        # 矢量视图渲染开销离屏基准(四方案对比 + 画面等价性,见 F3.9)
 ├─ benchmarks\report.md         # 性能报告(分阶段数据 + 大图可行性)
-└─ docs\                        # 等价性论证 / bug 分级 / Qt 评估
+└─ docs\                        # 等价性论证 / bug 分级 / Qt 评估与 Qt6 迁移报告
 ```
 
 ## 复现
@@ -160,17 +163,29 @@ ctest --test-dir build -C Release --output-on-failure        # 2/2 PASS
 # 注:Model 级用例在 Debug 构建下会被 drain 里的 assert(0) 中断(异常传播用例属预期路径),
 #    门禁一律用 Release(NDEBUG)跑
 
-# 应用构建(Qt 5.15.2 win64_msvc2019_64,用 aqtinstall 安装)
+# 应用构建(Qt 6.8.3 LTS win64_msvc2022_64;Qt6 迁移后 CMake 是唯一在维护的链路,qmake/.pro 保留但不再维护)
+python -m aqt install-qt -O D:/Qt -b https://mirrors.aliyun.com/qt windows desktop 6.8.3 win64_msvc2022_64 `
+    --archives qtbase qtsvg qttools qttranslations -m qtimageformats
 cd src\improved-app
-# MSVC x64 环境里:
-qmake geometrize.pro "CONFIG+=release"
-python scripts/generate_geometrize_qrcs.py   # 在 resources cwd 下运行
-nmake
-windeployqt release\Geometrize.exe
+.\build_cmake.bat              # 配置+构建+windeployqt 一键(换 Qt 版本只改顶部 QT_DIR);产物 build\Release\Geometrize.exe
+# dist 不会随构建自动更新,交付前必须同步并比对哈希(陷阱 #18):
+copy build\Release\Geometrize.exe ..\..\dist\Geometrize-Improved\
+# 回退路径:git revert 迁移提交 + 盘上 Qt 5.15.2 重建(评估与实施细节见 docs\qt6-migration-report.md)
+
+cd ..\..
+# Qt 渲染侧对拍(升级 Qt / 改动应用层渲染时的验收;判据分层与用法见 tools\qt_render_ab\README.md)
+# 注意:输出目录必须落工作区内——沙箱下应用进程写工作区外路径会被拒(导出静默失败)
+python tools\qt_render_ab.py run     --exe <旧版本包 exe> --out .tmp_qt_render_ab\ref
+python tools\qt_render_ab.py run     --exe src\improved-app\build\Release\Geometrize.exe --out .tmp_qt_render_ab\cand
+python tools\qt_render_ab.py compare --ref-dir .tmp_qt_render_ab\ref --cand-dir .tmp_qt_render_ab\cand
+python tools\qt_render_ab.py check   --exe src\improved-app\build\Release\Geometrize.exe   # 长期门禁:对冻结参考校验
+python tools\qt_render_ab.py accept  --exe src\improved-app\build\Release\Geometrize.exe   # 验收通过后重采参考
 ```
 
 应用层改动集中在这些文件(相对上游):
-- `geometrize.pro`(concurrent 模块 + /utf-8)
+- `CMakeLists.txt` + `build_cmake.bat`(Q4.2 引入;Qt6 迁移后为唯一在维护的构建链,见 patches/qt/0025/0028)
+- `geometrize.pro`(concurrent 模块 + /utf-8;Qt6 后冻结不再维护)
+- `dialog/appsplashscreen.cpp`(Qt6 移除 QSplashScreen 的 QWidget* 父参重载,改默认构造,见 patches/qt/0028)
 - `dialog/launchwindow.ui/.cpp`(处理分辨率上限下拉,见 patches/qt/0016)
 - `dialog/taskqueuewindow.*`(批处理增强:完成感知/队列持久化/自动导出/任务栏进度,见 patches/qt/0026)
 - `dialog/imagetaskwindow.h/.cpp`(完成信号 signal_didStopConditionMet + getShapes 访问器,见 patches/qt/0026)
@@ -193,6 +208,8 @@ windeployqt release\Geometrize.exe
 ## 关键约束
 
 - **确定性**:线程数参与结果(seed 分配随 maxThreads),对拍必须固定 `--threads`。
+- **Qt 版本**:Qt 6.8.3 LTS(msvc2022_64);Qt 侧行为差异(Qt 图像缩放 1 LSB、强制高 DPI)与
+  验收证据见 docs\qt6-migration-report.md;Qt 渲染侧回归用 tools\qt_render_ab.py 对拍/校验。
 - bestRandomState 的 off-by-one 怪癖(RNG 消费 n+2 次)是可观察行为,原样保留。
 - AVX2 手写 SIMD 经插桩实测否决(2026-08-31):误差内核占比 ~30% 未过 40% 启用门槛,
   三口径占比一致,结论存档 ROADMAP §1;P1.4 buffer 池化同批实测负收益一并否决。
