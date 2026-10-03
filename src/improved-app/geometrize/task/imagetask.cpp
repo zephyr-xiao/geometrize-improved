@@ -312,9 +312,16 @@ private:
         q->connect(q, &ImageTask::signal_step, &m_worker, &ImageTaskWorker::step, connectionType);
         q->connect(q, &ImageTask::signal_drawShape, &m_worker, &ImageTaskWorker::drawShape, connectionType);
         q->connect(q, &ImageTask::signal_replayShapes, &m_worker, &ImageTaskWorker::replayShapes, connectionType);
-        q->connect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep, Qt::BlockingQueuedConnection);
-        q->connect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep, Qt::BlockingQueuedConnection);
-        q->connect(&m_worker, &ImageTaskWorker::signal_didReplay, q, &ImageTask::modelDidReplay, Qt::BlockingQueuedConnection);
+
+        // 回传连接与入向连接同型:DirectConnection(同步任务)下 worker 槽在调用线程执行,
+        // 回传若用 BlockingQueuedConnection 即同线程阻塞等自己 → 死锁;GUI 的 QueuedConnection
+        // 路径保持 BlockingQueuedConnection 的原有背压语义。
+        const Qt::ConnectionType resultConnectionType{connectionType == Qt::DirectConnection
+                ? Qt::DirectConnection
+                : Qt::BlockingQueuedConnection};
+        q->connect(&m_worker, &ImageTaskWorker::signal_willStep, q, &ImageTask::modelWillStep, resultConnectionType);
+        q->connect(&m_worker, &ImageTaskWorker::signal_didStep, q, &ImageTask::modelDidStep, resultConnectionType);
+        q->connect(&m_worker, &ImageTaskWorker::signal_didReplay, q, &ImageTask::modelDidReplay, resultConnectionType);
     }
 
     void disconnectAll()
