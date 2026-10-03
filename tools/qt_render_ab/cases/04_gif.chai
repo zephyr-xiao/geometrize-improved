@@ -1,0 +1,35 @@
+// 用例 04:动图 GIF 编码路径严格对拍(帧切片累积渲染 + BurstLinker 编码,纯 STL/位图同源)
+// 产物:*_gif.gif(逐字节严格)
+try
+{
+    var image = loadImage("@IN@/tiny_64.png");
+    var bitmap = createBitmap(convertImageToRgba8888(image));
+
+    var prefs = ImageTaskPreferences();
+    prefs.setSeed(1000);
+    prefs.setMaxThreads(1);
+    prefs.setShapeAlpha(255);
+    prefs.setCandidateShapeCount(50);
+    prefs.setMaxShapeMutations(100);
+    prefs.setShapeTypes(RECTANGLE);
+    prefs.enableShapeTypes(TRIANGLE);
+    prefs.enableShapeTypes(ELLIPSE);
+    prefs.enableShapeTypes(ROTATED_RECTANGLE);
+
+    var task = SynchronousImageTask(bitmap);
+    task.setPreferences(prefs);
+    task.drawBackgroundRectangle();
+    for (var i = 0; i < 60; ++i)
+    {
+        task.stepModel();
+    }
+
+    exportGIF(task.getShapes(), 64, 64, 64, 64, 20, "@OUT@/04_gif.gif");
+    writeStringToFile("PASS", "@OUT@/04_gif.status.txt");
+    printToConsole("CASE 04 PASS\n");
+}
+catch (e)
+{
+    writeStringToFile("FAIL", "@OUT@/04_gif.status.txt");
+    printToConsole("CASE 04 FAIL: " + to_string(e) + "\n");
+}

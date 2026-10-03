@@ -25,5 +25,8 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# 对拍工具临时输出(应用进程在沙箱下写不进工作区外,产物必须落在这里)
+.tmp_qt_render_ab/
+
 # 内嵌仓库元数据(改名为 .git-disabled 保留在盘,内容已入库;恢复 VCS 时改回 .git)
 .git-disabled/

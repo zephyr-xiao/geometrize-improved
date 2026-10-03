@@ -1,0 +1,39 @@
+// 用例 02:透明通道(alpha≠255)路径严格对拍(32×1024 / 固定种子 / 单线程)
+// 产物:*_alpha_wide.bitmap.png(逐像素严格) + *_alpha_wide.json(逐字节严格)
+try
+{
+    var image = loadImage("@IN@/wide_32x1024.png");
+    var bitmap = createBitmap(convertImageToRgba8888(image));
+
+    var prefs = ImageTaskPreferences();
+    prefs.setSeed(2000);
+    prefs.setMaxThreads(1);
+    prefs.setShapeAlpha(255);
+    prefs.setCandidateShapeCount(50);
+    prefs.setMaxShapeMutations(100);
+    prefs.setShapeTypes(RECTANGLE);
+    prefs.enableShapeTypes(ROTATED_RECTANGLE);
+    prefs.enableShapeTypes(TRIANGLE);
+    prefs.enableShapeTypes(ELLIPSE);
+    prefs.enableShapeTypes(CIRCLE);
+    prefs.enableShapeTypes(LINE);
+    prefs.enableShapeTypes(POLYLINE);
+
+    var task = SynchronousImageTask(bitmap);
+    task.setPreferences(prefs);
+    task.drawBackgroundRectangle();
+    for (var i = 0; i < 120; ++i)
+    {
+        task.stepModel();
+    }
+
+    exportBitmap(task.getCurrent(), "@OUT@/02_alpha_wide.bitmap.png");
+    writeStringToFile(exportShapeJson(task.getShapes()), "@OUT@/02_alpha_wide.json");
+    writeStringToFile("PASS", "@OUT@/02_alpha_wide.status.txt");
+    printToConsole("CASE 02 PASS\n");
+}
+catch (e)
+{
+    writeStringToFile("FAIL", "@OUT@/02_alpha_wide.status.txt");
+    printToConsole("CASE 02 FAIL: " + to_string(e) + "\n");
+}

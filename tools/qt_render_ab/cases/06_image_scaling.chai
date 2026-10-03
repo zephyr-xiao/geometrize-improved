@@ -1,0 +1,18 @@
+// 用例 06:Qt 图像缩放输入路径(诊断用例,量化而非断言)
+// 产物:*_image_scaling.qtinput.png(经 convertImageToBitmapWithDownscaling 的目标位图)
+// 说明:Qt 的平滑缩放实现在 Qt5 5.15 → Qt6 6.8 间有 1 个灰阶的取整差异(512→256 实测
+// 62.5% 像素差 1 LSB),属 Qt 版本行为变更而非迁移缺陷;该差异会沿形状链放大,
+// 因此这类输入不走严格断言,只在迁移报告里量化记录。同版本内重跑仍逐位一致。
+try
+{
+    var image = loadImage("@IN@/gradnoise_512.png");
+    var bitmap = convertImageToBitmapWithDownscaling(image);
+    exportBitmap(bitmap, "@OUT@/06_image_scaling.qtinput.png");
+    writeStringToFile("PASS", "@OUT@/06_image_scaling.status.txt");
+    printToConsole("CASE 06 PASS\n");
+}
+catch (e)
+{
+    writeStringToFile("FAIL", "@OUT@/06_image_scaling.status.txt");
+    printToConsole("CASE 06 FAIL: " + to_string(e) + "\n");
+}

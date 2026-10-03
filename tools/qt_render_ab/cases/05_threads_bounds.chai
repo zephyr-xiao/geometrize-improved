@@ -1,0 +1,41 @@
+// 用例 05:多线程(固定 4 线程)+ 形状边界窗口路径严格对拍
+// 产物:*_threads_bounds.bitmap.png(逐像素严格) + *_threads_bounds.json(逐字节严格)
+// 注意:线程数参与种子分配,必须显式固定线程数;形状边界用百分比窗口锁定。
+// 输入走 createBitmap(位图直转,不经 Qt 缩放)以保证输入逐位同源——
+// 经 Qt 平滑缩放的输入在 Qt5/Qt6 间存在 1 LSB 差异(见 06 用例),会掩盖被测路径本身。
+try
+{
+    var image = loadImage("@IN@/gradnoise_512.png");
+    var bitmap = createBitmap(convertImageToRgba8888(image));
+
+    var prefs = ImageTaskPreferences();
+    prefs.setSeed(3000);
+    prefs.setMaxThreads(4);
+    prefs.setShapeAlpha(255);
+    prefs.setCandidateShapeCount(50);
+    prefs.setMaxShapeMutations(100);
+    prefs.setShapeTypes(RECTANGLE);
+    prefs.enableShapeTypes(TRIANGLE);
+    prefs.enableShapeTypes(CIRCLE);
+    prefs.enableShapeTypes(LINE);
+    prefs.setShapeBounds(0.25, 0.25, 0.75, 0.75);
+    prefs.setShapeBoundsEnabled(true);
+
+    var task = SynchronousImageTask(bitmap);
+    task.setPreferences(prefs);
+    task.drawBackgroundRectangle();
+    for (var i = 0; i < 30; ++i)
+    {
+        task.stepModel();
+    }
+
+    exportBitmap(task.getCurrent(), "@OUT@/05_threads_bounds.bitmap.png");
+    writeStringToFile(exportShapeJson(task.getShapes()), "@OUT@/05_threads_bounds.json");
+    writeStringToFile("PASS", "@OUT@/05_threads_bounds.status.txt");
+    printToConsole("CASE 05 PASS\n");
+}
+catch (e)
+{
+    writeStringToFile("FAIL", "@OUT@/05_threads_bounds.status.txt");
+    printToConsole("CASE 05 FAIL: " + to_string(e) + "\n");
+}
