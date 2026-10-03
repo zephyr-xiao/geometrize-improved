@@ -22,7 +22,7 @@ namespace dialog
 class GeometrizeSplashScreen : public QSplashScreen
 {
 public:
-    GeometrizeSplashScreen() : QSplashScreen{static_cast<QWidget *>(nullptr)}, m_progress{0}
+    GeometrizeSplashScreen() : QSplashScreen{}, m_progress{0}
     {
         setWindowFlags(windowFlags() | Qt::WindowStaysOnTopHint);
         setPixmap(QPixmap(":/logos/splashscreen.png"));

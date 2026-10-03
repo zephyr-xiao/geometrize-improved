@@ -1,10 +1,14 @@
 @echo off
-rem Qt Ó¦ÓÃ CMake ¹¹½¨½Å±¾(VS Éú³ÉÆ÷,ÎŞĞè vcvars64:MSBuild ×Ô¶¨Î»¹¤¾ßÁ´)
-rem ÓÃ·¨:Ë«»÷»òÃüÁîĞĞÖ´ĞĞ;²úÎïÔÚ build\Release\Geometrize.exe
-set PATH=C:\Program Files\CMake\bin;D:\Qt\5.15.2\msvc2019_64\bin;%PATH%
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH=D:/Qt/5.15.2/msvc2019_64 %*
+rem Qt åº”ç”¨ CMake æ„å»ºè„šæœ¬(VS ç”Ÿæˆå™¨,æ— éœ€ vcvars64:MSBuild è‡ªå®šä½å·¥å…·é“¾)
+rem ç”¨æ³•:åŒå‡»æˆ–å‘½ä»¤è¡Œæ‰§è¡Œ;äº§ç‰©åœ¨ build\Release\Geometrize.exe
+rem Qt6 è¿ç§»åæœ¬é“¾è·¯æ˜¯å”¯ä¸€åœ¨ç»´æŠ¤çš„æ„å»ºé“¾(geometrize.pro/qmake ä¿ç•™ä½†ä¸å†ç»´æŠ¤);å‡ Qt ç‰ˆæœ¬åªæ”¹ä¸‹é¢ä¸€è¡Œ
+set QT_DIR=D:\Qt\6.8.3\msvc2022_64
+set PATH=C:\Program Files\CMake\bin;%QT_DIR%\bin;%PATH%
+rem %QT_DIR:\=/% æ˜¯ cmd å˜é‡æ›¿æ¢:æŠŠåæ–œæ æ¢æˆæ–œæ ,é¿å… CMake å‚æ•°é‡Œçš„è½¬ä¹‰æ­§ä¹‰
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH=%QT_DIR:\=/% %*
 if errorlevel 1 exit /b 1
 cmake --build build --config Release --parallel
 if errorlevel 1 exit /b 1
-rem ²¿Êğ Qt ÔËĞĞÊ± DLL µ½Êä³öÄ¿Â¼(·ñÔò exe Ë«»÷È± Qt5*.dll)
-windeployqt --no-compiler-runtime build\Release\Geometrize.exe
+rem éƒ¨ç½² Qt è¿è¡Œæ—¶ DLL åˆ°è¾“å‡ºç›®å½•(å¦åˆ™ exe åŒå‡»ç¼º Qt6*.dll)
+rem --no-translations:åº”ç”¨è‡ªèº«ç¿»è¯‘å·²ç¼–è¿› qrc,ä¸éœ€è¦ Qt è‡ªå¸¦ qt_*.qm
+windeployqt --no-compiler-runtime --no-translations build\Release\Geometrize.exe

@@ -1,5 +1,5 @@
-# Geometrize Qt 应用 CMake 构建(Q4.2)
-# 与 geometrize.pro(qmake)并行的构建链路:qmake 仍是权威链路,本文件失败可随时弃用。
+# Geometrize Qt 应用 CMake 构建(Q4.2;Qt6 迁移后为唯一在维护的构建链路)
+# geometrize.pro(qmake)保留但不再维护:Qt6 下 qmake 已被 CMake 取代,本文件失败可回退 Qt5 链路重建。
 # 生成物全部落在 build/(out-of-source),不触碰 qmake 在源树的 obj/qt_gen/debug/release。
 # 用法见 build_cmake.bat。
 
@@ -14,9 +14,9 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-# Qt5 5.15.2:与 build_qt.bat 同一套安装;CMAKE_PREFIX_PATH 由 build_cmake.bat 传入
-find_package(Qt5 5.15 REQUIRED COMPONENTS Core Gui Widgets Svg Network Concurrent)
-# Qt6 迁移(ROADMAP Q4.4,仅评估):组件需改并增加 SvgWidgets,见 geometrize.pro 的 Qt6 分支
+# Qt6 6.8.3 LTS(msvc2022_64):CMAKE_PREFIX_PATH 由 build_cmake.bat 传入
+# SvgWidgets 是 Qt6 拆出的模块(QGraphicsSvgItem/QSvgWidget 从 QtSvg 移入),必须显式链接
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Svg SvgWidgets Network Concurrent)
 
 # ---- 源码收集(与各 .pri 的 $$files(..., true) 递归等价)----
 # 应用源(geometrize/sources.pri)。排除 dataslinger/:可选 WebSocket 推流,
@@ -52,7 +52,8 @@ add_executable(Geometrize WIN32
     ${GEOMETRIZE_FORMS}
     resources/app_icons/winicon.rc
     resources/app_icons/app.manifest)
-# WIN32 = GUI 子系统;qtmain(WinMain→main 转发)由 Qt5Core 配置包按此属性自动链接
+# WIN32 = GUI 子系统;WinMain→main 转发由 Qt6::Core 按 WIN32_EXECUTABLE 属性自动链接
+# (Qt6CoreTargets 的 INTERFACE_LINK_LIBRARIES 里带 Qt6::EntryPointPrivate 生成式)
 # app.manifest:Common-Controls SxS 依赖,MSVC 工具链把它当 linker input 自动合并进内嵌清单
 # (等价于 qmake 的 /MANIFESTDEPENDENCY;target_link_options 传该选项在 VS 生成器下会被空格拆散)
 
@@ -65,7 +66,7 @@ target_include_directories(Geometrize PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/burstlinker/burstlinker/src")
 
 target_link_libraries(Geometrize PRIVATE
-    Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Svg Qt5::Network Qt5::Concurrent)
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Svg Qt6::SvgWidgets Qt6::Network Qt6::Concurrent)
 
 # 任务栏进度条(TaskQueueWindow 批处理进度):Win32 原生 COM ITaskbarList3
 if(WIN32)
