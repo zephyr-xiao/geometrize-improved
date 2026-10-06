@@ -181,11 +181,15 @@ cd src\improved-app
 .\build_cmake.bat              # 配置+构建+windeployqt 一键(换 Qt 版本只改顶部 QT_DIR);产物 build\Release\Geometrize.exe
 # dist 不会随构建自动更新,交付前必须同步并比对哈希(陷阱 #18):
 copy build\Release\Geometrize.exe ..\..\dist\Geometrize-Improved\
+# 本机另有坑:工作区内新建/更新的 exe 会继承 dsh 沙箱的 Low 完整性标签,双击运行时
+# 无法另存为到工作区外(误报"没有权限")——交付/复测前跑一次(每次重建后都要):
+python tools\fix_integrity_label.py        # 见 docs\ROADMAP.md 陷阱 #24
 # 回退路径:git revert 迁移提交 + 盘上 Qt 5.15.2 重建(评估与实施细节见 docs\qt6-migration-report.md)
 
 cd ..\..
 # Qt 渲染侧对拍(升级 Qt / 改动应用层渲染时的验收;判据分层与用法见 tools\qt_render_ab\README.md)
-# 注意:输出目录必须落工作区内——沙箱下应用进程写工作区外路径会被拒(导出静默失败)
+# 注意:应用 exe 若带继承来的 Low 完整性标签(新建/重建后默认如此),写工作区外路径会被拒(导出静默失败);
+#      跑 python tools\fix_integrity_label.py 修复标签后即无此限制(见 docs\ROADMAP.md 陷阱 #24)
 python tools\qt_render_ab.py run     --exe <旧版本包 exe> --out .tmp_qt_render_ab\ref
 python tools\qt_render_ab.py run     --exe src\improved-app\build\Release\Geometrize.exe --out .tmp_qt_render_ab\cand
 python tools\qt_render_ab.py compare --ref-dir .tmp_qt_render_ab\ref --cand-dir .tmp_qt_render_ab\cand

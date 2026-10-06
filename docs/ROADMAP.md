@@ -265,6 +265,10 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 9. ✅ Qt6 迁移真机回归已通过(2026-10-03,用户实测):启动/模板网格、运行(默认+增强勾选)、撤销重做、
    区域框选、脚本控制台、导出 PNG/序列/SVG/GIF、批处理队列、偏好/语言、任务栏进度、关闭全项无异常。
    对应验收证据见 docs/qt6-migration-report.md(脚本对拍 + 三道门禁 + 交付包 check)。
+10. ⏳ 第十五批真机回归待用户(2026-10-06):重点项 = ①"另存为"到工作区外(桌面/D:\tmp,原阻断缺陷,
+   见陷阱 #24);②导出超限预检弹窗(小图 ×8 倍率或大图高倍率应弹出拒绝而非崩溃);③批处理队列
+   连续两轮同名导出不互相覆盖、队列项执行中移除不崩;④脚本下拉选择、16 区域上限状态栏提示。
+   **回归通过后**执行本地提交推送与仓库转 public(已获用户确认)。
 
 ---
 
@@ -388,6 +392,7 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 | CMake 构建 | src\improved-app\CMakeLists.txt + build_cmake.bat(qt 0025/0028;产物 build\Release\;换 Qt 版本改 bat 顶部 QT_DIR) |
 | 性能报告 | benchmarks\report.md(+ benchmarks\runs\ 每轮 CSV) |
 | 发布包 | dist\Geometrize-Improved\(windeployqt 产物,exe 与 release 同步复制;第十四批起纯 Qt6) |
+| 完整性标签修复 | tools\fix_integrity_label.py(重建 exe 后必须跑,否则双击另存为报"没有权限";见陷阱 #24) |
 | 构建脚本 | src\improved-app\build_qt.bat(qmake 链路,qt 后冻结;D:\tmp\build_qt_all.bat 备份含环境) |
 
 ## 7. 已知陷阱速查(新会话最容易踩)
@@ -420,3 +425,5 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 21. **同步任务脚本路径死锁(上游 bug,已于第十四批修复)**:`ImageTask` 用 `Qt::DirectConnection`(SynchronousImageTask)时,worker→task 的 `signal_willStep/didStep/didReplay` 若用 `BlockingQueuedConnection` = **同线程阻塞等自己** → 控制台/脚本模式必死锁;**GUI 的 QueuedConnection 路径正常,所以这个 bug 潜伏很久**(上游自带示例 `imagejob.chai` 一样挂)。修法 = 回传连接与入向连接同型。定位手法:进程不退但 **CPU≈0 且无窗口标题**(与"脚本错误"区分:后者会弹「脚本评估失败」模态框、`MainWindowTitle` 有标题,且该模态框自带事件循环会一直挂着等点击——headless 跑脚本必须 try/catch + 带超时强杀)。
 22. **Qt 图像平滑缩放的跨版本差异(Qt5→Qt6 实测)**:`QImage` 平滑缩放在 5.15→6.8 间有 **1 个灰阶的取整差异**(512→256 实测 62.5% 像素差 1 LSB),该差异沿形状链混沌放大后最终输出不再逐位一致——**对拍矩阵必须把"过 Qt 缩放"的输入从严格项剥离**(tools\qt_render_ab 用例 06 专门量化记录);应用默认处理分辨率上限 1024,超过即走该路径。性质属 Qt 实现变更,不是缺陷、也不该"修回"。
 23. **Qt6/64 位 QImage 无固定单边尺寸上限(第十五批复现实证,"32767 上限"是 Qt5 时代假设)**:32768 宽构造成功、`scaled(32768,32768)`(4.29GB)在本机也能成功——不能指望 Qt 替你拒绝超限导出。后果链:内存压力下 `scaled` 返回**空图** → `makeImageData` 按 0×0 分配 → BurstLinker 量化器按 `init` 时的尺寸读缓冲 → **堆越界读**(守护页实测 0xC0000005);GIF 头部宽高是 uint16,>65535 静默截断(mod 65536,70000→4464)。凡按用户倍率放大输出的路径,先用 `宽*高*4 ≤ 2GB`(uint64 乘法)与 GIF 每边 ≤65535 做确定性预检(第十五批已在导出面板三入口 + gifexporter 落防线),消费 scaled 结果前必须补空图检查。
+24. **工作区内新建/更新的 exe 会继承 Low 完整性标签 → 双击运行时另存为全位置报「没有权限」(2026-10-06 定位,机器环境层面)**:本机工作区根被 dsh(DeepSeek Harness,本机 0.2.0-rc.2)的 Windows 沙箱盖了一条**可继承的 Low 强制完整性标签**(`Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`,其提交 `d5ad3baeb5`;工作区 ACL 里多出的 `S-1-4-…`"未知账户"是 dsh 的能力 SID,非恶意软件——公开记录见其讨论 #7735)。该目录树内**每个新建/更新的文件**都会物化 Low 标签,而由 Low 文件启动的进程按 Windows MIC 规则**以低完整性运行**——低完整性进程写不了任何普通目录,症状即:双击 Geometrize 后另存为时 Windows 原生对话框误报「你没有权限在此位置中保存文件…改为保存到图片文件夹?」(桌面/图片/D:\tmp 全拒,唯独工作区内可写——工作区本身带了配套的 Low 写许可)。**判据**:`icacls <exe>` 看是否含 `Mandatory Label\...Low`;对照实验 = 同会话 python/notepad 写 D:\tmp 正常而该 exe 写不了(应用内探针 `createDirectory`/`writeStringToFile` 全返回 false,注意此类写入**静默失败不抛异常**)。**修法**:`python tools\fix_integrity_label.py` 把交付入口/构建产物显式重置为 Medium(显式标签压过继承标签,**无需管理员**),**每次重建 exe 后都要再跑**;dsh 上游修复(f6698853f3)只豁免授权根**顶层**启动器,深层路径 exe(如本项目 dist)不受益,仍需本脚本兜底。排查已排除:应用代码/启动上下文/ACL/只读位/Defender CFA/火绒(3 个 db 含 4MB WAL 全扫,无 Geometrize 拦截记录)/完美世界 MessageTransfer.sys/AppCompat shim 与 AppInit·AppCertDlls 注入点/IFEO。
+    **2026-10-06 追查 dsh 本体后的补充**:① **语义实证**——写操作的强制完整性规则是「进程 IL ≥ 对象标签」,policy 位(NO_WRITE_UP)**不能放开写**:Medium(policy 0) 与 Medium(NW) 同样拒绝低完整性进程写入;因此被重置为 Medium 的文件,**dsh 沙箱子进程无法再覆盖**(沙箱内构建需覆盖这些 exe 时,改在沙箱外跑,或临时 `icacls <文件> /setintegritylevel Low`)。② 已建**工作区级自动修复**:计划任务 `dsh-low-integrity-autofix`(每 15 分钟,脚本 `scripts\dsh-label-autofix\autofix.py`)把继承 Low 的启动文件自动重置为 Medium——新构建/新文件自愈,不必再手工跑本项目的 `tools\fix_integrity_label.py`(保留作单项目手动兜底)。③ 根源 = 本地 dsh **0.2.0-rc.2** 的沙箱后端 `@deepseek-ai/dsh-sandbox-windows-acl`(`restrictTokenIntegrity` 令牌降 Low + `buildLowLabelAcl` 给授权根盖 OI|CI Low 标签 + 对 world 拒绝 FILE_DELETE_CHILD,一次授权全树传播);该版本**不含**上游"顶层启动器豁免",且其 README 明说常驻标签不回收。
