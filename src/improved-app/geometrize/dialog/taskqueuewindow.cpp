@@ -132,7 +132,9 @@ public:
         setupScriptEditor();
 
         connect(ui->scriptSelectComboBox, &QComboBox::currentTextChanged, [this](const QString& text) {
-            m_scriptEditorWidget->setCurrentCode(m_scripts[text.toStdString()]);
+            // find 而非 operator[]:后者在查无时静默插入空条目,读路径带着写副作用
+            const auto it{m_scripts.find(text.toStdString())};
+            m_scriptEditorWidget->setCurrentCode(it != m_scripts.end() ? it->second : std::string{});
             persistQueue();
         });
 
@@ -286,8 +288,16 @@ private:
             runScript(taskItemId.toStdString());
         },
         [item, this](const QString& /*taskItemId*/) {
-            delete item;
-            persistQueue();
+            // 移除回调由 itemWidget 自己的信号触发,item 与 widget 都归列表管——同步 delete
+            // 等于在信号栈内销毁 sender。整体挪出信号栈延迟执行;context 传 q(QObject,Impl
+            // 不是),窗口先亡则回调自动取消(退出期不删也只是无害的少量滞留)。
+            QTimer::singleShot(0, q, [this, item]() {
+                const int row{ui->taskList->row(item)};
+                if(row >= 0) {
+                    delete ui->taskList->takeItem(row);
+                }
+                persistQueue();
+            });
         })};
         item->setToolTip(itemPath);
         item->setSizeHint(button->sizeHint());
@@ -463,20 +473,44 @@ private:
             return;
         }
 
-        // 命名 = 源图文件名(去扩展);拖入项可能是 file:/// URL,统一取文件名部分
-        const QString sourceName{windowImagePath(window)};
-        const QString baseName{QFileInfo(QUrl(sourceName).toLocalFile().isEmpty() ? sourceName : QUrl(sourceName).toLocalFile()).completeBaseName()};
-        const QString safeBaseName{baseName.isEmpty() ? QStringLiteral("task") : baseName};
-        const int occurrence{m_exportNameCounter.value(safeBaseName, 0)};
-        m_exportNameCounter[safeBaseName] = occurrence + 1;
-        const QString uniqueName{occurrence == 0 ? safeBaseName : safeBaseName + "_" + QString::number(occurrence + 1)};
-
         QDir outputDir(config.directory);
         if(!outputDir.exists() && !outputDir.mkpath(".")) {
             qWarning() << "Failed to create batch output directory:" << config.directory;
             q->statusBar()->showMessage(tr("Failed to create output directory: %1").arg(config.directory), 5000);
             return;
         }
+
+        // 命名 = 源图文件名(去扩展);拖入项可能是 file:/// URL,统一取文件名部分
+        const QString sourceName{windowImagePath(window)};
+        const QString baseName{QFileInfo(QUrl(sourceName).toLocalFile().isEmpty() ? sourceName : QUrl(sourceName).toLocalFile()).completeBaseName()};
+        const QString safeBaseName{baseName.isEmpty() ? QStringLiteral("task") : baseName};
+        // 冲突序号从"内存计数 ∨ 磁盘现状"起步并跳到首个空闲:计数器只记本会话,重启后重跑
+        // 同名批次若只看内存会从同名重新开始,直接覆盖上次导出。本批要写的扩展名任一被占
+        // 即视为该序号已用(两种格式共享同一基名,须一起让位)。
+        QStringList exportExtensions;
+        if(config.png) {
+            exportExtensions << QStringLiteral("png");
+        }
+        if(config.svg) {
+            exportExtensions << QStringLiteral("svg");
+        }
+        const auto candidateName = [&safeBaseName](const int occurrence) {
+            return occurrence == 0 ? safeBaseName : safeBaseName + "_" + QString::number(occurrence + 1);
+        };
+        const auto candidateTaken = [&outputDir, &exportExtensions, &candidateName](const int occurrence) {
+            for(const QString& extension : exportExtensions) {
+                if(outputDir.exists(candidateName(occurrence) + "." + extension)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        int occurrence{m_exportNameCounter.value(safeBaseName, 0)};
+        while(candidateTaken(occurrence)) {
+            occurrence++;
+        }
+        m_exportNameCounter[safeBaseName] = occurrence + 1;
+        const QString uniqueName{candidateName(occurrence)};
 
         const task::ImageTask* imageTask{window->getImageTask()};
         const geometrize::Bitmap& current{imageTask->getCurrent()};

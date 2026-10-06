@@ -80,6 +80,9 @@ public:
         const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
         const std::uint32_t width{m_task->getCurrent().getWidth()};
         const std::uint32_t height{m_task->getCurrent().getHeight()};
+        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, false)) {
+            return;
+        }
         geometrize::exporter::exportRasterizedSvg(
                     *m_shapes,
                     width,
@@ -105,6 +108,9 @@ public:
         const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
         const std::uint32_t width{m_task->getCurrent().getWidth()};
         const std::uint32_t height{m_task->getCurrent().getHeight()};
+        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, false)) {
+            return;
+        }
 
         runExportInBackground(tr("Exporting image sequence..."),
             [shapes = *m_shapes, width, height, scaleFactor, targetDir = path.toStdString()]() {
@@ -158,6 +164,9 @@ public:
 
         const std::uint32_t width{m_task->getCurrent().getWidth()};
         const std::uint32_t height{m_task->getCurrent().getHeight()};
+        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, true)) {
+            return;
+        }
 
         auto frameSkipPredicate = [frameStep](const std::size_t frameIdx) {
             return frameIdx % frameStep != 0; // 保留每第 N 个形状处取帧
@@ -220,6 +229,26 @@ private:
     {
         QMessageBox::warning(q, tr("Failed to run exporter", "Title of error message shown when an attempt to save/export a file failed"),
                              tr("Failed to run exporter. Exporter was misconfigured.", "Error message text shown when an attempt to save/export a file failed"));
+    }
+
+    /// 输出尺寸预检:Qt6/64 位 QImage 无固定单边上限,超限输入不再被 Qt 拒绝——内存压力下
+    /// scaled 返回空图会引爆 GIF 量化器的堆越界读,GIF 头部宽高超过 uint16 还会静默截断。
+    /// 这里按确定性上限(总 RGBA 字节 ≤ 2GB、GIF 每边 ≤ 65535)提前拒绝,把失败从后台线程
+    /// 挪到用户可见的弹窗,而不是丢弃导出函数的 bool 返回值。
+    bool warnIfOutputDimensionsExceedLimits(const std::uint32_t outputWidth, const std::uint32_t outputHeight, const bool gifHeaderLimit) const
+    {
+        constexpr std::uint64_t maxOutputBytes{0x7FFFFFFFULL};
+        constexpr std::uint32_t maxGifSide{65535U};
+        const bool tooLarge{static_cast<std::uint64_t>(outputWidth) * outputHeight * 4U > maxOutputBytes};
+        const bool overGifSide{gifHeaderLimit && (outputWidth > maxGifSide || outputHeight > maxGifSide)};
+        if(!tooLarge && !overGifSide) {
+            return true;
+        }
+        QMessageBox::warning(q,
+            tr("Export dimensions too large", "Title of error message shown when the scaled output resolution exceeds export limits"),
+            tr("The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.",
+               "Error message text shown when the scaled output resolution exceeds export limits").arg(outputWidth).arg(outputHeight));
+        return false;
     }
 
     /// 把耗时导出挂到 QtConcurrent 线程:期间弹不可取消的进度框并禁用导出按钮,

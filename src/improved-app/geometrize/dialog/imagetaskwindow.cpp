@@ -16,6 +16,7 @@
 #include <QPixmap>
 #include <QPointer>
 #include <QRectF>
+#include <QStatusBar>
 #include <QTimer>
 
 #include "chaiscript/chaiscript.hpp"
@@ -557,6 +558,9 @@ public:
                         task->getPreferences().setPriorityRegions(regions);
                         refreshPriorityRegionOverlays();
                         ui->imageTaskRunnerWidget->syncUserInterface();
+                    } else {
+                        // 上限静默丢弃会被当成"框选坏了":至少给一条状态栏提示
+                        q->statusBar()->showMessage(tr("Priority region limit (16) reached — clear regions to add more"), 5000);
                     }
                 }
                 return;

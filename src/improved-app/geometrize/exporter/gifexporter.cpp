@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <thread>
 
@@ -112,6 +113,11 @@ bool addFrame(
         image = image.scaled(static_cast<int>(outputWidth), static_cast<int>(outputHeight),
                              Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32);
     }
+    // scaled 在内存压力下可能返回空图(Qt6/64 位 QImage 无固定尺寸上限,超限不会在构造期被拒):
+    // 空图会让 makeImageData 分配 0 像素缓冲,而量化器按 init 时的尺寸读取 → 堆越界读
+    if(image.isNull() || image.width() == 0 || image.height() == 0) {
+        return false;
+    }
 
     gif.connect(makeImageData(image), delayMs, blk::QuantizerType::Octree, blk::DitherType::NO, 0, 0);
 
@@ -139,6 +145,15 @@ bool exportGIF(
         const std::uint32_t endPauseMs)
 {
     if(data.empty()) {
+        return false;
+    }
+
+    // 尺寸护栏(UI 侧有弹窗预检,这里是导出器自身的最后防线):
+    // ① GIF 头部宽高是 uint16,超 65535 会静默截断(mod 65536);
+    // ② 巨尺寸输出在内存压力下 scaled 失败 → 空图 → 帧缓冲 0 像素而量化器按 init 尺寸读
+    //    (堆越界读)——按 2GB RGBA 字节上限确定性拒绝,宁拒勿崩。
+    if(outputWidth > 65535U || outputHeight > 65535U
+            || static_cast<std::uint64_t>(outputWidth) * outputHeight * 4U > 0x7FFFFFFFULL) {
         return false;
     }
 
@@ -192,7 +207,12 @@ bool exportGIF(
             // 帧切片 [frameBegin, i+1):本帧把新增形状画上画布后取快照
             renderer.drawRange(data.data() + frameBegin, data.data() + i + 1);
             frameBegin = i + 1;
-            addFrame(renderer.snapshot(), outputWidth, outputHeight, delayMs, gif);
+            // 帧失败(如缩放空图)即整体失败:GIF 文件已由 init 创建,收尾并删除半截产物
+            if(!addFrame(renderer.snapshot(), outputWidth, outputHeight, delayMs, gif)) {
+                gif.release();
+                std::remove(filePath.c_str());
+                return false;
+            }
         }
     }
 

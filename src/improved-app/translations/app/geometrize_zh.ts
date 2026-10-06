@@ -1245,6 +1245,16 @@ Title for the app settings section that contains options that affect the area of
         <comment>Error message text shown when an attempt to save/export a file failed</comment>
         <translation>导出程序运行失败。导出程序配置错误。</translation>
     </message>
+    <message>
+        <source>Export dimensions too large</source>
+        <comment>Title of error message shown when the scaled output resolution exceeds export limits</comment>
+        <translation>导出尺寸超限</translation>
+    </message>
+    <message>
+        <source>The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.</source>
+        <comment>Error message text shown when the scaled output resolution exceeds export limits</comment>
+        <translation>输出分辨率 %1x%2 超出导出上限：输出需保持在 2 GB RGBA 像素以内（GIF 另需每边不超过 65535 像素）。请调低输出倍率或处理分辨率。</translation>
+    </message>
 </context>
 <context>
     <name>geometrize::dialog::ImageTaskScriptingWidget</name>
@@ -1348,6 +1358,11 @@ Title for the app settings section that contains options that affect the area of
 </context>
 <context>
     <name>geometrize::dialog::ImageTaskWindow</name>
+    <message>
+        <source>Priority region limit (16) reached — clear regions to add more</source>
+        <comment>Status bar message shown when the user tries to add more priority regions than the allowed maximum</comment>
+        <translation>已达优先区域上限（16）——请先清除部分区域再继续框选</translation>
+    </message>
     <message>
         <source>%1x%2</source>
         <comment>Dimensions of an image e.g. width-x-height, 1024x800</comment>
