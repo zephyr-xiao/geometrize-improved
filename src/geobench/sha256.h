@@ -3,6 +3,7 @@
 #ifndef GEO_SHA256_H
 #define GEO_SHA256_H
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>

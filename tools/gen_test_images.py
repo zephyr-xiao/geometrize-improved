@@ -4,6 +4,7 @@
 import math
 import os
 import random
+import shutil
 import sys
 
 from PIL import Image, ImageDraw
@@ -95,6 +96,21 @@ def main():
         path = os.path.join(out_dir, name)
         img.save(path)
         print(f"已生成 {path} ({img.width}x{img.height})")
+
+    copy_upstream_assets(out_dir)
+
+
+def copy_upstream_assets(out_dir):
+    """tree_under_clouds.png 是上游截图资产(摄影图,无法程序合成),run_ab 多个用例依赖它。
+    从 upstream 只读快照复制,保证再生后与 golden 对拍基线逐字节一致。"""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    upstream_image = os.path.join(repo_root, "upstream", "geometrize-lib", "screenshots", "tree_under_clouds.png")
+    if not os.path.isfile(upstream_image):
+        print(f"警告: 未找到上游快照 {upstream_image},tree_under_clouds.png 未复制", file=sys.stderr)
+        return
+    dst = os.path.join(out_dir, "tree_under_clouds.png")
+    shutil.copyfile(upstream_image, dst)
+    print(f"已从上游快照复制 {dst}")
 
 
 if __name__ == "__main__":

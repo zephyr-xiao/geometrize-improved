@@ -428,15 +428,22 @@ int main(int argc, char** argv)
     std::printf("TIME_MS %lld\n", static_cast<long long>(elapsedMs));
     std::printf("STEPS_PER_SEC %.2f\n", opts.steps / seconds);
 
-    // 对拍失败留痕:裸 RGBA 直接落盘,hexdiff 即可定位首个发散像素
+    // 对拍失败留痕:裸 RGBA 直接落盘,hexdiff 即可定位首个发散像素。
+    // 先写 .part 再整体改名:进程中途被杀不再留下"看似完整"的半截文件
+    // (改名失败时 .part 保留现场,目标文件要么完整要么缺失,两态可辨)
     if(!opts.dumpFinalPath.empty()) {
-        std::FILE* dump = std::fopen(opts.dumpFinalPath.c_str(), "wb");
+        const std::string partPath{opts.dumpFinalPath + ".part"};
+        std::FILE* dump = std::fopen(partPath.c_str(), "wb");
         if(dump != nullptr) {
             const auto& data = runner.getCurrent().getDataRef();
             std::fwrite(data.data(), 1, data.size(), dump);
             std::fclose(dump);
+            std::remove(opts.dumpFinalPath.c_str()); // Windows rename 不覆盖已存在目标(目标不存在亦无妨)
+            if(std::rename(partPath.c_str(), opts.dumpFinalPath.c_str()) != 0) {
+                std::fprintf(stderr, "最终位图改名失败,保留现场: %s\n", partPath.c_str());
+            }
         } else {
-            std::fprintf(stderr, "无法写入最终位图: %s\n", opts.dumpFinalPath.c_str());
+            std::fprintf(stderr, "无法写入最终位图: %s\n", partPath.c_str());
         }
     }
     return 0;
