@@ -210,7 +210,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
  #include "geometrize/shaperesult.h"
  #include "geometrize/exporter/shapearrayexporter.h"
-@@ -70,8 +76,8 @@
+@@ -70,10 +76,13 @@
              return;
          }
  
@@ -220,8 +220,13 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
          const std::uint32_t width{m_task->getCurrent().getWidth()};
          const std::uint32_t height{m_task->getCurrent().getHeight()};
++        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, false)) {
++            return;
++        }
          geometrize::exporter::exportRasterizedSvg(
-@@ -95,19 +101,17 @@
+                     *m_shapes,
+                     width,
+@@ -95,19 +104,20 @@
              return;
          }
  
@@ -240,6 +245,9 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 -                    path.toStdString(),
 -                    "exported_image",
 -                    ".png");
++        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, false)) {
++            return;
++        }
 +
 +        runExportInBackground(tr("Exporting image sequence..."),
 +            [shapes = *m_shapes, width, height, scaleFactor, targetDir = path.toStdString()]() {
@@ -250,7 +258,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void saveGeometryData() const
-@@ -145,26 +149,28 @@
+@@ -145,26 +155,31 @@
              return;
          }
  
@@ -265,6 +273,9 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
          const std::uint32_t width{m_task->getCurrent().getWidth()};
          const std::uint32_t height{m_task->getCurrent().getHeight()};
++        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, true)) {
++            return;
++        }
  
 -        auto frameSkipPredicate = [](const std::size_t frameIdx) {
 -            if(frameIdx % 2 == 0) {
@@ -294,10 +305,30 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void saveHTML5WebpageButton() const
-@@ -216,6 +222,32 @@
+@@ -216,6 +231,52 @@
                               tr("Failed to run exporter. Exporter was misconfigured.", "Error message text shown when an attempt to save/export a file failed"));
      }
  
++    /// 输出尺寸预检:Qt6/64 位 QImage 无固定单边上限,超限输入不再被 Qt 拒绝——内存压力下
++    /// scaled 返回空图会引爆 GIF 量化器的堆越界读,GIF 头部宽高超过 uint16 还会静默截断。
++    /// 这里按确定性上限(总 RGBA 字节 ≤ 2GB、GIF 每边 ≤ 65535)提前拒绝,把失败从后台线程
++    /// 挪到用户可见的弹窗,而不是丢弃导出函数的 bool 返回值。
++    bool warnIfOutputDimensionsExceedLimits(const std::uint32_t outputWidth, const std::uint32_t outputHeight, const bool gifHeaderLimit) const
++    {
++        constexpr std::uint64_t maxOutputBytes{0x7FFFFFFFULL};
++        constexpr std::uint32_t maxGifSide{65535U};
++        const bool tooLarge{static_cast<std::uint64_t>(outputWidth) * outputHeight * 4U > maxOutputBytes};
++        const bool overGifSide{gifHeaderLimit && (outputWidth > maxGifSide || outputHeight > maxGifSide)};
++        if(!tooLarge && !overGifSide) {
++            return true;
++        }
++        QMessageBox::warning(q,
++            tr("Export dimensions too large", "Title of error message shown when the scaled output resolution exceeds export limits"),
++            tr("The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.",
++               "Error message text shown when the scaled output resolution exceeds export limits").arg(outputWidth).arg(outputHeight));
++        return false;
++    }
++
 +    /// 把耗时导出挂到 QtConcurrent 线程:期间弹不可取消的进度框并禁用导出按钮,
 +    /// 完成后自动恢复。widget 是 WA_DeleteOnClose 链上的一环,watcher 以 q 为 parent、
 +    /// 回调以 QPointer 守护,窗口先关也不会拍悬空对象。
@@ -870,15 +901,17 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/dialog/imagetaskwindow.cpp b/geometrize/dialog/imagetaskwindow.cpp
 --- a/geometrize/dialog/imagetaskwindow.cpp
 +++ b/geometrize/dialog/imagetaskwindow.cpp
-@@ -14,6 +14,7 @@
+@@ -14,7 +14,9 @@
  #include <QLocale>
  #include <QMessageBox>
  #include <QPixmap>
 +#include <QPointer>
  #include <QRectF>
++#include <QStatusBar>
  #include <QTimer>
  
-@@ -22,6 +23,7 @@
+ #include "chaiscript/chaiscript.hpp"
+@@ -22,6 +24,7 @@
  #include "geometrize/bitmap/bitmap.h"
  #include "geometrize/commonutil.h"
  #include "geometrize/runner/imagerunneroptions.h"
@@ -886,7 +919,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
  #include "common/uiactions.h"
  #include "common/util.h"
-@@ -64,6 +66,10 @@
+@@ -64,6 +67,10 @@
              task->disconnect();
              task->deleteLater();
          });
@@ -897,7 +930,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      } else {
          task->disconnect();
          task->deleteLater();
-@@ -95,6 +101,33 @@
+@@ -95,6 +102,33 @@
  
          ui->runnerSettingsDock->raise(); // Make sure runner settings dock is selected
  
@@ -931,7 +964,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          ui->consoleWidget->setVisible(false); // Make sure console widget is hidden by default
  
          // Set up the image task geometrization views
-@@ -129,6 +162,13 @@
+@@ -129,6 +163,13 @@
              disconnectTask();
  
              m_shapes.clear();
@@ -945,7 +978,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              ui->imageTaskRunnerWidget->setImageTask(nextTask);
              ui->scriptsWidget->setImageTask(nextTask);
              ui->imageTaskExportWidget->setImageTask(nextTask, &m_shapes.getShapeVector());
-@@ -165,6 +205,12 @@
+@@ -165,6 +206,12 @@
              if(currentTask == nullptr) {
                  m_taskPreferencesSetConnection = QMetaObject::Connection{};
                  m_taskWillStepConnection = QMetaObject::Connection{};
@@ -958,7 +991,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
                  return; // Don't try to connect if we're setting the current task to nothing/nullptr
              }
  
-@@ -175,6 +221,7 @@
+@@ -175,6 +222,7 @@
  
              m_taskWillStepConnection = connect(currentTask, &task::ImageTask::signal_modelWillStep, [this]() {
                  ui->statsDockContents->setCurrentStatus(geometrize::dialog::ImageTaskStatsWidget::RUNNING);
@@ -966,7 +999,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
                  // Apply the latest scripts and engine state prior to stepping
                  auto& geometrizer = m_task->getGeometrizer();
-@@ -190,6 +237,20 @@
+@@ -190,6 +238,20 @@
              m_taskDidStepConnection = connect(currentTask, &task::ImageTask::signal_modelDidStep, [this](std::vector<geometrize::ShapeResult> shapes) {
                  processPostStepCbs();
  
@@ -987,7 +1020,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
                  // If the first shape added background rectangle then fit the scenes to it
                  if(m_shapes.empty()) {
                      m_sceneManager.fitScenesInViews(*m_pixmapView, *m_svgView);
-@@ -205,6 +266,24 @@
+@@ -205,6 +267,24 @@
                  }
              });
  
@@ -1012,7 +1045,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              const QString windowTitle = [currentTask]() {
                  QString title = geometrize::strings::Strings::getApplicationName()
                          .append(" ").append(geometrize::version::getApplicationVersionString());
-@@ -339,6 +418,16 @@
+@@ -339,6 +419,16 @@
              ui->scriptsWidget->evaluateOnTimedUpdateEventScripts();
          });
  
@@ -1029,7 +1062,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          // Before shapes are added, evaluate he pre-add shape callbacks
          connect(&m_shapes, &geometrize::task::ShapeCollection::signal_beforeAppendShapes, [this](const std::vector<geometrize::ShapeResult>&) {
              ui->scriptsWidget->evaluateBeforeAddShapeScripts();
-@@ -359,12 +448,29 @@
+@@ -359,12 +449,29 @@
              setShouldKeepStepping(false);
              ui->scriptsWidget->evaluateOnStopConditionMetScripts();
              //geometrize::dialog::showImageTaskStopConditionMetMessage(q); // Letting the scripts handle notifying the user
@@ -1062,7 +1095,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          });
  
          #if defined DATASLINGER_INCLUDED
-@@ -384,6 +490,8 @@
+@@ -384,6 +491,8 @@
          // Update the graphical image views when the number of shapes changes (e.g. when cleared)
          connect(&m_shapes, &geometrize::task::ShapeCollection::signal_sizeChanged, [this](const std::size_t size) {
              if(size == 0) {
@@ -1071,7 +1104,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
                  m_sceneManager.reset();
              }
          });
-@@ -398,7 +506,13 @@
+@@ -398,7 +507,13 @@
  
              ui->scriptsWidget->evaluateOnMouseMoveEventScripts();
          });
@@ -1086,7 +1119,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
              engine->set_global(chaiscript::var(x), "targetImageLastMouseX");
              engine->set_global(chaiscript::var(y), "targetImageLastMouseY");
-@@ -408,6 +522,11 @@
+@@ -408,6 +523,11 @@
              ui->scriptsWidget->evaluateOnMouseDownEventScripts();
          });
          connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMouseMoveEvent, [this](double lastX, double lastY, double x, double y, bool /*ctrlModifier*/) {
@@ -1098,7 +1131,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              // NOTE not triggered currently, hover move events are used instead
              chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
              engine->set_global(chaiscript::var(lastX), "targetImageLastMouseX");
-@@ -418,6 +537,30 @@
+@@ -418,6 +538,33 @@
              ui->scriptsWidget->evaluateOnMouseMoveEventScripts();
          });
          connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMouseReleaseEvent, [this](double x, double y, bool /*ctrlModifier*/) {
@@ -1122,6 +1155,9 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +                        task->getPreferences().setPriorityRegions(regions);
 +                        refreshPriorityRegionOverlays();
 +                        ui->imageTaskRunnerWidget->syncUserInterface();
++                    } else {
++                        // 上限静默丢弃会被当成"框选坏了":至少给一条状态栏提示
++                        q->statusBar()->showMessage(tr("Priority region limit (16) reached — clear regions to add more"), 5000);
 +                    }
 +                }
 +                return;
@@ -1129,7 +1165,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
              engine->set_global(chaiscript::var(x), "targetImageLastMouseX");
              engine->set_global(chaiscript::var(y), "targetImageLastMouseY");
-@@ -530,13 +673,49 @@
+@@ -530,13 +677,49 @@
          // Start the timer used to track how long the image task has been in the running state
          m_timeRunningTimer.start(static_cast<int>(m_timeRunningTimerResolutionMs));
  
@@ -1181,7 +1217,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          // Sets the task in the UI etc to nothing (potentially autosaving stuff etc), then dispose of the task
          task::ImageTask* lastTask = getImageTask();
          setImageTask(nullptr);
-@@ -568,6 +747,11 @@
+@@ -568,6 +751,11 @@
          return m_task;
      }
  
@@ -1193,7 +1229,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      void setImageTask(task::ImageTask* task)
      {
          task::ImageTask* lastTask{m_task};
-@@ -575,6 +759,8 @@
+@@ -575,6 +763,8 @@
          q->willSwitchImageTask(lastTask, nextTask);
          m_task = nextTask;
          q->didSwitchImageTask(lastTask, nextTask);
@@ -1202,7 +1238,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void revealLaunchWindow()
-@@ -687,6 +873,12 @@
+@@ -687,6 +877,12 @@
          if(s == "click_clear_button") {
              ui->imageTaskRunnerWidget->clearButtonClicked();
          }
@@ -1215,7 +1251,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
          if(s == "toggle_script_console") {
              ui->actionScript_Console->toggle();
-@@ -733,6 +925,7 @@
+@@ -733,6 +929,7 @@
      void populateUi()
      {
          updateStartStopButtonText();
@@ -1223,7 +1259,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          q->setWindowTitle(geometrize::strings::Strings::getApplicationName());
      }
  
-@@ -753,6 +946,7 @@
+@@ -753,6 +950,7 @@
      {
          m_shouldKeepStepping = stepping;
          updateStartStopButtonText();
@@ -1231,7 +1267,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void updateStartStopButtonText()
-@@ -776,6 +970,82 @@
+@@ -776,6 +974,82 @@
          setImageTask(task);
      }
  
@@ -1314,7 +1350,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      void switchTargetImage(Bitmap& bitmap)
      {
          Bitmap& targetBitmap{m_task->getTargetMutable()};
-@@ -819,6 +1089,9 @@
+@@ -819,6 +1093,9 @@
          if(m_taskDidStepConnection) {
              disconnect(m_taskDidStepConnection);
          }
@@ -1324,7 +1360,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void setTargetImage(const QImage& image)
-@@ -851,8 +1124,20 @@
+@@ -851,8 +1128,20 @@
      QMetaObject::Connection m_taskPreferencesSetConnection{}; ///> Connection for telling the dialog when the image task preferences are set
      QMetaObject::Connection m_taskWillStepConnection{}; ///> Connection for the window to do work just prior the image task starts a step
      QMetaObject::Connection m_taskDidStepConnection{}; ///> Connection for the window to do work just after the image task finishes a step
@@ -1345,7 +1381,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      geometrize::task::ShapeCollection m_shapes; ///> Collection of shapes added so far
  
      geometrize::scene::ImageTaskSceneManager m_sceneManager; ///> Manager for scenes containing the pixmap/vector-based representations of the shapes etc
-@@ -866,6 +1151,14 @@
+@@ -866,6 +1155,14 @@
  
      QTimer m_scriptEngineUpdateTimer; ///> Timer used to call an update function on the script engine of the associated image task
      float m_scriptEngineUpdateTimerResolution{100.0f}; ///> Resolution of the script update timer in milliseconds
@@ -1360,7 +1396,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  };
  
  ImageTaskWindow::ImageTaskWindow() :
-@@ -908,6 +1201,11 @@
+@@ -908,6 +1205,11 @@
      d->setImageTask(task);
  }
  
@@ -1724,10 +1760,14 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  class TaskQueueWindow::TaskQueueWindowImpl
  {
  public:
-@@ -41,9 +133,14 @@
+@@ -40,10 +132,17 @@
+         setupScriptEditor();
  
          connect(ui->scriptSelectComboBox, &QComboBox::currentTextChanged, [this](const QString& text) {
-             m_scriptEditorWidget->setCurrentCode(m_scripts[text.toStdString()]);
+-            m_scriptEditorWidget->setCurrentCode(m_scripts[text.toStdString()]);
++            // find 而非 operator[]:后者在查无时静默插入空条目,读路径带着写副作用
++            const auto it{m_scripts.find(text.toStdString())};
++            m_scriptEditorWidget->setCurrentCode(it != m_scripts.end() ? it->second : std::string{});
 +            persistQueue();
          });
  
@@ -1739,7 +1779,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              for(int i = 0; i < ui->taskList->count(); ++i) {
                  QListWidgetItem* item = ui->taskList->item(i);
                  QString data = item->data(Qt::UserRole).toString();
-@@ -52,27 +149,59 @@
+@@ -52,27 +151,59 @@
          });
          connect(ui->clearTaskListButton, &QPushButton::clicked, [this]() {
              ui->taskList->clear();
@@ -1799,7 +1839,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void addItems(const QStringList& tasks)
-@@ -112,11 +241,12 @@
+@@ -112,11 +243,12 @@
          }
      }
  
@@ -1813,7 +1853,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          try {
              engine->eval(code);
              m_scriptEditorWidget->onScriptEvaluationSucceeded();
-@@ -125,9 +255,11 @@
+@@ -125,9 +257,11 @@
          } catch(...) {
              m_scriptEditorWidget->onScriptEvaluationFailed("Unknown script evaluation error");
          }
@@ -1826,7 +1866,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      {
          class MyListWidgetItem : public QListWidgetItem {
          public:
-@@ -150,16 +282,19 @@
+@@ -150,16 +284,27 @@
          QListWidgetItem* item{new MyListWidgetItem()};
          dialog::TaskItemWidget* button{new dialog::TaskItemWidget(itemPath, RecentTasksList::getDisplayNameForTaskPath(itemDisplayName),
          [this](const QString& taskItemId) {
@@ -1834,9 +1874,18 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              runScript(taskItemId.toStdString());
          },
 -        [item](const QString& /*taskItemId*/) {
+-            delete item;
 +        [item, this](const QString& /*taskItemId*/) {
-             delete item;
-+            persistQueue();
++            // 移除回调由 itemWidget 自己的信号触发,item 与 widget 都归列表管——同步 delete
++            // 等于在信号栈内销毁 sender。整体挪出信号栈延迟执行;context 传 q(QObject,Impl
++            // 不是),窗口先亡则回调自动取消(退出期不删也只是无害的少量滞留)。
++            QTimer::singleShot(0, q, [this, item]() {
++                const int row{ui->taskList->row(item)};
++                if(row >= 0) {
++                    delete ui->taskList->takeItem(row);
++                }
++                persistQueue();
++            });
          })};
          item->setToolTip(itemPath);
          item->setSizeHint(button->sizeHint());
@@ -1847,7 +1896,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void setMenuItemKey(QListWidgetItem* item, const QString& key) const
-@@ -180,6 +315,235 @@
+@@ -180,6 +325,259 @@
          ui->scrollArea->setWidget(m_scriptEditorWidget);
      }
  
@@ -1999,20 +2048,44 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            return;
 +        }
 +
-+        // 命名 = 源图文件名(去扩展);拖入项可能是 file:/// URL,统一取文件名部分
-+        const QString sourceName{windowImagePath(window)};
-+        const QString baseName{QFileInfo(QUrl(sourceName).toLocalFile().isEmpty() ? sourceName : QUrl(sourceName).toLocalFile()).completeBaseName()};
-+        const QString safeBaseName{baseName.isEmpty() ? QStringLiteral("task") : baseName};
-+        const int occurrence{m_exportNameCounter.value(safeBaseName, 0)};
-+        m_exportNameCounter[safeBaseName] = occurrence + 1;
-+        const QString uniqueName{occurrence == 0 ? safeBaseName : safeBaseName + "_" + QString::number(occurrence + 1)};
-+
 +        QDir outputDir(config.directory);
 +        if(!outputDir.exists() && !outputDir.mkpath(".")) {
 +            qWarning() << "Failed to create batch output directory:" << config.directory;
 +            q->statusBar()->showMessage(tr("Failed to create output directory: %1").arg(config.directory), 5000);
 +            return;
 +        }
++
++        // 命名 = 源图文件名(去扩展);拖入项可能是 file:/// URL,统一取文件名部分
++        const QString sourceName{windowImagePath(window)};
++        const QString baseName{QFileInfo(QUrl(sourceName).toLocalFile().isEmpty() ? sourceName : QUrl(sourceName).toLocalFile()).completeBaseName()};
++        const QString safeBaseName{baseName.isEmpty() ? QStringLiteral("task") : baseName};
++        // 冲突序号从"内存计数 ∨ 磁盘现状"起步并跳到首个空闲:计数器只记本会话,重启后重跑
++        // 同名批次若只看内存会从同名重新开始,直接覆盖上次导出。本批要写的扩展名任一被占
++        // 即视为该序号已用(两种格式共享同一基名,须一起让位)。
++        QStringList exportExtensions;
++        if(config.png) {
++            exportExtensions << QStringLiteral("png");
++        }
++        if(config.svg) {
++            exportExtensions << QStringLiteral("svg");
++        }
++        const auto candidateName = [&safeBaseName](const int occurrence) {
++            return occurrence == 0 ? safeBaseName : safeBaseName + "_" + QString::number(occurrence + 1);
++        };
++        const auto candidateTaken = [&outputDir, &exportExtensions, &candidateName](const int occurrence) {
++            for(const QString& extension : exportExtensions) {
++                if(outputDir.exists(candidateName(occurrence) + "." + extension)) {
++                    return true;
++                }
++            }
++            return false;
++        };
++        int occurrence{m_exportNameCounter.value(safeBaseName, 0)};
++        while(candidateTaken(occurrence)) {
++            occurrence++;
++        }
++        m_exportNameCounter[safeBaseName] = occurrence + 1;
++        const QString uniqueName{candidateName(occurrence)};
 +
 +        const task::ImageTask* imageTask{window->getImageTask()};
 +        const geometrize::Bitmap& current{imageTask->getCurrent()};
@@ -2083,7 +2156,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      void populateUi()
      {
      }
-@@ -191,6 +555,21 @@
+@@ -191,6 +589,21 @@
  
      const std::string defaultScriptName{ "default" };
      std::map<std::string, std::string> m_scripts;
@@ -2397,7 +2470,15 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/exporter/gifexporter.cpp b/geometrize/exporter/gifexporter.cpp
 --- a/geometrize/exporter/gifexporter.cpp
 +++ b/geometrize/exporter/gifexporter.cpp
-@@ -32,14 +32,17 @@
+@@ -3,6 +3,7 @@
+ #include <algorithm>
+ #include <cassert>
+ #include <cstdint>
++#include <cstdio>
+ #include <functional>
+ #include <thread>
+ 
+@@ -32,14 +33,17 @@
      auto bgrs = new std::uint32_t[imageSizePixels];
      const uchar* imageBytes = image.constBits();
  
@@ -2419,7 +2500,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
          byteIndex += 4;
      }
-@@ -47,22 +50,68 @@
+@@ -47,22 +51,73 @@
      return bgrs;
  }
  
@@ -2491,10 +2572,15 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        image = image.scaled(static_cast<int>(outputWidth), static_cast<int>(outputHeight),
 +                             Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32);
 +    }
++    // scaled 在内存压力下可能返回空图(Qt6/64 位 QImage 无固定尺寸上限,超限不会在构造期被拒):
++    // 空图会让 makeImageData 分配 0 像素缓冲,而量化器按 init 时的尺寸读取 → 堆越界读
++    if(image.isNull() || image.width() == 0 || image.height() == 0) {
++        return false;
++    }
  
      gif.connect(makeImageData(image), delayMs, blk::QuantizerType::Octree, blk::DitherType::NO, 0, 0);
  
-@@ -84,29 +133,67 @@
+@@ -84,29 +139,81 @@
          std::uint32_t outputWidth,
          std::uint32_t outputHeight,
          const std::function<bool(std::size_t)>& frameSkipPredicate,
@@ -2505,6 +2591,15 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        const std::uint32_t endPauseMs)
  {
 +    if(data.empty()) {
++        return false;
++    }
++
++    // 尺寸护栏(UI 侧有弹窗预检,这里是导出器自身的最后防线):
++    // ① GIF 头部宽高是 uint16,超 65535 会静默截断(mod 65536);
++    // ② 巨尺寸输出在内存压力下 scaled 失败 → 空图 → 帧缓冲 0 像素而量化器按 init 尺寸读
++    //    (堆越界读)——按 2GB RGBA 字节上限确定性拒绝,宁拒勿崩。
++    if(outputWidth > 65535U || outputHeight > 65535U
++            || static_cast<std::uint64_t>(outputWidth) * outputHeight * 4U > 0x7FFFFFFFULL) {
 +        return false;
 +    }
 +
@@ -2568,7 +2663,12 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            // 帧切片 [frameBegin, i+1):本帧把新增形状画上画布后取快照
 +            renderer.drawRange(data.data() + frameBegin, data.data() + i + 1);
 +            frameBegin = i + 1;
-+            addFrame(renderer.snapshot(), outputWidth, outputHeight, delayMs, gif);
++            // 帧失败(如缩放空图)即整体失败:GIF 文件已由 init 创建,收尾并删除半截产物
++            if(!addFrame(renderer.snapshot(), outputWidth, outputHeight, delayMs, gif)) {
++                gif.release();
++                std::remove(filePath.c_str());
++                return false;
++            }
 +        }
      }
  
@@ -10915,10 +11015,22 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      <name>geometrize::dialog::ImageTaskExportWidget</name>
      <message>
          <source>Failed to run exporter</source>
-@@ -820,6 +1247,88 @@
+@@ -818,6 +1245,98 @@
+         <comment>Error message text shown when an attempt to save/export a file failed</comment>
+         <translation>导出程序运行失败。导出程序配置错误。</translation>
      </message>
- </context>
- <context>
++    <message>
++        <source>Export dimensions too large</source>
++        <comment>Title of error message shown when the scaled output resolution exceeds export limits</comment>
++        <translation>导出尺寸超限</translation>
++    </message>
++    <message>
++        <source>The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.</source>
++        <comment>Error message text shown when the scaled output resolution exceeds export limits</comment>
++        <translation>输出分辨率 %1x%2 超出导出上限：输出需保持在 2 GB RGBA 像素以内（GIF 另需每边不超过 65535 像素）。请调低输出倍率或处理分辨率。</translation>
++    </message>
++</context>
++<context>
 +    <name>geometrize::dialog::ImageTaskScriptingWidget</name>
 +    <message>
 +        <source>Before Step Callback</source>
@@ -10999,12 +11111,22 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        <source>Area Focus Scripts</source>
 +        <translation>区域聚焦脚本</translation>
 +    </message>
-+</context>
-+<context>
+ </context>
+ <context>
      <name>geometrize::dialog::ImageTaskStatsWidget</name>
+@@ -840,6 +1359,11 @@
+ <context>
+     <name>geometrize::dialog::ImageTaskWindow</name>
      <message>
-         <source>Idle</source>
-@@ -868,6 +1377,56 @@
++        <source>Priority region limit (16) reached — clear regions to add more</source>
++        <comment>Status bar message shown when the user tries to add more priority regions than the allowed maximum</comment>
++        <translation>已达优先区域上限（16）——请先清除部分区域再继续框选</translation>
++    </message>
++    <message>
+         <source>%1x%2</source>
+         <comment>Dimensions of an image e.g. width-x-height, 1024x800</comment>
+         <translation>%1x%2</translation>
+@@ -868,6 +1392,56 @@
  <context>
      <name>geometrize::dialog::LaunchWindow</name>
      <message>
@@ -11061,7 +11183,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          <source>Get more online</source>
          <comment>Text on a button the user presses to open a page containing more resources for using the app, such as extra images, information and help</comment>
          <translation>在线获取更多</translation>
-@@ -884,7 +1443,19 @@
+@@ -884,7 +1458,19 @@
      </message>
  </context>
  <context>
@@ -11082,7 +11204,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      <message>
          <source>Open</source>
          <comment>Text on a menu item the user presses to open a file/image</comment>
-@@ -893,12 +1464,12 @@
+@@ -893,12 +1479,12 @@
      <message>
          <source>Open in viewer</source>
          <comment>Text on a menu item the user presses to open an image/piece of media in a viewer</comment>
@@ -11097,7 +11219,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      </message>
      <message>
          <source>Copy file path to clipboard</source>
-@@ -908,15 +1479,42 @@
+@@ -908,15 +1494,42 @@
      <message>
          <source>Remove from list</source>
          <comment>Text on a menu item the user presses to remove an item from a list of items</comment>
@@ -11145,7 +11267,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      </message>
  </context>
  <context>
-@@ -941,6 +1539,10 @@
+@@ -941,6 +1554,10 @@
          <comment>Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer</comment>
          <translation>在文件导出程序中显示</translation>
      </message>
@@ -11156,7 +11278,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  </context>
  <context>
      <name>geometrize::dialog::WelcomeWindow</name>
-@@ -963,11 +1565,6 @@
+@@ -963,11 +1580,6 @@
          <translation>Geometrize 使用简单的几何形状重新创建照片，将其转换为独特的艺术作品。</translation>
      </message>
      <message>
@@ -11168,7 +11290,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          <source>Rectangles</source>
          <comment>Plural form of rectangle geometric shape</comment>
          <translation>矩形</translation>
-@@ -1017,5 +1614,10 @@
+@@ -1017,5 +1629,10 @@
          <comment>Plural form of an unknown type of shapes</comment>
          <translation>未知形状</translation>
      </message>

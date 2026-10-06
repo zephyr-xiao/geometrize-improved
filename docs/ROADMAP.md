@@ -1,7 +1,7 @@
 # Geometrize Improved — 迭代路线图
 
-> 版本基准:2026-10-03 第十四次交付(**Qt6 迁移落地**:Qt 6.8.3 LTS 单轨切换 + 同步任务脚本路径死锁修复 + Qt 渲染侧对拍工具入库)
-> 下次会话:Qt6 单轨已切换(docs/qt6-migration-report.md 为验收记录);§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(22 条)
+> 版本基准:2026-10-06 第十五次交付(**应用层审查遗留清理**:GIF 导出尺寸护栏 + 批处理导出命名防覆盖 + 队列移除回调安全化,§4.6 C 组大头清账)
+> 下次会话:§4.6 仅剩有意搁置项(见该节第 7 条"仍有意未做");§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(23 条)
 > 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ **Qt 6.8.3 LTS(msvc2022_64)**
 > 使用约定:**双轨制**——纯性能优化维持 bit-exact 门禁(与上游逐位一致);算法增强做成独立开关(默认关),不破坏验证体系。暂自用,不排开源工程项。
 
@@ -16,7 +16,7 @@
 | 端到端门禁 | `tools\run_ab.ps1` **26 用例矩阵** | 11 个 bit-exact + 15 个 EXPECTED_DIFF(边界修复/增强/区域/分段哨兵);`-BaselineExe` 支持外部基线;FAIL 自动留痕 .raw,单侧无输出自动重试一次(陷阱 #11) |
 | 单测门禁 | `src\test\` doctest 双变体 | 111 用例 × fast / 39 × base(ctest);Model 级哨兵已全部启用(2026-09-29,原 16 个 `#if 0 // CD`);变体分叉宏分流锁定 |
 | Qt 渲染侧门禁 | `tools\qt_render_ab.py` + `tools\qt_goldens.csv` + `tools\qt_render_ref\` | 第十四批新增:headless 脚本对拍(6 用例,覆盖位图/透明/多线程/边界/GIF/SVG 光栅化);升级 Qt 或改应用层渲染后 `check` 对冻结参考校验 |
-| 应用层 | 撤销重做 + 区域优先框选 + 增强五勾选框 + 分段颜色 + GIF/PNG 导出参数化 + F3.5 分辨率下拉 + 全量中文化 + 启动优化(网格铺满 0.5s)+ 动态线程 + 批处理增强(F3.3)+ 导出 O(N) 化(F3.7)+ **Qt6 迁移(第十四批)** | patches\qt 0001-0028 已归档 |
+| 应用层 | 撤销重做 + 区域优先框选 + 增强五勾选框 + 分段颜色 + GIF/PNG 导出参数化 + F3.5 分辨率下拉 + 全量中文化 + 启动优化(网格铺满 0.5s)+ 动态线程 + 批处理增强(F3.3)+ 导出 O(N) 化(F3.7)+ Qt6 迁移(第十四批)+ **审查遗留清理(第十五批)** | patches\qt 0001-0029 已归档 |
 | 构建链 | **CMake 唯一维护链**(build_cmake.bat 一键含 windeployqt) | Qt6 迁移后 qmake/geometrize.pro **保留但冻结**(陷阱 #20);换 Qt 版本只改 bat 顶部 QT_DIR |
 | 翻译 | 300/300 全中文 | zh.ts 双 context(短名供 uic / 全名供嵌套类 tr) |
 | 已知残留 | 偏好文件旧值持久化 | 全局偏好 JSON 里旧字段会被沿用,改默认值时注意用户机已有文件 |
@@ -46,7 +46,7 @@
 - 实测:1024²×30 步 20.5s→5.2s(**3.95x**,质量 +1.2%);2048²×20 步 160.6s→43.3s(**3.71x**,质量 +2.1%)
 - 单测:金字塔确定性两跑一致(单线程+过订阅)、on/off 分叉哨兵、downsampleHalf/downscaleScanlines 纯函数语义锁定(共 +7 用例,fast 侧 49)
 - 门禁:run_ab 12/12 PASS(默认关,bit-exact 不破坏)+ ctest 双变体全绿
-- 遗留:Qt UI 勾选框透传(下次迭代);custom energyFunction 时金字塔静默忽略(文档已声明)
+- 遗留:custom energyFunction 时金字塔静默忽略(文档已声明);Qt UI 勾选框透传已落地(runner 面板 pyramidSearchCheckbox 与偏好双向绑定)
 
 ### P1.4 大对象内存带宽(2048+ 图场景) — ✗ 经实测否决(2026-08-31,第十二批盖棺,不再回头)
 两轮核算 + 实测:
@@ -115,11 +115,8 @@
 
 ## 3. 功能增强(用户可见)
 
-### F3.1 GIF/APNG 动图导出增强 ★★(第一批遗留,功能轨第一项)
-现状考证:`exportGIF` 链路可用(BurstLinker 已链),但参数全硬编码——`imagetaskexportwidget.cpp:153` 隔帧取样(`frameIdx % 2`)、固定 x3 超采样。导出对话框无任何 GIF 选项。
-方案:导出对话框加"每 N 步一帧"选项(默认 2,与现行为一致)+ 帧率;导出时回放 shapes 序列重新渲染帧(只存 shape 列表,内存可控)。
-- 文件:`imagetaskexportwidget.ui/.cpp`、`common/uiactions.cpp`(对话框)
-- 工作量:2 天。
+### F3.1 GIF/APNG 动图导出增强 — ✓ GIF 部分已落地(并入 F3.7,2026-09-01;APNG 未做)
+原案"导出对话框加每 N 步一帧 + 帧率"已由 F3.7 一并兑现:frameStepSpinBox(每帧形状数 1-1000,默认 20)+ frameRateSpinBox(FPS 1-50,默认 20)+ 输出倍率默认 3→1(patches\qt 0027)。实现走增量帧渲染(IncrementalFrameRenderer,O(N)),优于原案"回放 shapes 序列重新渲染"的路线;shapes 以 shared_ptr 浅拷贝持有,内存同样可控。详见 §3 F3.7。
 
 ### F3.2 区域优先绘制 — ✓ 已落地(2026-08-30,lib 0015 + qt 0022)
 实际形态:ErrorWeightMap rebuild 加尾参(区域矩形列表 ×factor,块中心命中判定,除数按乘后总权一次安全化);Model::step 第 10 参 + m_lastRegions 变化检测(防 dirty 短路吞区域更新);ImageRunnerOptions.priorityRegions(百分比)+ mapPriorityRegionsToImage 换算;复用 errorGuide 开关(区域非空 = 加权生效,guide 关 = 区域不参与)。
@@ -168,7 +165,7 @@ UI:runner 面板"框选优先区域(Ctrl+Drag)"会话态勾选框 + 计数标签
 
 ### F3.6 导出分辨率增强 — ✓ 已落地(2026-08-30,qt 补丁 0019)
 现状考证纠偏:PNG "Save Image" 本就是矢量重放链路(exportRasterizedSvg),且硬编码 ×3。
-实际改动:导出面板 PNG 组加"Output Scale"QSpinBox(1-8,默认 3 对齐旧行为),saveRasterizedSVG/saveRasterizedSVGs 读控件值。零 lib 改动、零翻译新增(复用 GIF 组 "Output Scale" 条目)。已知限制:QImage 上限 32767px(4096 源 ×8 越限)。
+实际改动:导出面板 PNG 组加"Output Scale"QSpinBox(1-8,默认 3 对齐旧行为),saveRasterizedSVG/saveRasterizedSVGs 读控件值。零 lib 改动、零翻译新增(复用 GIF 组 "Output Scale" 条目)。已知限制:本条建批时的"QImage 上限 32767px(4096 源 ×8 越限)"记载经 Qt6 复现推翻(见陷阱 #23)——超限导出现在由第十五批的输出尺寸预检弹窗确定性拒绝。
 
 ### F3.9 矢量视图渲染开销(图层数随形状数线性增长)— ✓ 已落地(2026-09-22)
 用户实测驱动:"矢量图形视图形状到几百后开始卡,越多越卡"。根因两条叠加:①上游每批新形状新建一个
@@ -242,22 +239,24 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
    setup/mutate、Triangle 的 mutate):其余 20+ 处用 `xMax-1`,这 5 处用 `xMax`,导致 fix 关闭时
    triangle/rrect 顶点可落到最后一列而 rasterize 裁到 `xMax-1`(点阵与矢量视图 1px 不一致)。
    统一成 `xMax-1` 会改变输出、破坏 bit-exact 门禁,故需与 `fixShapeBoundsOffByOne` 同轨设计后再动。
+   (应用侧已固定开启修复开关,此项对日常使用零影响,维持搁置)
 
 **B. 工具链与门禁的已知口径缺口(已在报告里声明,未改行为)**
 2. `verify_patches.py` 的行尾归一使"纯行尾变更"对 G1/G2 完全不可见(设计取舍;bat 必须 CRLF 的约定靠人守);
 3. `BIN_EXT` 增删会让归档 diff 的 echo 行全变 → G2 全量报漂移(fail-closed,但会误以为"补丁全废");
-4. `test_goldens.h` / `--dump-golden` 仍是死代码占位(函数级 golden 未接线);端到端值级锁定已由
-   `tools/goldens.csv` 承担,是否接线或删除待定;
-5. `--dump-final` 非原子写且失败静默;`gen_test_images.py` 不生成矩阵依赖的 `tree_under_clouds.png`;
-   `svgscene-bench` 链接硬编码 Release `.lib`、内存列是推算值(未计"单件多渲染"的 renderer 内存);
-   `sha256.h` 缺 `<algorithm>`(靠传递包含);
+4. ~~`test_goldens.h` / `--dump-golden` 死代码占位~~ — 第十五批已删除(全库无消费方;端到端值级锁定由
+   `tools/goldens.csv` 承载);
+5. `--dump-final` 已改 .part 两段写 + rename(第十五批);`gen_test_images.py` 已补 `tree_under_clouds.png`
+   上游快照复制(第十五批);`sha256.h` 已补 `<algorithm>`(第十五批);
+   `svgscene-bench` 链接硬编码 Release `.lib`、内存列是推算值(未计"单件多渲染"的 renderer 内存)——仍未做;
 6. `src/test` 不在补丁门禁覆盖范围内(改测试不受 G1/G2 约束;ctest 计数与 run_ab 值级锁定可部分兜底)。
 
 **C. 应用层未修的 P2/P3**
-7. 16 区域上限无 UI 反馈(第 17 次拖拽静默丢弃);导出命名只靠内存计数器(不查磁盘,重跑会覆盖);
-   后台导出不可取消;导出侧缺"segments 与扫描线不齐时退单色"的回退(库侧 `drawShape` 有);
-   `taskqueuewindow` 在列表项回调里 `delete item`(继承上游的脆弱写法);
-   GIF 输出尺寸窄化到 uint16(宽 >8191 的输入可触发);脚本下拉 `operator[]` 副作用;
+7. 第十五批(2026-10-06)已清:16 区域上限无 UI 反馈、导出命名只靠内存计数器(重启重跑覆盖旧导出)、
+   `taskqueuewindow` 列表项回调里 `delete item`(信号栈内销毁 sender)、GIF 输出尺寸超限无护栏、
+   脚本下拉 `operator[]` 副作用——详见 §5 第十五批。
+   **仍有意未做**:后台导出不可取消;导出侧缺"segments 与扫描线不齐时退单色"的回退(库侧 `drawShape` 有);
+   导出后台线程的 bool 返回值仍未接 UI(尺寸类失败已被预检弹窗拦截,其余如磁盘写失败仍静默);
    撤销重放按需拷贝量 O(N²)(共享 shared_ptr,无形状深拷贝)。
 
 **D. 验证状态**
@@ -340,6 +339,27 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
   验收基建入库:tools/qt_render_ab.py + 6 用例 + 冻结参考(qt_goldens.csv/qt_render_ref/),
     对拍结论:严格项逐字节/逐像素一致、SVG 光栅化 0 像素差、Qt 缩放输入 1 LSB 属预期(陷阱 #22)
   → 后续可选方向(未变):A2.5 新形状类型;新方向待定(CLI 批处理/HTTP API/更多导出格式)
+
+✅ 已完成(第十五批,2026-10-06:应用层审查遗留清理,§4.6 C 组大头清账)
+  必做:GIF 导出尺寸护栏——真实故障模式与旧记载不符,复现程序实证(.tmp_batch15/gif_overflow_repro,
+    守护页法):①Qt6/64 位 QImage **无固定单边上限**(32768 宽构造成功、scaled(32768,32768) 4.29GB
+    也能成功,"32767 上限"是 Qt5 时代假设,旧记载">8191 触发窄化"作废);②内存压力下 scaled 返回
+    空图 → makeImageData 分配 0 像素 → BurstLinker 量化器按 init 尺寸读 → **堆越界读 0xC0000005**;
+    ③GIF 头部宽高 uint16 超 65535 **静默截断**(70000→4464)。防线 = addFrame 空图检查 +
+    exportGIF 尺寸护栏(每边 ≤65535、宽*高*4 ≤2GB)+ 帧失败接线(删半截文件返回 false)+
+    导出面板三入口预检弹窗;qt_render_ab GIF 用例字节级一致,正常路径零扰动
+  必做:批处理导出命名防覆盖(taskqueuewindow:纯内存计数器 → "内存 ∨ 磁盘现状"跳首个空闲名,
+    本批要写的扩展名任一被占即让位;重启重跑同名批次不再覆盖旧导出)
+  必做:队列移除回调延迟删除(原代码在 itemWidget 自己的信号栈内 delete item = 销毁 sender;
+    QListWidgetItem 非 QObject 无 deleteLater → QTimer::singleShot(0, q, ...) 挪出信号栈)
+  顺手:16 区域上限状态栏提示、脚本下拉 operator[] 读副作用改 find、test_goldens.h +
+    --dump-golden 死机制删除、geobench --dump-final 改 .part 两段写 + rename、sha256.h 补
+    <algorithm>、gen_test_images.py 补 tree_under_clouds.png 上游快照复制(与现副本逐字节一致)
+  翻译:3 条新 tr(zh.ts + qm,lrelease 315/315 finished)
+  门禁:四道全绿(ctest 2/2、run_ab 26/26、verify_patches 重导出 PASS、qt_render_ab check);
+    dist 已同步(exe SHA-256 e0b930f4…与 build 产物一致);代码审查无 P0/P1
+  → 后续可选方向(未变):A2.5 新形状类型;新方向待定(CLI 批处理/HTTP API/更多导出格式);
+    §4.6 仅剩有意搁置项
 ```
 
 每批结束:双门禁全绿(ctest + run_ab;改应用层渲染相关代码或升级 Qt 追加 qt_render_ab check)+ 发布包同步 + 补丁重编号导出 + MEMORY 更新。
@@ -385,7 +405,7 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 11. **0xC0000374 堆损坏**:2026-09-29 审查轮已定位到真实根因——**宿主自定义 shapeCreator 产出越界扫描线时,库的裸指针落画路径写穿位图缓冲**(16×16 图配 32 格 creator 即触发,15~30% 概率)。修复:落画入口 `clipScanlinesToBitmap` 统一裁剪 + 三个 undo 助手与 rasterize 三件套补边界自守。**此前"疑似 obj 不一致"的归因不成立**(干净重建后仍复现,直到修掉越界写才归零)。定位手法(可复用):给 6 处 `getDataRefMut` 写入点插越界校验(越界即 fprintf+abort),比等堆报告快得多;Debug 构建下 `_CrtSetDbgFlag(_CRTDBG_CHECK_ALWAYS_DF)` 太慢(3 分钟跑不到第 3 个用例),不实用。run_ab 的门禁策略已改:**单侧无输出重试非零即按 FAIL 计**(旧行为把偶发故障洗成 PASS,正是它掩盖了本条)。
 12. **裸形状必须绑 rasterize**:`std::make_shared<Rectangle>(...)` 等不经 shapefactory 的形状,其 `rasterize` std::function 为空,drawShape 调用即 UB/崩溃——照 GUI `drawBackgroundRectangle` 先绑定。椭圆光栅化输出 y 不升序(从中心向两边),导出/统计侧须 stable_sort。
 13. **CMake 链专用**:target_link_options 传含空格的链接选项(/MANIFESTDEPENDENCY)会被 VS 生成器拆成假输入文件(LNK1104)——用 .manifest 文件走源列表(app.manifest 先例);bat 里用 Python 写 Windows 路径必须 raw string(`\b`/`\5` 会被转义吃掉);CMake 版 exe 未经 windeployqt 启动会弹缺 DLL 错误框且进程挂着不退,**勿把 HasExited=False 误判为运行正常**(看 startup_timing.log 是否新增)。
-14. **QPointer 在 Qt5 无 qHash**:`QSet<QPointer<T>>`/`QHash<QPointer<T>,V>` 编译报 qHash 无重载——受管窗口集合用 `QVector<QPointer<T>>` 线性查找(F3.3 先例);QPointer 作 connect lambda 捕获 + receiver 传宿主窗口,WA_DeleteOnClose 的 sender 销毁时 Qt 自动断连,回调不悬空;嵌套类非 QObject 的 Impl 里 `connect` 是全局五参函数直接可用。
+14. **QPointer 在 Qt5 无 qHash**:`QSet<QPointer<T>>`/`QHash<QPointer<T>,V>` 编译报 qHash 无重载——受管窗口集合用 `QVector<QPointer<T>>` 线性查找(F3.3 先例);QPointer 作 connect lambda 捕获 + receiver 传宿主窗口,WA_DeleteOnClose 的 sender 销毁时 Qt 自动断连,回调不悬空;嵌套类非 QObject 的 Impl 里 `connect` 是全局五参函数直接可用,**`QTimer::singleShot(ms, context, fn)` 的 context 同理必须传 `q`(Impl 传 `this` 直接编译失败)**(第十五批先例)。
 15. **形状边界是排他上界**:`setup`/`mutate`/各 `rasterize` 一律把边界元组的 max 当排他上界消费(内部 `randomRange(xMin, xMax-1)`、`clamp` 到 `xMax-1`、y 过滤在 `[yMin, yMax)`),整幅画布即 `(0, 0, width, height)`。`mapShapeBoundsToImage` 上游返回闭区间 `size-1`,错配使最右列/最下行永不落画(C.1.4);新代码写边界时**别照抄那个 -1**,脚本模板里的 `xMax - 1` 才是对的。
 16. **QGraphicsItem 的 DeviceCoordinateCache 吃全局 QPixmapCache 配额**(默认 10MB,约 5 个全画布图层):图层数超配额后每帧重新渲染而非命中缓存,帧耗时量级跳变(0.2ms→70ms)。给场景加 item 前先算图层数 × 单层设备像素;需要更多图层就 `QPixmapCache::setCacheLimit`(应用 main.cpp 已设 128MB)。诊断手法:离屏 `QGraphicsView::render` 计时 + 打印 item 数,见 F3.9。另:`QGraphicsSvgItem` 自带 `maximumCacheSize`(默认 1024×768),设备矩形超上限时 QGraphicsScene 会**整体旁路**设备坐标缓存 —— 分块 SVG item 的 boundingRect 是整幅画布,所以视口/缩放一大缓存就失效,`QPixmapCache` 调多大都没用(需 `setMaximumCacheSize`)。
 17. **不可选/不可移动的 QGraphicsItem 收不到 release**:`QGraphicsItem::mousePressEvent` 对 `ItemIsSelectable == false` 的 item 走 `event->ignore()`,场景于是**不把它设为 mouse grabber**;图像视图开着 `ScrollHandDrag`,后续 move/release 全被视图接管 —— item 的 release 信号永不触发。表现极具迷惑性:**按下有反应(信号已发)、松手什么都不发生**。凡"Ctrl+拖拽/框选"这类靠 item 的 press+release 配对的交互,必须在 press 里显式 `event->accept()`(2026-10-01 区域框选就是这么坏的:README 记了功能、代码看着完整、纯静态审查也判"能用")。定位手法:item 的 press/release 与窗口侧处理器各插一条 stderr 日志,跑一次就能看到"只有 press 没有 release";反过来,"日志里看不到 release"本身就是该 bug 的症状,别误判成测试工具不可靠。
@@ -399,3 +419,4 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 20. **qmake 链路已冻结**:Qt6 后应用构建只维护 `CMakeLists.txt` + `build_cmake.bat`(换 Qt 版本只改 bat 顶部 `QT_DIR`);`geometrize.pro` 保留但不再跟随改动**,改应用新增文件时别再往 .pri/.pro 里补**(CMake 用 GLOB 递归收集,自动跟上)。
 21. **同步任务脚本路径死锁(上游 bug,已于第十四批修复)**:`ImageTask` 用 `Qt::DirectConnection`(SynchronousImageTask)时,worker→task 的 `signal_willStep/didStep/didReplay` 若用 `BlockingQueuedConnection` = **同线程阻塞等自己** → 控制台/脚本模式必死锁;**GUI 的 QueuedConnection 路径正常,所以这个 bug 潜伏很久**(上游自带示例 `imagejob.chai` 一样挂)。修法 = 回传连接与入向连接同型。定位手法:进程不退但 **CPU≈0 且无窗口标题**(与"脚本错误"区分:后者会弹「脚本评估失败」模态框、`MainWindowTitle` 有标题,且该模态框自带事件循环会一直挂着等点击——headless 跑脚本必须 try/catch + 带超时强杀)。
 22. **Qt 图像平滑缩放的跨版本差异(Qt5→Qt6 实测)**:`QImage` 平滑缩放在 5.15→6.8 间有 **1 个灰阶的取整差异**(512→256 实测 62.5% 像素差 1 LSB),该差异沿形状链混沌放大后最终输出不再逐位一致——**对拍矩阵必须把"过 Qt 缩放"的输入从严格项剥离**(tools\qt_render_ab 用例 06 专门量化记录);应用默认处理分辨率上限 1024,超过即走该路径。性质属 Qt 实现变更,不是缺陷、也不该"修回"。
+23. **Qt6/64 位 QImage 无固定单边尺寸上限(第十五批复现实证,"32767 上限"是 Qt5 时代假设)**:32768 宽构造成功、`scaled(32768,32768)`(4.29GB)在本机也能成功——不能指望 Qt 替你拒绝超限导出。后果链:内存压力下 `scaled` 返回**空图** → `makeImageData` 按 0×0 分配 → BurstLinker 量化器按 `init` 时的尺寸读缓冲 → **堆越界读**(守护页实测 0xC0000005);GIF 头部宽高是 uint16,>65535 静默截断(mod 65536,70000→4464)。凡按用户倍率放大输出的路径,先用 `宽*高*4 ≤ 2GB`(uint64 乘法)与 GIF 每边 ≤65535 做确定性预检(第十五批已在导出面板三入口 + gifexporter 落防线),消费 scaled 结果前必须补空图检查。

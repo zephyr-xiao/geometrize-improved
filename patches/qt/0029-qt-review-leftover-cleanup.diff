@@ -1,0 +1,2336 @@
+# 应用层审查遗留清理(第十五批,2026-10-06)—— 补丁定位说明
+# baseline 侧 = 纯上游快照,+ 侧 = improved-app 累积态(与既有拆分系列同款口径)。
+# 内容:
+#   A GIF 导出尺寸护栏(gifexporter):①GIF 头部宽高是 uint16,超 65535 静默截断(mod 65536,
+#     复现实测 70000→4464);②Qt6/64 位 QImage 无固定单边上限(实测 scaled(32768,32768) 成功,
+#     推翻"32767 上限"的 Qt5 时代假设),内存压力下 scaled 返回空图 → makeImageData 分配 0 像素
+#     缓冲 → BurstLinker 量化器按 init 尺寸读取 → 堆越界读(守护页实测 0xC0000005)。
+#     防线 = addFrame 空图检查 + exportGIF 尺寸护栏(每边 ≤65535、宽*高*4 ≤2GB)+ 帧失败
+#     接线(删半截文件 + return false,此前返回值被丢弃)。
+#   B 导出面板三入口(PNG 单帧/序列/GIF)输出尺寸预检:超限弹窗拒绝,失败从后台线程
+#     挪到用户可见弹窗;PNG/SVG 路径不查 GIF 单边上限。
+#   C 批处理导出命名防覆盖(taskqueuewindow):纯内存计数器改为"内存计数 ∨ 磁盘现状"起步
+#     跳到首个空闲名——重启后重跑同名批次不再覆盖上次导出(数据丢失修复)。
+#   D 队列移除回调延迟删除:原代码在 itemWidget 自己的信号栈内 delete item(销毁 sender,
+#     QListWidgetItem 非 QObject 无 deleteLater);改 QTimer::singleShot(0, q, ...) 挪出信号栈,
+#     context 传 q(Impl 非 QObject)。
+#   E 脚本下拉 currentTextChanged 的 std::map operator[] 读副作用改 find(查无不再静默插空条目)。
+#   F 区域框选达 16 上限时的静默丢弃改状态栏提示(imagetaskwindow)。
+#   G 工具链:test_goldens.h + --dump-golden 死机制删除(src/test,补丁门禁外);geobench
+#     --dump-final 改 .part 两段写 + rename(中断不再留半截文件);sha256.h 补 <algorithm>。
+#   H gen_test_images.py 补 tree_under_clouds.png 上游快照复制(摄影图无法程序合成,
+#     run_ab 多用例依赖;与现有副本逐字节一致)。
+#   I 翻译 3 条(导出超限弹窗两条 + 区域上限提示一条),zh.ts + qm 同步(qm 二进制豁免)。
+# 验证:四道门禁全绿——ctest 2/2(geotest-fast 111/111、base 39/39)、run_ab 26/26、
+#   verify_patches 重导出后 PASS、qt_render_ab check 六用例全一致(含 GIF 字节级一致)。
+# 复现证据:.tmp_batch15/gif_overflow_repro(守护页越界读 + uint16 截断 + QImage 上限探针)。
+# 应用时保持 -utf-8 与 CRLF。
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/dialog/imagetaskexportwidget.cpp b/geometrize/dialog/imagetaskexportwidget.cpp
+--- a/geometrize/dialog/imagetaskexportwidget.cpp
++++ b/geometrize/dialog/imagetaskexportwidget.cpp
+@@ -1,10 +1,16 @@
+ #include "imagetaskexportwidget.h"
+ #include "ui_imagetaskexportwidget.h"
+ 
++#include <algorithm>
+ #include <memory>
+ #include <vector>
+ 
+ #include <QMessageBox>
++#include <QPointer>
++#include <QProgressDialog>
++
++#include <QtConcurrent/QtConcurrentRun>
++#include <QFutureWatcher>
+ 
+ #include "geometrize/shaperesult.h"
+ #include "geometrize/exporter/shapearrayexporter.h"
+@@ -70,10 +76,13 @@
+             return;
+         }
+ 
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
++        // 按用户倍率在放大画布上重放形状矢量:形状坐标不变,放大由 SVG viewBox→输出尺寸映射完成
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
+         const std::uint32_t width{m_task->getCurrent().getWidth()};
+         const std::uint32_t height{m_task->getCurrent().getHeight()};
++        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, false)) {
++            return;
++        }
+         geometrize::exporter::exportRasterizedSvg(
+                     *m_shapes,
+                     width,
+@@ -95,19 +104,20 @@
+             return;
+         }
+ 
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
++        // 按用户倍率在放大画布上重放形状矢量,逐步前缀各存一帧(导出器内部已做增量渲染+帧数上限)
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
+         const std::uint32_t width{m_task->getCurrent().getWidth()};
+         const std::uint32_t height{m_task->getCurrent().getHeight()};
+-        geometrize::exporter::exportRasterizedSvgs(
+-                    *m_shapes,
+-                    width,
+-                    height,
+-                    width * scaleFactor,
+-                    height * scaleFactor,
+-                    path.toStdString(),
+-                    "exported_image",
+-                    ".png");
++        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, false)) {
++            return;
++        }
++
++        runExportInBackground(tr("Exporting image sequence..."),
++            [shapes = *m_shapes, width, height, scaleFactor, targetDir = path.toStdString()]() {
++                geometrize::exporter::exportRasterizedSvgs(shapes, width, height,
++                    width * scaleFactor, height * scaleFactor,
++                    targetDir, "exported_image", ".png");
++            });
+     }
+ 
+     void saveGeometryData() const
+@@ -145,26 +155,31 @@
+             return;
+         }
+ 
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
++        // 参数与控件默认值对齐:每 20 shape 一帧、20FPS(GIF 延迟下限 20ms,上限 50)、x1 输出、无限循环、末帧 2 秒
++        const std::size_t frameStep{static_cast<std::size_t>(std::max(1, ui->frameStepSpinBox->value()))};
++        const std::uint32_t frameDelayMs{static_cast<std::uint32_t>(1000 / std::max(1, ui->frameRateSpinBox->value()))};
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->scaleFactorSpinBox->value()))};
++        const std::uint32_t loopCount{ui->loopGifCheckbox->isChecked() ? 0U : 1U};
++        const std::uint32_t endPauseMs{ui->endPauseCheckbox->isChecked() ? 2000U : 0U};
++
+         const std::uint32_t width{m_task->getCurrent().getWidth()};
+         const std::uint32_t height{m_task->getCurrent().getHeight()};
++        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, true)) {
++            return;
++        }
+ 
+-        auto frameSkipPredicate = [](const std::size_t frameIdx) {
+-            if(frameIdx % 2 == 0) {
+-                return true;
+-            }
+-            return false;
++        auto frameSkipPredicate = [frameStep](const std::size_t frameIdx) {
++            return frameIdx % frameStep != 0; // 保留每第 N 个形状处取帧
+         };
+ 
+-        geometrize::exporter::exportGIF(
+-            *m_shapes,
+-            width,
+-            height,
+-            width * scaleFactor,
+-            height * scaleFactor,
+-            frameSkipPredicate,
+-            path.toStdString());
++        // 后台执行:导出走 QtConcurrent 线程,UI 弹进度框。shapes 以 shared_ptr 列表浅拷贝
++        // 持有(形状本体共享,不随任务销毁失效)
++        runExportInBackground(tr("Exporting GIF..."),
++            [shapes = *m_shapes, width, height, scaleFactor, frameSkipPredicate, frameDelayMs, loopCount, endPauseMs, filePath = path.toStdString()]() {
++                geometrize::exporter::exportGIF(shapes, width, height,
++                    width * scaleFactor, height * scaleFactor,
++                    frameSkipPredicate, filePath, frameDelayMs, loopCount, endPauseMs);
++            });
+     }
+ 
+     void saveHTML5WebpageButton() const
+@@ -216,6 +231,52 @@
+                              tr("Failed to run exporter. Exporter was misconfigured.", "Error message text shown when an attempt to save/export a file failed"));
+     }
+ 
++    /// 输出尺寸预检:Qt6/64 位 QImage 无固定单边上限,超限输入不再被 Qt 拒绝——内存压力下
++    /// scaled 返回空图会引爆 GIF 量化器的堆越界读,GIF 头部宽高超过 uint16 还会静默截断。
++    /// 这里按确定性上限(总 RGBA 字节 ≤ 2GB、GIF 每边 ≤ 65535)提前拒绝,把失败从后台线程
++    /// 挪到用户可见的弹窗,而不是丢弃导出函数的 bool 返回值。
++    bool warnIfOutputDimensionsExceedLimits(const std::uint32_t outputWidth, const std::uint32_t outputHeight, const bool gifHeaderLimit) const
++    {
++        constexpr std::uint64_t maxOutputBytes{0x7FFFFFFFULL};
++        constexpr std::uint32_t maxGifSide{65535U};
++        const bool tooLarge{static_cast<std::uint64_t>(outputWidth) * outputHeight * 4U > maxOutputBytes};
++        const bool overGifSide{gifHeaderLimit && (outputWidth > maxGifSide || outputHeight > maxGifSide)};
++        if(!tooLarge && !overGifSide) {
++            return true;
++        }
++        QMessageBox::warning(q,
++            tr("Export dimensions too large", "Title of error message shown when the scaled output resolution exceeds export limits"),
++            tr("The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.",
++               "Error message text shown when the scaled output resolution exceeds export limits").arg(outputWidth).arg(outputHeight));
++        return false;
++    }
++
++    /// 把耗时导出挂到 QtConcurrent 线程:期间弹不可取消的进度框并禁用导出按钮,
++    /// 完成后自动恢复。widget 是 WA_DeleteOnClose 链上的一环,watcher 以 q 为 parent、
++    /// 回调以 QPointer 守护,窗口先关也不会拍悬空对象。
++    template<typename Func>
++    void runExportInBackground(const QString& message, Func&& work) const
++    {
++        QPointer<ImageTaskExportWidget> guard{q};
++        auto* dialog = new QProgressDialog(message, QString(), 0, 0, q);
++        dialog->setWindowModality(Qt::WindowModal);
++        dialog->setCancelButton(nullptr);
++        dialog->setMinimumDuration(0);
++        dialog->show();
++
++        auto* watcher = new QFutureWatcher<void>(q);
++        q->connect(watcher, &QFutureWatcher<void>::finished, q, [guard, dialog]() {
++            if(guard.isNull()) {
++                return;
++            }
++            dialog->deleteLater();
++            guard->setEnabled(true);
++        });
++
++        q->setEnabled(false);
++        watcher->setFuture(QtConcurrent::run(std::forward<Func>(work)));
++    }
++
+     const geometrize::task::ImageTask* m_task;
+     const std::vector<geometrize::ShapeResult>* m_shapes;
+ 
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/dialog/imagetaskwindow.cpp b/geometrize/dialog/imagetaskwindow.cpp
+--- a/geometrize/dialog/imagetaskwindow.cpp
++++ b/geometrize/dialog/imagetaskwindow.cpp
+@@ -14,7 +14,9 @@
+ #include <QLocale>
+ #include <QMessageBox>
+ #include <QPixmap>
++#include <QPointer>
+ #include <QRectF>
++#include <QStatusBar>
+ #include <QTimer>
+ 
+ #include "chaiscript/chaiscript.hpp"
+@@ -22,6 +24,7 @@
+ #include "geometrize/bitmap/bitmap.h"
+ #include "geometrize/commonutil.h"
+ #include "geometrize/runner/imagerunneroptions.h"
++#include "geometrize/shaperesult.h"
+ 
+ #include "common/uiactions.h"
+ #include "common/util.h"
+@@ -64,6 +67,10 @@
+             task->disconnect();
+             task->deleteLater();
+         });
++        task->connect(task, &geometrize::task::ImageTask::signal_modelDidReplay, [task](std::vector<geometrize::ShapeResult>) {
++            task->disconnect();
++            task->deleteLater();
++        });
+     } else {
+         task->disconnect();
+         task->deleteLater();
+@@ -95,6 +102,33 @@
+ 
+         ui->runnerSettingsDock->raise(); // Make sure runner settings dock is selected
+ 
++        // 撤销/重做:按钮信号与菜单 action 汇合同一实现;快捷键挂 QAction(窗口级作用域)
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::undoButtonClicked, [this]() {
++            undoModel();
++        });
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::redoButtonClicked, [this]() {
++            redoModel();
++        });
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::priorityRegionSelectionModeChanged, [this](bool enabled) {
++            m_regionSelectMode = enabled;
++            if(!enabled) {
++                m_regionDragActive = false;
++                m_sceneManager.setPriorityRegionPreviewRect(QRectF()); // 隐藏预览
++            }
++        });
++        connect(ui->imageTaskRunnerWidget, &ImageTaskRunnerWidget::clearPriorityRegionsClicked, [this]() {
++            m_sceneManager.setPriorityRegions({});
++            ui->imageTaskRunnerWidget->syncUserInterface();
++        });
++        connect(ui->actionUndo, &QAction::triggered, [this]() {
++            undoModel();
++        });
++        connect(ui->actionRedo, &QAction::triggered, [this]() {
++            redoModel();
++        });
++        ui->actionUndo->setShortcuts({QKeySequence::Undo}); // Ctrl+Z
++        ui->actionRedo->setShortcuts({QKeySequence("Ctrl+Shift+Z"), QKeySequence("Ctrl+Y")});
++
+         ui->consoleWidget->setVisible(false); // Make sure console widget is hidden by default
+ 
+         // Set up the image task geometrization views
+@@ -129,6 +163,13 @@
+             disconnectTask();
+ 
+             m_shapes.clear();
++            // 任务切换:撤销/重做状态整体作废(旧任务的 redo 项不适用新任务)
++            m_redoStack.clear();
++            m_replayInFlight = false;
++            m_redoInFlight = false;
++            m_lastRedrawnShape = nullptr;
++            m_regionDragActive = false;
++            m_sceneManager.setPriorityRegionPreviewRect(QRectF());
+             ui->imageTaskRunnerWidget->setImageTask(nextTask);
+             ui->scriptsWidget->setImageTask(nextTask);
+             ui->imageTaskExportWidget->setImageTask(nextTask, &m_shapes.getShapeVector());
+@@ -165,6 +206,12 @@
+             if(currentTask == nullptr) {
+                 m_taskPreferencesSetConnection = QMetaObject::Connection{};
+                 m_taskWillStepConnection = QMetaObject::Connection{};
++                m_taskDidReplayConnection = QMetaObject::Connection{};
++                // 区域选择状态随任务作废
++                m_regionSelectMode = false;
++                m_regionDragActive = false;
++                m_sceneManager.setPriorityRegions({});
++                m_sceneManager.setPriorityRegionPreviewRect(QRectF());
+                 return; // Don't try to connect if we're setting the current task to nothing/nullptr
+             }
+ 
+@@ -175,6 +222,7 @@
+ 
+             m_taskWillStepConnection = connect(currentTask, &task::ImageTask::signal_modelWillStep, [this]() {
+                 ui->statsDockContents->setCurrentStatus(geometrize::dialog::ImageTaskStatsWidget::RUNNING);
++                updateUndoRedoActions(); // 步进/重放开始即禁用(守卫的 isStepping 分支同时兜底)
+ 
+                 // Apply the latest scripts and engine state prior to stepping
+                 auto& geometrizer = m_task->getGeometrizer();
+@@ -190,6 +238,20 @@
+             m_taskDidStepConnection = connect(currentTask, &task::ImageTask::signal_modelDidStep, [this](std::vector<geometrize::ShapeResult> shapes) {
+                 processPostStepCbs();
+ 
++                // 撤销重放在途:丢弃竞争步进的结果(经典编辑器语义——在途编辑被丢弃),不进 append/脚本/链式步进
++                if(m_replayInFlight) {
++                    updateStats();
++                    updateUndoRedoActions();
++                    return;
++                }
++
++                // redo 自身的 drawShape 产物:不清 redo 栈;其余任何来源的新形状都使 redo 失效
++                if(m_redoInFlight && !shapes.empty() && shapes.back().shape == m_lastRedrawnShape) {
++                    m_redoInFlight = false;
++                } else if(!shapes.empty() && !m_redoStack.empty()) {
++                    m_redoStack.clear();
++                }
++
+                 // If the first shape added background rectangle then fit the scenes to it
+                 if(m_shapes.empty()) {
+                     m_sceneManager.fitScenesInViews(*m_pixmapView, *m_svgView);
+@@ -205,6 +267,24 @@
+                 }
+             });
+ 
++            m_taskDidReplayConnection = connect(currentTask, &task::ImageTask::signal_modelDidReplay, [this](std::vector<geometrize::ShapeResult> shapes) {
++                m_replayInFlight = false;
++                // 防御对账:worker 重放以列表为权威,列表若因竞争步进被丢弃不会小于此处
++                if(m_shapes.size() > shapes.size()) {
++                    m_shapes.truncate(shapes.size());
++                }
++                updateStats();
++                m_pendingSceneShapes.clear();
++                // 此时 worker 已空闲,读位图安全;pixmap 全量重传 + SVG 场景整体重建
++                const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
++                m_sceneManager.reset();
++                m_sceneManager.updateScenes(pixmap, shapes);
++                updateUndoRedoActions();
++            });
++
++            // 从新任务的偏好恢复区域 overlay 显示
++            refreshPriorityRegionOverlays();
++
+             const QString windowTitle = [currentTask]() {
+                 QString title = geometrize::strings::Strings::getApplicationName()
+                         .append(" ").append(geometrize::version::getApplicationVersionString());
+@@ -339,6 +419,16 @@
+             ui->scriptsWidget->evaluateOnTimedUpdateEventScripts();
+         });
+ 
++        // 33ms 合帧定时器:单发 + 以窗口为接收者(窗口销毁自动断连);Impl 析构时显式停止,
++        // 避免回调在 Impl 已析构后触发(旧写法用 QPointer 守护窗口,但 Impl 早于窗口的 ~QObject 析构)
++        m_sceneUpdateTimer.setSingleShot(true);
++        m_sceneUpdateTimer.setInterval(33);
++        connect(&m_sceneUpdateTimer, &QTimer::timeout, q, [this]() { flushPendingSceneUpdate(); });
++
++        // 脚本增删后重新判定 timed-update 轮询是否需要运行(构造期脚本尚未装载,不能只在那里判定)
++        connect(ui->scriptsWidget, &geometrize::dialog::ImageTaskScriptingWidget::signal_scriptChanged, q,
++                [this](const std::string&, const std::string&) { syncScriptUpdateTimer(); });
++
+         // Before shapes are added, evaluate he pre-add shape callbacks
+         connect(&m_shapes, &geometrize::task::ShapeCollection::signal_beforeAppendShapes, [this](const std::vector<geometrize::ShapeResult>&) {
+             ui->scriptsWidget->evaluateBeforeAddShapeScripts();
+@@ -359,12 +449,29 @@
+             setShouldKeepStepping(false);
+             ui->scriptsWidget->evaluateOnStopConditionMetScripts();
+             //geometrize::dialog::showImageTaskStopConditionMetMessage(q); // Letting the scripts handle notifying the user
++            // 任务自然到达停止条件后通知外界(批处理宿主以此感知完成并触发自动导出);
++            // 此刻在主线程(worker didStep 走 BlockingQueuedConnection),读任务位图/形状列表安全
++            emit q->signal_didStopConditionMet();
+         });
+ 
+-        // Update the graphical image views after shapes are added
++        // Update the graphical image views after shapes are added.
++        // 节流合帧:高速步进时每步一次全图 Bitmap→QPixmap 上传代价高,改为 33ms 合并窗口,
++        // 到期时按"当时"的画面渲染一次,视觉上与逐步刷新无差。
+         connect(&m_shapes, &geometrize::task::ShapeCollection::signal_afterAppendShapes, [this](const std::vector<geometrize::ShapeResult>& shapes) {
+-            const QPixmap pixmap{image::createPixmap(m_task->getCurrent())};
+-            m_sceneManager.updateScenes(pixmap, shapes);
++            // ShapeResult 成员为 const(不可赋值),只能追加构造:重建整个待渲染列表
++            m_pendingSceneShapes.reserve(m_pendingSceneShapes.size() + shapes.size());
++            for(const auto& shape : shapes) {
++                m_pendingSceneShapes.emplace_back(shape);
++            }
++            if(!m_sceneUpdatePending) {
++                m_sceneUpdatePending = true;
++                // 本回调运行在 didStep 栅栏内(worker 阻塞在信号投递上),此刻读 m_current 安全。
++                // 快照只在此处取一次;33ms 后的渲染回调不再触碰 worker 的活位图。
++                if(m_task != nullptr && !m_replayInFlight) {
++                    m_pendingBitmap = m_task->getCurrent();
++                }
++                m_sceneUpdateTimer.start();
++            }
+         });
+ 
+         #if defined DATASLINGER_INCLUDED
+@@ -384,6 +491,8 @@
+         // Update the graphical image views when the number of shapes changes (e.g. when cleared)
+         connect(&m_shapes, &geometrize::task::ShapeCollection::signal_sizeChanged, [this](const std::size_t size) {
+             if(size == 0) {
++                // 清空立即刷新并丢弃待合并帧,防残影
++                m_pendingSceneShapes.clear();
+                 m_sceneManager.reset();
+             }
+         });
+@@ -398,7 +507,13 @@
+ 
+             ui->scriptsWidget->evaluateOnMouseMoveEventScripts();
+         });
+-        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMousePressEvent, [this](double x, double y, bool /*ctrlModifier*/) {
++        connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMousePressEvent, [this](double x, double y, bool ctrlModifier) {
++            // 区域选择模式:Ctrl+按下开始框选,不喂脚本引擎(旧行为在模式关闭时逐位保留)
++            if(m_regionSelectMode && ctrlModifier && m_task != nullptr && !m_task->isStepping()) {
++                m_regionDragStart = QPointF(x, y);
++                m_regionDragActive = true;
++                return;
++            }
+             chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+             engine->set_global(chaiscript::var(x), "targetImageLastMouseX");
+             engine->set_global(chaiscript::var(y), "targetImageLastMouseY");
+@@ -408,6 +523,11 @@
+             ui->scriptsWidget->evaluateOnMouseDownEventScripts();
+         });
+         connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMouseMoveEvent, [this](double lastX, double lastY, double x, double y, bool /*ctrlModifier*/) {
++            // 区域框选拖拽中:更新预览矩形,不喂脚本引擎
++            if(m_regionDragActive) {
++                m_sceneManager.setPriorityRegionPreviewRect(QRectF(m_regionDragStart, QPointF(x, y)).normalized());
++                return;
++            }
+             // NOTE not triggered currently, hover move events are used instead
+             chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+             engine->set_global(chaiscript::var(lastX), "targetImageLastMouseX");
+@@ -418,6 +538,33 @@
+             ui->scriptsWidget->evaluateOnMouseMoveEventScripts();
+         });
+         connect(&m_sceneManager, &geometrize::scene::ImageTaskSceneManager::signal_onTargetImageMouseReleaseEvent, [this](double x, double y, bool /*ctrlModifier*/) {
++            // 区域框选结束:有效矩形(宽高 > 2 场景px)且未超上限(16)时提交为百分比区域
++            if(m_regionDragActive) {
++                m_regionDragActive = false;
++                m_sceneManager.setPriorityRegionPreviewRect(QRectF()); // 隐藏预览
++                const QRectF rect{QRectF(m_regionDragStart, QPointF(x, y)).normalized()};
++                const auto task = m_task;
++                if(task != nullptr && rect.width() > 2.0 && rect.height() > 2.0) {
++                    auto regions{task->getPreferences().getImageRunnerOptions().priorityRegions};
++                    if(regions.size() < 16) {
++                        const std::uint32_t w{task->getWidth()};
++                        const std::uint32_t h{task->getHeight()};
++                        // 场景像素 → 百分比(与 mapShapeBoundsToImage 同款分母 dim-1)
++                        regions.push_back(geometrize::ImageRunnerPriorityRegionOptions{
++                            100.0 * rect.left() / static_cast<double>(w - 1),
++                            100.0 * rect.top() / static_cast<double>(h - 1),
++                            100.0 * rect.right() / static_cast<double>(w - 1),
++                            100.0 * rect.bottom() / static_cast<double>(h - 1)});
++                        task->getPreferences().setPriorityRegions(regions);
++                        refreshPriorityRegionOverlays();
++                        ui->imageTaskRunnerWidget->syncUserInterface();
++                    } else {
++                        // 上限静默丢弃会被当成"框选坏了":至少给一条状态栏提示
++                        q->statusBar()->showMessage(tr("Priority region limit (16) reached — clear regions to add more"), 5000);
++                    }
++                }
++                return;
++            }
+             chaiscript::ChaiScript* engine = m_task->getGeometrizer().getEngine();
+             engine->set_global(chaiscript::var(x), "targetImageLastMouseX");
+             engine->set_global(chaiscript::var(y), "targetImageLastMouseY");
+@@ -530,13 +677,49 @@
+         // Start the timer used to track how long the image task has been in the running state
+         m_timeRunningTimer.start(static_cast<int>(m_timeRunningTimerResolutionMs));
+ 
+-        // Start the timer used to regularly update the associated image task's script engine (if any)
+-        m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
++        // Start the timer used to regularly update the associated image task's script engine (if any).
++        // 没有任何 timed-update 脚本时不启动轮询,避免空闲时 100ms 空转求值。
++        // 注意:构造期脚本尚未装载(setImageTask 在构造之后调用),这里判定必然为假,
++        // 因此 setImageTask/脚本变更后必须重新判定——否则 on_timed_update 脚本永久失效。
++        if(ui->scriptsWidget->hasTimedUpdateScripts()) {
++            m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
++        }
++    }
++    /// timed-update 轮询定时器按需启停:脚本装载/变更后都要重新判定(构造期脚本尚未装载,判定必为假)
++    void syncScriptUpdateTimer()
++    {
++        if(ui->scriptsWidget->hasTimedUpdateScripts()) {
++            if(!m_scriptEngineUpdateTimer.isActive()) {
++                m_scriptEngineUpdateTimer.start(static_cast<int>(m_scriptEngineUpdateTimerResolution));
++            }
++        } else if(m_scriptEngineUpdateTimer.isActive()) {
++            m_scriptEngineUpdateTimer.stop();
++        }
++    }
++
++    /// 合帧到期后的场景刷新:只渲染 didStep 栅栏内取的位图快照,不读 worker 的活位图
++    void flushPendingSceneUpdate()
++    {
++        m_sceneUpdatePending = false;
++        if(m_task == nullptr || m_replayInFlight) {
++            // 重放在途:位图正被 worker 重写,didReplay 会做权威刷新
++            m_pendingSceneShapes.clear();
++            return;
++        }
++        if(m_pendingBitmap.getWidth() == 0U || m_pendingBitmap.getHeight() == 0U) {
++            return; // 尚无快照(如刚切换任务):等下一次 append 在栅栏内取快照后再排定
++        }
++        const QPixmap pixmap{image::createPixmap(m_pendingBitmap)};
++        m_sceneManager.updateScenes(pixmap, m_pendingSceneShapes);
++        m_pendingSceneShapes.clear();
+     }
++
+     ImageTaskWindowImpl& operator=(const ImageTaskWindowImpl&) = delete;
+     ImageTaskWindowImpl(const ImageTaskWindowImpl&) = delete;
+     ~ImageTaskWindowImpl()
+     {
++        // 先停合帧定时器:回调持有 this(Impl),Impl 析构后不得再触发
++        m_sceneUpdateTimer.stop();
+         // Sets the task in the UI etc to nothing (potentially autosaving stuff etc), then dispose of the task
+         task::ImageTask* lastTask = getImageTask();
+         setImageTask(nullptr);
+@@ -568,6 +751,11 @@
+         return m_task;
+     }
+ 
++    const std::vector<geometrize::ShapeResult>& getShapes() const
++    {
++        return m_shapes.getShapeVector();
++    }
++
+     void setImageTask(task::ImageTask* task)
+     {
+         task::ImageTask* lastTask{m_task};
+@@ -575,6 +763,8 @@
+         q->willSwitchImageTask(lastTask, nextTask);
+         m_task = nextTask;
+         q->didSwitchImageTask(lastTask, nextTask);
++        // 任务切换后脚本集合随之变化(构造期判定为假):重新判定轮询是否需要运行
++        syncScriptUpdateTimer();
+     }
+ 
+     void revealLaunchWindow()
+@@ -687,6 +877,12 @@
+         if(s == "click_clear_button") {
+             ui->imageTaskRunnerWidget->clearButtonClicked();
+         }
++        if(s == "undo") {
++            undoModel();
++        }
++        if(s == "redo") {
++            redoModel();
++        }
+ 
+         if(s == "toggle_script_console") {
+             ui->actionScript_Console->toggle();
+@@ -733,6 +929,7 @@
+     void populateUi()
+     {
+         updateStartStopButtonText();
++        updateUndoRedoActions();
+         q->setWindowTitle(geometrize::strings::Strings::getApplicationName());
+     }
+ 
+@@ -753,6 +950,7 @@
+     {
+         m_shouldKeepStepping = stepping;
+         updateStartStopButtonText();
++        updateUndoRedoActions();
+     }
+ 
+     void updateStartStopButtonText()
+@@ -776,6 +974,82 @@
+         setImageTask(task);
+     }
+ 
++    // 撤销下限 = 1:index 0 恒为背景矩形(afterAppendShapes 处理器无条件 back(),空列表是既有 UB 点)
++    bool canUndo() const
++    {
++        return m_task != nullptr && !m_task->isStepping() && !shouldKeepStepping()
++            && !m_replayInFlight && !m_redoInFlight && m_shapes.size() > 1;
++    }
++
++    bool canRedo() const
++    {
++        return m_task != nullptr && !m_task->isStepping() && !shouldKeepStepping()
++            && !m_replayInFlight && !m_redoInFlight && !m_redoStack.empty();
++    }
++
++    void undoModel()
++    {
++        if(!canUndo()) {
++            return;
++        }
++        // ShapeResult 含 shared_ptr,拷贝共享所有权零位图拷贝
++        m_redoStack.push_back(m_shapes.back());
++        m_shapes.truncate(m_shapes.size() - 1);
++        m_replayInFlight = true;
++        m_pendingSceneShapes.clear(); // 丢弃在途合帧残影,didReplay 权威刷新
++        updateStats();
++        updateUndoRedoActions();
++        m_task->replayShapes(m_shapes.getShapeVector(), getTaskStartingColor());
++    }
++
++    void redoModel()
++    {
++        if(!canRedo()) {
++            return;
++        }
++        // 走正常 drawShape 全协议:didStep 处理器完成 append/统计/合帧刷新,零新增刷新代码
++        m_redoInFlight = true;
++        m_lastRedrawnShape = m_redoStack.back().shape;
++        const geometrize::ShapeResult result = m_redoStack.back();
++        m_redoStack.pop_back();
++        m_task->drawShape(result.shape, result.color, result.segments);
++    }
++
++    geometrize::rgba getTaskStartingColor() const
++    {
++        const geometrize::preferences::GlobalPreferences& prefs{geometrize::preferences::getGlobalPreferences()};
++        if(prefs.shouldUseCustomImageTaskBackgroundOverrideColor()) {
++            const auto color = prefs.getCustomImageTaskBackgroundOverrideColor();
++            return geometrize::rgba{ static_cast<std::uint8_t>(color[0]), static_cast<std::uint8_t>(color[1]), static_cast<std::uint8_t>(color[2]), static_cast<std::uint8_t>(color[3]) };
++        }
++        return geometrize::commonutil::getAverageImageColor(m_task->getTarget());
++    }
++
++    void updateUndoRedoActions()
++    {
++        ui->actionUndo->setEnabled(canUndo());
++        ui->actionRedo->setEnabled(canRedo());
++        ui->imageTaskRunnerWidget->setUndoRedoButtonsEnabled(canUndo(), canRedo());
++    }
++
++    // 把当前任务的优先区域换算回场景像素坐标显示(pixmap/svg 双场景)
++    void refreshPriorityRegionOverlays()
++    {
++        std::vector<QRectF> rects;
++        if(m_task != nullptr) {
++            const std::uint32_t w{m_task->getWidth()};
++            const std::uint32_t h{m_task->getHeight()};
++            for(const auto& region : m_task->getPreferences().getImageRunnerOptions().priorityRegions) {
++                const double x1{region.xMinPercent / 100.0 * static_cast<double>(w - 1)};
++                const double y1{region.yMinPercent / 100.0 * static_cast<double>(h - 1)};
++                const double x2{region.xMaxPercent / 100.0 * static_cast<double>(w - 1)};
++                const double y2{region.yMaxPercent / 100.0 * static_cast<double>(h - 1)};
++                rects.push_back(QRectF(QPointF((std::min)(x1, x2), (std::min)(y1, y2)), QPointF((std::max)(x1, x2), (std::max)(y1, y2))));
++            }
++        }
++        m_sceneManager.setPriorityRegions(rects);
++    }
++
+     void switchTargetImage(Bitmap& bitmap)
+     {
+         Bitmap& targetBitmap{m_task->getTargetMutable()};
+@@ -819,6 +1093,9 @@
+         if(m_taskDidStepConnection) {
+             disconnect(m_taskDidStepConnection);
+         }
++        if(m_taskDidReplayConnection) {
++            disconnect(m_taskDidReplayConnection);
++        }
+     }
+ 
+     void setTargetImage(const QImage& image)
+@@ -851,8 +1128,20 @@
+     QMetaObject::Connection m_taskPreferencesSetConnection{}; ///> Connection for telling the dialog when the image task preferences are set
+     QMetaObject::Connection m_taskWillStepConnection{}; ///> Connection for the window to do work just prior the image task starts a step
+     QMetaObject::Connection m_taskDidStepConnection{}; ///> Connection for the window to do work just after the image task finishes a step
++    QMetaObject::Connection m_taskDidReplayConnection{}; ///> Connection for the window to refresh after an undo replay finishes
+     std::vector<std::function<void()>> m_onPostStepCbs; ///> One-shot callbacks triggered when the image task finishes a step
+ 
++    // 撤销/重做状态:redo 栈存被撤销的形状(经典双栈语义);重放期间丢弃竞争步进与新渲染帧
++    std::vector<geometrize::ShapeResult> m_redoStack; ///> Shapes undone and available for redo (back = most recently undone)
++    std::shared_ptr<geometrize::Shape> m_lastRedrawnShape; ///> Identity of the shape a pending redo drawShape is drawing
++    bool m_replayInFlight{false}; ///> An undo replay has been dispatched and has not finished yet
++    bool m_redoInFlight{false}; ///> A redo drawShape has been dispatched and its didStep has not returned yet
++
++    // 区域优先(F3.2):Ctrl+拖拽框选状态机;模式勾选是会话操作态,不持久化
++    bool m_regionSelectMode{false}; ///> Whether Ctrl+Drag is currently routed to region selection
++    bool m_regionDragActive{false}; ///> A region drag is in progress
++    QPointF m_regionDragStart; ///> Scene-space start point of the active drag
++
+     geometrize::task::ShapeCollection m_shapes; ///> Collection of shapes added so far
+ 
+     geometrize::scene::ImageTaskSceneManager m_sceneManager; ///> Manager for scenes containing the pixmap/vector-based representations of the shapes etc
+@@ -866,6 +1155,14 @@
+ 
+     QTimer m_scriptEngineUpdateTimer; ///> Timer used to call an update function on the script engine of the associated image task
+     float m_scriptEngineUpdateTimerResolution{100.0f}; ///> Resolution of the script update timer in milliseconds
++
++    // 场景刷新节流:33ms 合帧期内累积的新形状,到期一次性渲染(见 signal_afterAppendShapes 连接处)
++    bool m_sceneUpdatePending{false};
++    std::vector<geometrize::ShapeResult> m_pendingSceneShapes;
++    // 位图快照:合帧回调不读 worker 的活位图——worker 步进时会就地改写同一缓冲(落画/回滚),
++    // 主线程此刻读它是数据竞争(实测撕裂帧)。改为在 didStep 栅栏内取一份快照,回调只渲染快照。
++    geometrize::Bitmap m_pendingBitmap;
++    QTimer m_sceneUpdateTimer; ///> 33ms 合帧定时器(单发);Impl 析构时显式停止,避免回调触碰已析构的 Impl
+ };
+ 
+ ImageTaskWindow::ImageTaskWindow() :
+@@ -908,6 +1205,11 @@
+     d->setImageTask(task);
+ }
+ 
++const std::vector<geometrize::ShapeResult>& ImageTaskWindow::getShapes() const
++{
++    return d->getShapes();
++}
++
+ void ImageTaskWindow::on_actionExit_triggered()
+ {
+     d->close();
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/dialog/taskqueuewindow.cpp b/geometrize/dialog/taskqueuewindow.cpp
+--- a/geometrize/dialog/taskqueuewindow.cpp
++++ b/geometrize/dialog/taskqueuewindow.cpp
+@@ -2,29 +2,121 @@
+ #include "ui_taskqueuewindow.h"
+ 
+ #include <QCollator>
++#include <QDebug>
++#include <QDir>
+ #include <QDragEnterEvent>
+ #include <QDropEvent>
++#include <QFileDialog>
++#include <QFileInfo>
++#include <QHash>
++#include <QPointer>
++#include <QSettings>
++#include <QStandardPaths>
+ #include <QTimer>
++#include <QUrl>
+ #include <QUuid>
++#include <QVector>
++
++#include <algorithm>
++#include <set>
++#include <vector>
+ 
+ #include "chaiscript/chaiscript.hpp"
+ 
+ #include "common/formatsupport.h"
++#include "common/util.h"
+ #include "dialog/imagetaskwindow.h"
+ #include "dialog/recenttaskslist.h"
+ #include "dialog/scripteditorwidget.h"
+ #include "dialog/taskitemwidget.h"
++#include "geometrize/bitmap/bitmap.h"
++#include "exporter/imageexporter.h"
++#include "geometrize/exporter/svgexporter.h"
++#include "geometrize/shaperesult.h"
++#include "task/imagetask.h"
+ #include "script/chaiscriptcreator.h"
+ #include "script/scriptrunner.h"
+ #include "script/scriptutil.h"
+ #include "task/taskutil.h"
+ 
++#ifdef Q_OS_WIN
++#include <objidl.h>
++#include <shobjidl.h>
++#endif
++
+ namespace geometrize
+ {
+ 
+ namespace dialog
+ {
+ 
++namespace
++{
++
++#ifdef Q_OS_WIN
++// 任务栏进度(Win32 原生 COM,不引 QtWinExtras):批处理跑批时在任务栏图标上叠加进度条。
++// COM 初始化是进程级共享状态,Qt 平台插件已在主线程 OleInitialize;这里防御式补充,
++// 返回 S_FALSE/RPC_E_CHANGED_MODE 都视为可用且不配对 Uninitialize(避免减掉 Qt 的引用计数)。
++class TaskbarProgress
++{
++public:
++    TaskbarProgress()
++    {
++        const HRESULT coInit{::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)};
++        const bool comAvailable{SUCCEEDED(coInit) || coInit == RPC_E_CHANGED_MODE};
++        if(!comAvailable) {
++            return;
++        }
++        // S_FALSE(本线程已按同一套间模型初始化过)时引用计数未增加,此时配对 CoUninitialize
++        // 会去减别人的计数(Qt 平台插件已 OleInitialize),可能把 OLE 提前拆掉。
++        // 只有本次真正初始化成功(S_OK)才由我们负责配对释放。
++        m_comOwned = (coInit == S_OK);
++        const HRESULT hr{::CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskbarList3, reinterpret_cast<void**>(&m_taskbar))};
++        if(FAILED(hr)) {
++            m_taskbar = nullptr;
++        }
++    }
++
++    ~TaskbarProgress()
++    {
++        if(m_taskbar != nullptr) {
++            m_taskbar->Release();
++        }
++        // 显式 CoUninitialize 只在本次调用真正初始化成功时做;
++        // S_FALSE(已有其他所有者)时不需要也无法安全配对
++        if(m_comOwned) {
++            ::CoUninitialize();
++        }
++    }
++
++    void setValue(HWND window, std::uint32_t completed, std::uint32_t total)
++    {
++        if(m_taskbar == nullptr || window == nullptr) {
++            return;
++        }
++        m_taskbar->SetProgressState(window, total > 0 ? TBPF_NORMAL : TBPF_NOPROGRESS);
++        if(total > 0) {
++            m_taskbar->SetProgressValue(window, completed, total);
++        }
++    }
++
++    void clear(HWND window)
++    {
++        if(m_taskbar == nullptr || window == nullptr) {
++            return;
++        }
++        m_taskbar->SetProgressState(window, TBPF_NOPROGRESS);
++    }
++
++private:
++    ITaskbarList3* m_taskbar{nullptr};
++    bool m_comOwned{false};
++};
++
++#endif
++
++}
++
+ class TaskQueueWindow::TaskQueueWindowImpl
+ {
+ public:
+@@ -40,10 +132,17 @@
+         setupScriptEditor();
+ 
+         connect(ui->scriptSelectComboBox, &QComboBox::currentTextChanged, [this](const QString& text) {
+-            m_scriptEditorWidget->setCurrentCode(m_scripts[text.toStdString()]);
++            // find 而非 operator[]:后者在查无时静默插入空条目,读路径带着写副作用
++            const auto it{m_scripts.find(text.toStdString())};
++            m_scriptEditorWidget->setCurrentCode(it != m_scripts.end() ? it->second : std::string{});
++            persistQueue();
+         });
+ 
++        restoreQueue();
++        loadAutoExportConfig();
++
+         connect(ui->runTasksButton, &QPushButton::clicked, [this]() {
++            resetBatchProgress();
+             for(int i = 0; i < ui->taskList->count(); ++i) {
+                 QListWidgetItem* item = ui->taskList->item(i);
+                 QString data = item->data(Qt::UserRole).toString();
+@@ -52,27 +151,59 @@
+         });
+         connect(ui->clearTaskListButton, &QPushButton::clicked, [this]() {
+             ui->taskList->clear();
++            resetBatchProgress();
++            persistQueue();
+         });
+         connect(ui->closeOpenWindowsButton, &QPushButton::clicked, [this]() {
+             closeOpenWindows();
+         });
+ 
++#ifdef Q_OS_WIN
++        m_taskbar = std::make_unique<TaskbarProgress>();
++#endif
++
+         // Enable the run and clear buttons only when items are present
+         ui->runTasksButton->setEnabled(false);
+         ui->clearTaskListButton->setEnabled(false);
+         QTimer* timer = new QTimer(q);
+         q->connect(timer, &QTimer::timeout, q, [this]() {
++            // 批处理进度归集:完成事实由信号驱动,销毁兜底由 destroyed 信号按窗口身份计数
++            // (QPointer 销毁后折叠为 null,无法区分多个已销毁窗口,不能再用占位判重)。
++            // 这里只负责展示与按钮状态刷新。
+             const bool enableRunClearButtons = ui->taskList->count() > 0;
+             ui->runTasksButton->setEnabled(enableRunClearButtons);
+             ui->clearTaskListButton->setEnabled(enableRunClearButtons);
+             ui->closeOpenWindowsButton->setEnabled(!geometrize::dialog::ImageTaskWindow::getExistingImageTaskWindows().empty());
++
++            const std::uint32_t completed{static_cast<std::uint32_t>(m_completedIds.size() + m_destroyedUncompletedCount)};
++            const std::uint32_t total{static_cast<std::uint32_t>(m_managedTotal)};
++            q->setWindowTitle(tr("Task Queue (%1/%2)").arg(completed).arg(total));
++#ifdef Q_OS_WIN
++            m_taskbar->setValue(reinterpret_cast<HWND>(q->winId()), completed, total);
++#endif
+         });
+         timer->start(500);
++
++        connect(ui->autoExportBrowseButton, &QPushButton::clicked, [this]() {
++            const QString dir{QFileDialog::getExistingDirectory(q, tr("Select Output Directory"), ui->autoExportDirEdit->text())};
++            if(dir.isEmpty()) {
++                return;
++            }
++            ui->autoExportDirEdit->setText(QDir::fromNativeSeparators(dir) + "/");
++            saveAutoExportConfig();
++        });
++        connect(ui->autoExportGroupBox, &QGroupBox::toggled, [this](bool) { saveAutoExportConfig(); });
++        connect(ui->autoExportPngCheckBox, &QCheckBox::toggled, [this](bool) { saveAutoExportConfig(); });
++        connect(ui->autoExportSvgCheckBox, &QCheckBox::toggled, [this](bool) { saveAutoExportConfig(); });
++        connect(ui->autoExportDirEdit, &QLineEdit::editingFinished, [this]() { saveAutoExportConfig(); });
+     }
+     TaskQueueWindowImpl& operator=(const TaskQueueWindowImpl&) = delete;
+     TaskQueueWindowImpl(const TaskQueueWindowImpl&) = delete;
+     ~TaskQueueWindowImpl()
+     {
++#ifdef Q_OS_WIN
++        m_taskbar->clear(reinterpret_cast<HWND>(q->winId()));
++#endif
+     }
+ 
+     void addItems(const QStringList& tasks)
+@@ -112,11 +243,12 @@
+         }
+     }
+ 
+-    void runScript(const std::string& imagePath) const
++    void runScript(const std::string& imagePath)
+     {
+         const auto engine = script::createBatchImageTaskEngine();
+         engine->set_global(chaiscript::var(imagePath), "inputPath");
+         const auto& code = m_scriptEditorWidget->getCurrentCode();
++        const std::vector<ImageTaskWindow*> before{ImageTaskWindow::getExistingImageTaskWindows()};
+         try {
+             engine->eval(code);
+             m_scriptEditorWidget->onScriptEvaluationSucceeded();
+@@ -125,9 +257,11 @@
+         } catch(...) {
+             m_scriptEditorWidget->onScriptEvaluationFailed("Unknown script evaluation error");
+         }
++        // 成功与异常路径都要接管新窗口:脚本中途抛错时前面已创建的窗口仍在跑,不能丢
++        connectNewTaskWindows(before, QString::fromStdString(imagePath));
+     }
+ 
+-    void addItem(const QString& itemPath, const QString& itemDisplayName) const
++    void addItem(const QString& itemPath, const QString& itemDisplayName)
+     {
+         class MyListWidgetItem : public QListWidgetItem {
+         public:
+@@ -150,16 +284,27 @@
+         QListWidgetItem* item{new MyListWidgetItem()};
+         dialog::TaskItemWidget* button{new dialog::TaskItemWidget(itemPath, RecentTasksList::getDisplayNameForTaskPath(itemDisplayName),
+         [this](const QString& taskItemId) {
++            resetBatchProgress();
+             runScript(taskItemId.toStdString());
+         },
+-        [item](const QString& /*taskItemId*/) {
+-            delete item;
++        [item, this](const QString& /*taskItemId*/) {
++            // 移除回调由 itemWidget 自己的信号触发,item 与 widget 都归列表管——同步 delete
++            // 等于在信号栈内销毁 sender。整体挪出信号栈延迟执行;context 传 q(QObject,Impl
++            // 不是),窗口先亡则回调自动取消(退出期不删也只是无害的少量滞留)。
++            QTimer::singleShot(0, q, [this, item]() {
++                const int row{ui->taskList->row(item)};
++                if(row >= 0) {
++                    delete ui->taskList->takeItem(row);
++                }
++                persistQueue();
++            });
+         })};
+         item->setToolTip(itemPath);
+         item->setSizeHint(button->sizeHint());
+         setMenuItemKey(item, itemPath);
+         ui->taskList->addItem(item);
+         ui->taskList->setItemWidget(item, button);
++        persistQueue();
+     }
+ 
+     void setMenuItemKey(QListWidgetItem* item, const QString& key) const
+@@ -180,6 +325,259 @@
+         ui->scrollArea->setWidget(m_scriptEditorWidget);
+     }
+ 
++    // ---- 批处理完成感知:eval 前快照窗口列表,eval 后 diff 出新窗口逐一接管 ----
++
++    void connectNewTaskWindows(const std::vector<ImageTaskWindow*>& before, const QString& imagePath)
++    {
++        const std::vector<ImageTaskWindow*> after{ImageTaskWindow::getExistingImageTaskWindows()};
++        for(ImageTaskWindow* window : after) {
++            if(std::find(before.begin(), before.end(), window) != before.end()) {
++                continue;
++            }
++            if(std::find(m_trackedWindows.begin(), m_trackedWindows.end(), QPointer<ImageTaskWindow>(window)) != m_trackedWindows.end()) {
++                continue;
++            }
++            // receiver 必须传 q:任务窗口(WA_DeleteOnClose)销毁时 Qt 自动断连,回调不悬空
++            QPointer<ImageTaskWindow> guard{window};
++            connect(window, &ImageTaskWindow::signal_didStopConditionMet, q, [this, guard]() {
++                onTaskWindowFinished(guard);
++            });
++            // 销毁兜底:identity 仅作比较用(销毁后不解引用);批次重置后迟到的销毁信号不计入
++            const void* id{window};
++            connect(window, &QObject::destroyed, q, [this, id](QObject*) {
++                onTrackedWindowDestroyed(id);
++            });
++            m_managedTotal++;
++            m_managedIds.insert(id);
++            m_trackedWindows.push_back(guard);
++            m_windowImagePath.push_back({guard, imagePath});
++        }
++    }
++
++    QString windowImagePath(const QPointer<ImageTaskWindow>& window) const
++    {
++        for(const auto& entry : m_windowImagePath) {
++            if(entry.first == window) {
++                return entry.second;
++            }
++        }
++        return QStringLiteral("task");
++    }
++
++    void removeWindowImagePath(const QPointer<ImageTaskWindow>& window)
++    {
++        m_windowImagePath.erase(std::remove_if(m_windowImagePath.begin(), m_windowImagePath.end(),
++            [&window](const QPair<QPointer<ImageTaskWindow>, QString>& entry) {
++                return entry.first == window || entry.first.isNull();
++            }), m_windowImagePath.end());
++    }
++
++    void onTaskWindowFinished(const QPointer<ImageTaskWindow>& window)
++    {
++        if(window.isNull()) {
++            return;
++        }
++        const void* id{window.data()};
++        // 批次重置后迟到的完成信号(m_managedIds 已清)不得计入新批次:否则标题出现 "2/1" 这类
++        // 计数,且导出时查不到源图路径会回落到字面量 "task" 文件名(与销毁兜底同口径)
++        if(m_managedIds.find(id) == m_managedIds.end()) {
++            return;
++        }
++        if(std::find(m_completedIds.begin(), m_completedIds.end(), id) != m_completedIds.end()) {
++            return;
++        }
++        m_completedIds.push_back(id);
++        exportTaskResults(window);
++    }
++
++    // 受管窗口销毁兜底:未发完成信号的窗口按"完成"计数(与原占位语义一致,但可分辨身份)。
++    // 批次重置后迟到的销毁信号(m_managedIds 已清)不计入。
++    void onTrackedWindowDestroyed(const void* id)
++    {
++        if(m_managedIds.erase(id) == 0) {
++            return;
++        }
++        if(std::find(m_completedIds.begin(), m_completedIds.end(), id) == m_completedIds.end()) {
++            m_destroyedUncompletedCount++;
++        }
++        m_trackedWindows.erase(std::remove_if(m_trackedWindows.begin(), m_trackedWindows.end(),
++            [](const QPointer<ImageTaskWindow>& w) { return w.isNull(); }), m_trackedWindows.end());
++        removeWindowImagePath(QPointer<ImageTaskWindow>());
++    }
++
++    void resetBatchProgress()
++    {
++        m_trackedWindows.clear();
++        m_completedIds.clear();
++        m_managedIds.clear();
++        m_managedTotal = 0;
++        m_destroyedUncompletedCount = 0;
++        m_exportNameCounter.clear();
++        m_windowImagePath.clear();
++        q->setWindowTitle(tr("Task Queue (0/0)"));
++#ifdef Q_OS_WIN
++        m_taskbar->setValue(reinterpret_cast<HWND>(q->winId()), 0, 0);
++#endif
++    }
++
++    // ---- 自动导出:任务完成后把最终位图/矢量形状写出到配置目录 ----
++
++    struct AutoExportConfig
++    {
++        bool enabled{false};
++        QString directory;
++        bool png{true};
++        bool svg{false};
++    };
++
++    AutoExportConfig autoExportConfig() const
++    {
++        AutoExportConfig config;
++        config.enabled = ui->autoExportGroupBox->isChecked();
++        config.directory = ui->autoExportDirEdit->text();
++        config.png = ui->autoExportPngCheckBox->isChecked();
++        config.svg = ui->autoExportSvgCheckBox->isChecked();
++        return config;
++    }
++
++    void loadAutoExportConfig()
++    {
++        QSettings settings;
++        settings.beginGroup("task_queue");
++        ui->autoExportGroupBox->setChecked(settings.value("auto_export_enabled", false).toBool());
++        const QString defaultDir{QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/geometrize_batch_output/"};
++        ui->autoExportDirEdit->setText(settings.value("auto_export_dir", defaultDir).toString());
++        ui->autoExportPngCheckBox->setChecked(settings.value("auto_export_png", true).toBool());
++        ui->autoExportSvgCheckBox->setChecked(settings.value("auto_export_svg", false).toBool());
++        settings.endGroup();
++    }
++
++    void saveAutoExportConfig()
++    {
++        QSettings settings;
++        settings.beginGroup("task_queue");
++        settings.setValue("auto_export_enabled", ui->autoExportGroupBox->isChecked());
++        settings.setValue("auto_export_dir", ui->autoExportDirEdit->text());
++        settings.setValue("auto_export_png", ui->autoExportPngCheckBox->isChecked());
++        settings.setValue("auto_export_svg", ui->autoExportSvgCheckBox->isChecked());
++        settings.endGroup();
++    }
++
++    void exportTaskResults(const QPointer<ImageTaskWindow>& window)
++    {
++        const AutoExportConfig config{autoExportConfig()};
++        if(!config.enabled || (!config.png && !config.svg)) {
++            return;
++        }
++        if(window.isNull() || window->getImageTask() == nullptr) {
++            return;
++        }
++
++        QDir outputDir(config.directory);
++        if(!outputDir.exists() && !outputDir.mkpath(".")) {
++            qWarning() << "Failed to create batch output directory:" << config.directory;
++            q->statusBar()->showMessage(tr("Failed to create output directory: %1").arg(config.directory), 5000);
++            return;
++        }
++
++        // 命名 = 源图文件名(去扩展);拖入项可能是 file:/// URL,统一取文件名部分
++        const QString sourceName{windowImagePath(window)};
++        const QString baseName{QFileInfo(QUrl(sourceName).toLocalFile().isEmpty() ? sourceName : QUrl(sourceName).toLocalFile()).completeBaseName()};
++        const QString safeBaseName{baseName.isEmpty() ? QStringLiteral("task") : baseName};
++        // 冲突序号从"内存计数 ∨ 磁盘现状"起步并跳到首个空闲:计数器只记本会话,重启后重跑
++        // 同名批次若只看内存会从同名重新开始,直接覆盖上次导出。本批要写的扩展名任一被占
++        // 即视为该序号已用(两种格式共享同一基名,须一起让位)。
++        QStringList exportExtensions;
++        if(config.png) {
++            exportExtensions << QStringLiteral("png");
++        }
++        if(config.svg) {
++            exportExtensions << QStringLiteral("svg");
++        }
++        const auto candidateName = [&safeBaseName](const int occurrence) {
++            return occurrence == 0 ? safeBaseName : safeBaseName + "_" + QString::number(occurrence + 1);
++        };
++        const auto candidateTaken = [&outputDir, &exportExtensions, &candidateName](const int occurrence) {
++            for(const QString& extension : exportExtensions) {
++                if(outputDir.exists(candidateName(occurrence) + "." + extension)) {
++                    return true;
++                }
++            }
++            return false;
++        };
++        int occurrence{m_exportNameCounter.value(safeBaseName, 0)};
++        while(candidateTaken(occurrence)) {
++            occurrence++;
++        }
++        m_exportNameCounter[safeBaseName] = occurrence + 1;
++        const QString uniqueName{candidateName(occurrence)};
++
++        const task::ImageTask* imageTask{window->getImageTask()};
++        const geometrize::Bitmap& current{imageTask->getCurrent()};
++        const std::uint32_t width{current.getWidth()};
++        const std::uint32_t height{current.getHeight()};
++
++        bool exportOk{true};
++        if(config.png) {
++            const QString pngPath{outputDir.filePath(uniqueName + ".png")};
++            if(!geometrize::exporter::exportBitmap(current, pngPath.toStdString())) {
++                qWarning() << "Failed to export batch PNG:" << pngPath;
++                exportOk = false;
++            }
++        }
++        if(config.svg) {
++            const QString svgPath{outputDir.filePath(uniqueName + ".svg")};
++            const std::vector<geometrize::ShapeResult>& shapes{window->getShapes()};
++            const std::string svgData{geometrize::exporter::exportSVG(shapes, width, height)};
++            if(!svgData.empty()) {
++                if(!util::writeStringToFile(svgData, svgPath.toStdString())) {
++                    qWarning() << "Failed to export batch SVG:" << svgPath;
++                    exportOk = false;
++                }
++            } else {
++                qWarning() << "Failed to export batch SVG:" << svgPath;
++                exportOk = false;
++            }
++        }
++        if(!exportOk) {
++            // 此前写盘失败只进 qWarning:磁盘满/目录只读时进度条照走 N/N,用户会以为导出成功
++            q->statusBar()->showMessage(tr("Failed to export some results to %1").arg(config.directory), 8000);
++        }
++    }
++
++    // ---- 队列持久化:每次变更即写(事件驱动,崩溃安全) ----
++
++    void persistQueue() const
++    {
++        QSettings settings;
++        settings.beginGroup("task_queue");
++        QStringList paths;
++        for(int i = 0; i < ui->taskList->count(); ++i) {
++            paths.push_back(ui->taskList->item(i)->data(Qt::UserRole).toString());
++        }
++        settings.setValue("pending_paths", paths);
++        settings.setValue("selected_script", ui->scriptSelectComboBox->currentText());
++        settings.endGroup();
++    }
++
++    void restoreQueue()
++    {
++        QSettings settings;
++        settings.beginGroup("task_queue");
++        const QStringList paths{settings.value("pending_paths", QStringList()).toStringList()};
++        const QString selectedScript{settings.value("selected_script").toString()};
++        settings.endGroup();
++
++        for(const QString& path : paths) {
++            addItem(path, path);
++        }
++        if(!selectedScript.isEmpty() && m_scripts.count(selectedScript.toStdString()) > 0) {
++            ui->scriptSelectComboBox->setCurrentText(selectedScript);
++            // setCurrentText 与当前值相同时不触发 currentTextChanged,编辑器须显式跟随
++            m_scriptEditorWidget->setCurrentCode(m_scripts.at(selectedScript.toStdString()));
++        }
++    }
++
+     void populateUi()
+     {
+     }
+@@ -191,6 +589,21 @@
+ 
+     const std::string defaultScriptName{ "default" };
+     std::map<std::string, std::string> m_scripts;
++
++    // 批处理受管窗口集合:完成/销毁计数用窗口原始指针作身份(QPointer 销毁后折叠为
++    // null,无法区分多个已销毁窗口);原始指针在销毁后仅作比较,绝不解引用。
++    // m_trackedWindows 保留 QPointer 用于存活窗口判重(跨 eval 快照 diff)。
++    QVector<QPointer<ImageTaskWindow>> m_trackedWindows;
++    std::vector<const void*> m_completedIds;   // 已发完成信号窗口的身份(含销毁后)
++    std::set<const void*> m_managedIds;        // 尚未销毁的受管窗口身份(迟到销毁信号判重)
++    int m_managedTotal{0};                     // 本批受管窗口总数(单调)
++    int m_destroyedUncompletedCount{0};        // 销毁时未发完成信号的窗口数(按完成计)
++    QHash<QString, int> m_exportNameCounter;
++    QVector<QPair<QPointer<ImageTaskWindow>, QString>> m_windowImagePath;
++
++#ifdef Q_OS_WIN
++    std::unique_ptr<TaskbarProgress> m_taskbar;
++#endif
+ };
+ 
+ TaskQueueWindow::TaskQueueWindow() :
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/exporter/gifexporter.cpp b/geometrize/exporter/gifexporter.cpp
+--- a/geometrize/exporter/gifexporter.cpp
++++ b/geometrize/exporter/gifexporter.cpp
+@@ -3,6 +3,7 @@
+ #include <algorithm>
+ #include <cassert>
+ #include <cstdint>
++#include <cstdio>
+ #include <functional>
+ #include <thread>
+ 
+@@ -32,14 +33,17 @@
+     auto bgrs = new std::uint32_t[imageSizePixels];
+     const uchar* imageBytes = image.constBits();
+ 
++    // 输入钉死为 Format_ARGB32(调用侧保证):小端内存序 [B,G,R,A],
++    // 打包成小端 [r,g,b,0](BurstLinker reinterpret_cast RGB{r,g,b} 所需)。
++    // 按旧链路"假设 RGBA 内存"的读法处理 ARGB 内存会把红蓝互换(GIF 泛蓝实测根因)。
+     int byteIndex = 0;
+     for(std::size_t pixelIdx = 0; pixelIdx < imageSizePixels; pixelIdx++) {
+-        const std::int32_t r = imageBytes[byteIndex];
++        const std::int32_t b = imageBytes[byteIndex];
+         const std::int32_t g = imageBytes[byteIndex + 1];
+-        const std::int32_t b = imageBytes[byteIndex + 2];
++        const std::int32_t r = imageBytes[byteIndex + 2];
+ 
+-        const std::int32_t bgr = b << 16 | g << 8 | r;
+-        bgrs[pixelIdx] = static_cast<std::uint32_t>(bgr);
++        const std::uint32_t packed = static_cast<std::uint32_t>(b << 16 | g << 8 | r);
++        bgrs[pixelIdx] = packed;
+ 
+         byteIndex += 4;
+     }
+@@ -47,22 +51,73 @@
+     return bgrs;
+ }
+ 
++/// 把单个形状按其存档颜色画上位图画布:分段色存档非空时逐行取色(与任务落画同一路径),
++/// 否则整形状单色。alpha 预乘混合公式与 drawLines 一致,帧画面与运行时位图同源。
++void drawShapeOnCanvas(geometrize::Bitmap& canvas, const geometrize::ShapeResult& shape)
++{
++    std::vector<geometrize::Scanline> lines{shape.shape->rasterize(*shape.shape)};
++    if(!shape.segments.empty()) {
++        std::vector<geometrize::rgba> colors;
++        colors.reserve(shape.segments.size());
++        for(const geometrize::ScanlineColor& segment : shape.segments) {
++            colors.push_back(segment.color);
++        }
++        geometrize::drawLinesSegmented(canvas, colors, lines);
++    } else {
++        geometrize::drawLines(canvas, shape.color, lines);
++    }
++}
++
++/// 增量帧渲染:画布逐帧累积新形状的光栅化混合。相比"每帧序列化 SVG 整帧重放"的
++/// O(N²) 老路线(百万形状 = 10^11 级绘制指令,不可完成),总成本 O(N)。
++class IncrementalFrameRenderer
++{
++public:
++    IncrementalFrameRenderer(const std::uint32_t width, const std::uint32_t height) :
++        m_canvas{width, height, geometrize::rgba{0, 0, 0, 0}}
++    {
++    }
++
++    /// 把 [first, last) 区间的形状画上画布(区间来自调用侧的帧切片)
++    void drawRange(const geometrize::ShapeResult* first, const geometrize::ShapeResult* const last)
++    {
++        for(; first != last; ++first) {
++            drawShapeOnCanvas(m_canvas, *first);
++        }
++    }
++
++    QImage snapshot() const
++    {
++        return geometrize::image::createImage(m_canvas);
++    }
++
++private:
++    geometrize::Bitmap m_canvas;
++};
++
+ bool addFrame(
+-    const std::vector<geometrize::ShapeResult>& shapes,
+-    const std::uint32_t inputWidth,
+-    const std::uint32_t inputHeight,
++    QImage image,
+     const std::uint32_t outputWidth,
+     const std::uint32_t outputHeight,
+     const std::uint32_t delayMs,
+     blk::BurstLinker& gif)
+ {
+-    QImage image = geometrize::exporter::renderSvgShapeDataToImage(shapes, inputWidth, inputHeight, outputWidth, outputHeight);
+-    image = image.convertToFormat(QImage::Format_RGBA8888);
+-
++    // 深拷贝钉死为 Format_ARGB32:makeImageData 按 ARGB 内存序读通道(见其注释);
++    // scaled 放大后同样保持该格式,通道序全程确定
++    image = image.convertToFormat(QImage::Format_ARGB32);
+     if(image.isNull() || image.width() == 0 || image.height() == 0) {
+         assert(0 && "Attempted to add invalid image");
+         return false;
+     }
++    if(static_cast<std::uint32_t>(image.width()) != outputWidth || static_cast<std::uint32_t>(image.height()) != outputHeight) {
++        image = image.scaled(static_cast<int>(outputWidth), static_cast<int>(outputHeight),
++                             Qt::IgnoreAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32);
++    }
++    // scaled 在内存压力下可能返回空图(Qt6/64 位 QImage 无固定尺寸上限,超限不会在构造期被拒):
++    // 空图会让 makeImageData 分配 0 像素缓冲,而量化器按 init 时的尺寸读取 → 堆越界读
++    if(image.isNull() || image.width() == 0 || image.height() == 0) {
++        return false;
++    }
+ 
+     gif.connect(makeImageData(image), delayMs, blk::QuantizerType::Octree, blk::DitherType::NO, 0, 0);
+ 
+@@ -84,29 +139,81 @@
+         std::uint32_t outputWidth,
+         std::uint32_t outputHeight,
+         const std::function<bool(std::size_t)>& frameSkipPredicate,
+-        const std::string& filePath)
++        const std::string& filePath,
++        const std::uint32_t frameDelayMs,
++        const std::uint32_t loopCount,
++        const std::uint32_t endPauseMs)
+ {
++    if(data.empty()) {
++        return false;
++    }
++
++    // 尺寸护栏(UI 侧有弹窗预检,这里是导出器自身的最后防线):
++    // ① GIF 头部宽高是 uint16,超 65535 会静默截断(mod 65536);
++    // ② 巨尺寸输出在内存压力下 scaled 失败 → 空图 → 帧缓冲 0 像素而量化器按 init 尺寸读
++    //    (堆越界读)——按 2GB RGBA 字节上限确定性拒绝,宁拒勿崩。
++    if(outputWidth > 65535U || outputHeight > 65535U
++            || static_cast<std::uint64_t>(outputWidth) * outputHeight * 4U > 0x7FFFFFFFULL) {
++        return false;
++    }
++
++    // loopCount=0 为 GIF 语义的无限循环,BurstLinker 直接透传
+     blk::BurstLinker gif;
+-    if(!gif.init(filePath.c_str(), outputWidth, outputHeight, 0, std::max(1U, std::thread::hardware_concurrency()))) {
++    if(!gif.init(filePath.c_str(), outputWidth, outputHeight, loopCount, std::max(1U, std::thread::hardware_concurrency()))) {
+         assert(0 && "Failed to initialize BurstLinker GIF export");
+         return false;
+     }
+ 
+-    // Could start by adding the final result
+-    //addFrame(data, inputWidth, inputHeight, outputWidth, outputHeight, 400, gif);
++    // 增量帧:画布按帧切片逐段累积混合,帧画面与任务运行时位图同源(同一套光栅化+混合函数)。
++    // 画布透明底:上游 GUI 落画前有背景矩形(index 0)兜底,老路线的 SVG 渲染也是透明底。
++    IncrementalFrameRenderer renderer{inputWidth, inputHeight};
++
++    // 帧数封顶:百万形状按默认步长会产生 50 万+ 帧(数 GB 体积,播放器也扛不住)。
++    // 超限时自动加大取帧间隔,保证帧数不超过上限(均匀采样,不偏头尾)。
++    constexpr std::size_t maxFrames{1000};
++    std::size_t keptFrames = 0;
++    for(std::size_t i = 0; i < data.size(); i++) {
++        if(!frameSkipPredicate(i)) {
++            keptFrames++;
++        }
++    }
++    std::size_t frameStride = 1; // 保留帧之间的采样步进(在 frameSkipPredicate 已筛过的基础上再均匀抽稀)
++    if(keptFrames > maxFrames) {
++        frameStride = (keptFrames + maxFrames - 1) / maxFrames;
++    }
+ 
+-    for(std::uint32_t i = 0; i < data.size(); i++) {
+-        if(frameSkipPredicate(i)) {
++    std::size_t frameBegin = 0;
++    std::size_t keptIndex = 0;
++    for(std::size_t i = 0; i < data.size(); i++) {
++        const bool isLast{(i == data.size() - 1U)};
++        // 末帧必取:末索引若被 frameSkipPredicate 提前 continue 掉,末帧与结尾停顿会一起丢失
++        // (默认 frameStep=20 时"形状数不是 20 的倍数"就是常态,等于该分支基本不可达)
++        if(frameSkipPredicate(i) && !isLast) {
+             continue;
+         }
++        const bool takeFrame = (keptIndex % frameStride == 0) || isLast; // 末帧必取
++        keptIndex++;
+ 
+-        std::uint32_t delayMs = i == 0 ? 0 : std::max(20, static_cast<std::int32_t>(1000 / (i + 1)));
+-        if(i == data.size() - 1U) {
+-            delayMs = 2000; // Extra delay at end of animation
++        // 固定帧率模式:统一延迟(下限 20ms,GIF 播放器对更短延迟的兼容性差);
++        // frameDelayMs=0 保持动态曲线旧行为(帧序号越大延迟越短)
++        std::uint32_t delayMs = (frameDelayMs > 0)
++            ? std::max(20U, frameDelayMs)
++            : (i == 0 ? 0U : std::max(20, static_cast<std::int32_t>(1000 / (i + 1))));
++        if(endPauseMs > 0 && isLast) {
++            delayMs = endPauseMs; // Extra delay at end of animation
+         }
+ 
+-        const std::vector<geometrize::ShapeResult> shapes(data.begin(), data.begin() + i);
+-        addFrame(shapes, inputWidth, inputHeight, outputWidth, outputHeight, delayMs, gif);
++        if(takeFrame) {
++            // 帧切片 [frameBegin, i+1):本帧把新增形状画上画布后取快照
++            renderer.drawRange(data.data() + frameBegin, data.data() + i + 1);
++            frameBegin = i + 1;
++            // 帧失败(如缩放空图)即整体失败:GIF 文件已由 init 创建,收尾并删除半截产物
++            if(!addFrame(renderer.snapshot(), outputWidth, outputHeight, delayMs, gif)) {
++                gif.release();
++                std::remove(filePath.c_str());
++                return false;
++            }
++        }
+     }
+ 
+     gif.release();
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/translations/app/geometrize_zh.ts b/translations/app/geometrize_zh.ts
+--- a/translations/app/geometrize_zh.ts
++++ b/translations/app/geometrize_zh.ts
+@@ -1,4 +1,5 @@
+-<TS language="zh" version="2.1">
++<?xml version='1.0' encoding='utf-8'?>
++<TS version="2.1" language="zh">
+ <context>
+     <name>AboutDialog</name>
+     <message>
+@@ -59,19 +60,6 @@
+     </message>
+ </context>
+ <context>
+-    <name>FolderSelectionWidget</name>
+-    <message>
+-        <source>Folder Name</source>
+-        <extracomment>A text label next to a button that opens a dialog which allows the user to select a folder</extracomment>
+-        <translation>文件夹名称</translation>
+-    </message>
+-    <message>
+-        <source>Select Folder</source>
+-        <extracomment>Text on a button that opens a folder selection dialog</extracomment>
+-        <translation>选择文件夹</translation>
+-    </message>
+-</context>
+-<context>
+     <name>GlobalPreferencesDialog</name>
+     <message>
+         <source>Global Preferences</source>
+@@ -150,7 +138,9 @@
+     </message>
+     <message>
+         <source>Image Geometrizer Settings</source>
+-        <extracomment>Title for the app settings section that contains options that affect the area of the app that turns images into shapes (the image geometrizer)</extracomment>
++        <extracomment>Title for the image geometrize settings section. Settings in this section are used when a task for transforming an image into shapes is created
++----------
++Title for the app settings section that contains options that affect the area of the app that turns images into shapes (the image geometrizer)</extracomment>
+         <translation>图像几何化设置</translation>
+     </message>
+     <message>
+@@ -183,6 +173,44 @@
+         <extracomment>A text label next to a value that describes the maximum number of CPU threads the computer can use when recreating an image using shapes</extracomment>
+         <translation>每张图像最大线程</translation>
+     </message>
++    <message>
++        <source>Loading &amp; Saving</source>
++        <translation>加载与保存</translation>
++    </message>
++    <message>
++        <source>Use custom starting background color for image</source>
++        <extracomment>Label text for a checkbox option that controls whether a custom background color (e.g. red, yellow, blue) is set when initially opening an image task</extracomment>
++        <translation>为图像使用自定义初始背景色</translation>
++    </message>
++    <message>
++        <source>Replace alpha channel in target images</source>
++        <extracomment>Label text for a checkbox option that controls whether a custom color (e.g. red, yellow, blue) is used to replace the alpha channel of the target image when opening an image task</extracomment>
++        <translation>替换目标图像的 alpha 通道</translation>
++    </message>
++    <message>
++        <source>Autoloading &amp; Autosaving</source>
++        <extracomment>Title text for a section of app settings relating to automatic loading/saving of preferences</extracomment>
++        <translation>自动加载与自动保存</translation>
++    </message>
++    <message>
++        <source>Autoloading</source>
++        <extracomment>Title for the on startup section of app settings. Settings in this section are applied when the app launches or first starts up</extracomment>
++        <translation>自动加载</translation>
++    </message>
++    <message>
++        <source>Automatically restore saved image task settings</source>
++        <extracomment>Label text for a checkbox option that controls whether the application automatically restores saved settings when opening a task for geometrizing an image</extracomment>
++        <translation>自动恢复已保存的图像任务设置</translation>
++    </message>
++    <message>
++        <source>Autosaving</source>
++        <translation>自动保存</translation>
++    </message>
++    <message>
++        <source>Automatically save image task settings</source>
++        <extracomment>Label text for a checkbox option that controls whether the application automatically saves settings when closing a task for geometrizing an image (ready to restore the settings later)</extracomment>
++        <translation>自动保存图像任务设置</translation>
++    </message>
+ </context>
+ <context>
+     <name>ImageTaskExportWidget</name>
+@@ -192,6 +220,46 @@
+         <translation>导出图像</translation>
+     </message>
+     <message>
++        <source>Shapes Per Frame</source>
++        <extracomment>Label for the spinner that controls how many shapes are added between frames of the GIF animation</extracomment>
++        <translation>每帧形状数</translation>
++    </message>
++    <message>
++        <source>Frame Rate (FPS)</source>
++        <extracomment>Label for the spinner that controls the playback speed of the GIF animation</extracomment>
++        <translation>帧率 (FPS)</translation>
++    </message>
++    <message>
++        <source>Output Scale</source>
++        <extracomment>Label for the spinner that controls the output resolution multiplier of the GIF animation</extracomment>
++        <translation>输出倍率</translation>
++    </message>
++    <message>
++        <source>Loop Forever</source>
++        <extracomment>Checkbox that controls whether the GIF animation loops forever</extracomment>
++        <translation>循环播放</translation>
++    </message>
++    <message>
++        <source>Pause at End</source>
++        <extracomment>Checkbox that controls whether the last frame of the GIF animation pauses for two seconds</extracomment>
++        <translation>末帧停顿</translation>
++    </message>
++    <message>
++        <source>Take one animation frame for every N shapes. Higher values make smaller, faster animations.</source>
++        <extracomment>Tooltip for the shapes per frame spinner</extracomment>
++        <translation>每添加 N 个形状取一帧。数值越大,动画越小、导出越快。</translation>
++    </message>
++    <message>
++        <source>Playback speed of the animation in frames per second.</source>
++        <extracomment>Tooltip for the frame rate spinner</extracomment>
++        <translation>动画播放速度(帧每秒)。</translation>
++    </message>
++    <message>
++        <source>Output resolution multiplier. Higher values render smoother shapes but export slower.</source>
++        <extracomment>Tooltip for the output scale spinner</extracomment>
++        <translation>输出分辨率倍率。数值越大形状边缘越平滑,但导出更慢。</translation>
++    </message>
++    <message>
+         <source>Save Image</source>
+         <extracomment>Text on a button that opens a dialog that allows the user to save an image file</extracomment>
+         <translation>保存图像</translation>
+@@ -341,19 +409,207 @@
+         <source>Clear</source>
+         <extracomment>Text on a button that clears/resets the results of a task back to a starting value when pressed</extracomment>
+         <translation>清除</translation>
++    </message>    <message>
++        <source>Undo</source>
++        <extracomment>Text on a button that removes the most recently added shape from the task when pressed</extracomment>
++        <translation>撤销</translation>
++    </message>
++    <message>
++        <source>Redo</source>
++        <extracomment>Text on a button that re-adds the most recently undone shape to the task when pressed</extracomment>
++        <translation>重做</translation>
++    </message>
++    <message>
++        <source>Priority Region Selection (Ctrl+Drag)</source>
++        <extracomment>Toggle for region selection mode: Ctrl+Drag on the image selects priority regions</extracomment>
++        <translation>框选优先区域(Ctrl+拖拽)</translation>
++    </message>
++    <message>
++        <source>While checked, Ctrl+Drag on the image selects priority regions (error weight x10 inside). Requires Error-Guided Shape Placement to take effect.</source>
++        <extracomment>Tooltip for the region selection toggle</extracomment>
++        <translation>勾选后在图上按住 Ctrl 拖拽即可框选优先区域(区域内误差权重 ×10)。需开启"误差图引导形状放置"才会生效。</translation>
++    </message>
++    <message>
++        <source>Clear Regions</source>
++        <extracomment>Text on a button that removes all priority regions from the task</extracomment>
++        <translation>清除区域</translation>
++    </message>
++    <message>
++        <source>Priority Regions: %1</source>
++        <extracomment>Label showing the number of priority regions currently set (e.g. "Priority Regions: 2")</extracomment>
++        <translation>优先区域:%1</translation>
++    </message>
++    <message>
++        <source>Priority Regions: 0</source>
++        <extracomment>Initial text of the priority regions count label in the UI form (replaced by the %1 version once a task is set)</extracomment>
++        <translation>优先区域:0</translation>
++    </message>
++
++    <message>
++        <source>Use Shape Bounding Area</source>
++        <translation>使用形状包围区域</translation>
++    </message>
++    <message>
++        <source>Pyramid Search (Fast)</source>
++        <extracomment>Algorithm enhancement toggle: hill-climb evaluation on a half-resolution image</extracomment>
++        <translation>金字塔搜索(快速)</translation>
++    </message>
++    <message>
++        <source>Adaptive Mutation Step</source>
++        <extracomment>Algorithm enhancement toggle: 1/5 success rule step size adaptation</extracomment>
++        <translation>自适应变异步长</translation>
++    </message>
++    <message>
++        <source>Per-Shape Alpha Search</source>
++        <extracomment>Algorithm enhancement toggle: search several opacity levels per shape</extracomment>
++        <translation>逐形状透明度搜索</translation>
++    </message>
++    <message>
++        <source>Evaluate hill-climbing candidates on a half-resolution image. Much faster on large images, output differs from the standard search.</source>
++        <extracomment>Tooltip for the pyramid search toggle</extracomment>
++        <translation>在半分辨率图上评估爬山候选。大图上大幅提速,输出与标准搜索不同。</translation>
++    </message>
++    <message>
++        <source>Shrink the mutation step when candidates keep failing, grow it back on successes (1/5 success rule). Better quality per step, slower.</source>
++        <extracomment>Tooltip for the adaptive step toggle</extracomment>
++        <translation>变异连续失败时收缩步长、连续成功时回升(1/5 成功法则)。同步数质量更好,速度更慢。</translation>
++    </message>
++    <message>
++        <source>Try several opacity levels per shape and keep the best. Better quality per step, much slower.</source>
++        <extracomment>Tooltip for the alpha search toggle</extracomment>
++        <translation>对每个形状尝试多个透明度档位并取最优。同步数质量更好,速度明显更慢。</translation>
++    </message>
++    <message>
++        <source>Error-Guided Shape Placement</source>
++        <extracomment>Algorithm enhancement toggle: sample new shape centers from the error map</extracomment>
++        <translation>误差图引导形状放置</translation>
++    </message>
++    <message>
++        <source>Place new shapes where the error is highest instead of uniformly at random. Helps most with low budgets (few candidates or mutations).</source>
++        <extracomment>Tooltip for the error guide toggle</extracomment>
++        <translation>新形状优先放置在误差最高处而非均匀随机。低预算(少候选/少变异)时收益最大。</translation>
++    </message>
++    <message>
++        <source>Segmented Colors (Per-Scanline)</source>
++        <extracomment>Algorithm enhancement toggle: per-scanline color search (A2.4)</extracomment>
++        <translation>分段颜色(按扫描线取色)</translation>
++    </message>
++    <message>
++        <source>Draw each scanline of a shape with its own best color, so shapes spanning light/dark edges no longer turn gray. Applies to SVG/PNG/GIF export too; uses the enhanced search path.</source>
++        <extracomment>Tooltip for the segment colors toggle</extracomment>
++        <translation>形状的每条扫描线独立取最优色,横跨明暗边界不再发灰。SVG/PNG/GIF 导出同步生效;开启后走增强搜索轨道。</translation>
+     </message>
+ </context>
+ <context>
+-    <name>ImageTaskScriptPanel</name>
++    <name>ImageTaskScriptingWidget</name>
+     <message>
+-        <source>Script Editor</source>
++        <source>Form</source>
++        <translation>窗体</translation>
++    </message>
++    <message>
++        <source>Edit Shape Creation/Mutation Scripts</source>
++        <translation>编辑形状生成/变异脚本</translation>
++    </message>
++    <message>
++        <source>Add And Edit Custom Scripts</source>
++        <translation>添加并编辑自定义脚本</translation>
++    </message>
++    <message>
++        <source>Before Step</source>
++        <translation>步进前</translation>
++    </message>
++    <message>
++        <source>After Step</source>
++        <translation>步进后</translation>
++    </message>
++    <message>
++        <source>Stop Condition</source>
++        <translation>停止条件</translation>
++    </message>
++    <message>
++        <source>On Stop Condition Met</source>
++        <translation>停止条件达成时</translation>
++    </message>
++    <message>
++        <source>Add Shape Precondition</source>
++        <translation>添加形状前条件</translation>
++    </message>
++    <message>
++        <source>Before Add Shape</source>
++        <translation>添加形状前</translation>
++    </message>
++    <message>
++        <source>After Add Shape</source>
++        <translation>添加形状后</translation>
++    </message>
++    <message>
++        <source>On Scene Pen Input</source>
++        <translation>场景手写笔输入时</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Enter</source>
++        <translation>手写笔临近进入时</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Exit</source>
++        <translation>手写笔临近离开时</translation>
++    </message>
++    <message>
++        <source>On Key Down</source>
++        <translation>按键按下时</translation>
++    </message>
++    <message>
++        <source>On Key Up</source>
++        <translation>按键抬起时</translation>
++    </message>
++    <message>
++        <source>On Mouse Down</source>
++        <translation>鼠标按下时</translation>
++    </message>
++    <message>
++        <source>On Mouse Up</source>
++        <translation>鼠标抬起时</translation>
++    </message>
++    <message>
++        <source>On Mouse Move</source>
++        <translation>鼠标移动时</translation>
++    </message>
++    <message>
++        <source>On Mouse Wheel</source>
++        <translation>鼠标滚轮时</translation>
++    </message>
++    <message>
++        <source>On Update</source>
++        <translation>定时更新时</translation>
++    </message>
++    <message>
++        <source>Rescan Scripts</source>
++        <translation>重新扫描脚本</translation>
++    </message>
++    <message>
++        <source>Clear Scripts</source>
++        <translation>清空脚本</translation>
++    </message>
++</context>
++<context>
++    <name>ImageTaskShapeScriptingPanel</name>
++    <message>
++        <source>Shape Script Editor</source>
+         <extracomment>Title of a window containing text editor panels for editing scripts. Scripts are pieces of code that are used to control how the app turns images into shapes</extracomment>
+-        <translation>脚本编辑器</translation>
++        <translation>形状脚本编辑器</translation>
+     </message>
+     <message>
+         <source>Scripting Engine Enabled</source>
+         <extracomment>Text next to a checkbox that enables or disables the scripting engine when pressed</extracomment>
+-        <translation>脚本引擎已启动</translation>
++        <translation>启用脚本引擎</translation>
++    </message>
++    <message>
++        <source>Preset Scripts</source>
++        <translation>预设脚本</translation>
++    </message>
++    <message>
++        <source>Rescan Custom Scripts</source>
++        <translation>重新扫描自定义脚本</translation>
+     </message>
+     <message>
+         <source>Reset Scripting Engine</source>
+@@ -397,6 +653,21 @@
+ <context>
+     <name>ImageTaskWindow</name>
+     <message>
++        <source>Edit</source>
++        <extracomment>The title of the Edit menu that contains commands relating to editing the task, such as undo and redo</extracomment>
++        <translation>编辑</translation>
++    </message>
++    <message>
++        <source>Undo</source>
++        <extracomment>Text on a menu item that removes the most recently added shape from the task when pressed</extracomment>
++        <translation>撤销</translation>
++    </message>
++    <message>
++        <source>Redo</source>
++        <extracomment>Text on a menu item that re-adds the most recently undone shape to the task when pressed</extracomment>
++        <translation>重做</translation>
++    </message>
++    <message>
+         <source>File</source>
+         <extracomment>The title of the File menu that contains commands relating to the handling of files, such as open, save, print, etc</extracomment>
+         <translation>文件</translation>
+@@ -466,6 +737,10 @@
+         <extracomment>Text on a menu item that shows or hides a window containing a vector-based (SVG) graphic of the shapes the app has created</extracomment>
+         <translation>矢量图形视图</translation>
+     </message>
++    <message>
++        <source>Scripts</source>
++        <translation>脚本</translation>
++    </message>
+ </context>
+ <context>
+     <name>LanguageSelectWidget</name>
+@@ -488,6 +763,16 @@
+         <translation>打开图像</translation>
+     </message>
+     <message>
++        <source>Processing Resolution</source>
++        <extracomment>Label next to a combo box that selects the maximum processing resolution for opened images. Images larger than the limit are proportionally downscaled (uic retranslateUi uses this plain-class-name context)</extracomment>
++        <translation>处理分辨率上限</translation>
++    </message>
++    <message>
++        <source>Images with a side longer than the selected limit are proportionally downscaled before processing</source>
++        <extracomment>Tooltip explaining that images with a side longer than the selected limit are proportionally downscaled before processing</extracomment>
++        <translation>单边超过所选上限的图像,会在处理前按比例缩小到限内</translation>
++    </message>
++    <message>
+         <source>Open Link</source>
+         <extracomment>Text on a button that opens a dialog that allows the user to enter a website link, which is then downloaded</extracomment>
+         <translation>打开链接</translation>
+@@ -498,6 +783,10 @@
+         <translation>运行脚本</translation>
+     </message>
+     <message>
++        <source>Open Task Queue</source>
++        <translation>打开任务队列</translation>
++    </message>
++    <message>
+         <source>Recent</source>
+         <extracomment>Title of a section that contains a list of files and items the user recently opened</extracomment>
+         <translation>最近</translation>
+@@ -580,6 +869,10 @@
+         <extracomment>Title of the window that contains legal/license information about the software</extracomment>
+         <translation>许可信息</translation>
+     </message>
++    <message>
++        <source>RangeSlider</source>
++        <translation>范围滑块</translation>
++    </message>
+ </context>
+ <context>
+     <name>OpenUrlDialog</name>
+@@ -595,6 +888,17 @@
+     </message>
+ </context>
+ <context>
++    <name>QObject</name>
++    <message>
++        <source>Stop Condition Met</source>
++        <translation>停止条件已达成</translation>
++    </message>
++    <message>
++        <source>Stop condition for geometrizing was met</source>
++        <translation>几何化的停止条件已达成</translation>
++    </message>
++</context>
++<context>
+     <name>QWidget</name>
+     <message>
+         <source>Open Image</source>
+@@ -696,6 +1000,11 @@
+         <comment>Title on a dialog that allows the user to select an image file</comment>
+         <translation>选择图像</translation>
+     </message>
++    <message>
++        <source>Select Folder</source>
++        <comment>Title on a dialog that allows the user to select a folder</comment>
++        <translation>选择文件夹</translation>
++    </message>
+ </context>
+ <context>
+     <name>RunScriptDialog</name>
+@@ -747,17 +1056,128 @@
+ <context>
+     <name>ScriptEditorWidget</name>
+     <message>
+-        <source>Apply</source>
+-        <extracomment>Text on a button that applies an app settings change when pressed</extracomment>
+-        <translation>应用</translation>
+-    </message>
+-    <message>
+         <source>Reset</source>
+         <extracomment>Text on a button that resets an app setting to a default value when pressed</extracomment>
+         <translation>重设</translation>
+     </message>
+ </context>
+ <context>
++    <name>TaskQueueWindow</name>
++    <message>
++        <source>Drop image files onto the area below to batch process them via a script</source>
++        <extracomment>Instructions to the user explaining how to add items to the task queue list, by dragging items into a list below this text</extracomment>
++        <translation>将图像文件拖放到下方区域,通过脚本批量处理</translation>
++    </message>
++    <message>
++        <source>Run All</source>
++        <extracomment>Text on a button that starts running the tasks from the task queue when pressed</extracomment>
++        <translation>全部运行</translation>
++    </message>
++    <message>
++        <source>Clear</source>
++        <extracomment>Text on a button that removes any queued up tasks from the task queue in the user interface</extracomment>
++        <translation>清空</translation>
++    </message>
++    <message>
++        <source>Close Open Windows</source>
++        <translation>关闭已打开的窗口</translation>
++    </message>
++    <message>
++        <source>Select Script</source>
++        <translation>选择脚本</translation>
++    </message>
++    <message>
++        <source>File</source>
++        <extracomment>The title of the File menu that contains commands relating to the handling of files, such as open, save, print, etc</extracomment>
++        <translation>文件</translation>
++    </message>
++    <message>
++        <source>Clear Recent Items</source>
++        <extracomment>Text on a menu item that clears a list of recently loaded files when pressed</extracomment>
++        <translation>清空最近项目</translation>
++    </message>
++    <message>
++        <source>Exit</source>
++        <extracomment>Text on a menu item that closes the window when pressed</extracomment>
++        <translation>退出</translation>
++    </message>
++    <message>
++        <source>Tutorials</source>
++        <extracomment>Text on a menu item that opens the tutorials page when pressed</extracomment>
++        <translation>教程</translation>
++    </message>
++    <message>
++        <source>Support</source>
++        <extracomment>Text on a menu item that opens the customer support/help page when pressed</extracomment>
++        <translation>支持</translation>
++    </message>
++    <message>
++        <source>About</source>
++        <extracomment>Text on a menu item that opens the About page with information about the app when pressed</extracomment>
++        <translation>关于</translation>
++    </message>
++    <message>
++        <source>Script Console</source>
++        <extracomment>Text on a menu item that shows or hides the script console when pressed</extracomment>
++        <translation>脚本控制台</translation>
++    </message>
++    <message>
++        <source>Global Preferences</source>
++        <extracomment>Text on a menu item that opens the application-wide/global preferences page</extracomment>
++        <translation>全局偏好设置</translation>
++    </message>
++    <message>
++        <source>Load Global Preferences</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to load a file containing application-wide/global preferences page</extracomment>
++        <translation>加载全局偏好设置</translation>
++    </message>
++    <message>
++        <source>Save Global Preferences</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to save a file containing the current application-wide/global preferences page</extracomment>
++        <translation>保存全局偏好设置</translation>
++    </message>
++    <message>
++        <source>Load Task Queue Settings</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to load a file containing settings instructing the computer how to geometrize a group of queued up images</extracomment>
++        <translation>加载任务队列设置</translation>
++    </message>
++    <message>
++        <source>Save Task Queue Settings</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to save a file containing settings instructing the computer how to geometrize a group of queued up images</extracomment>
++        <translation>保存任务队列设置</translation>
++    </message>
++    <message>
++        <source>Export Results Automatically</source>
++        <extracomment>Title of a settings group that controls whether batch processing results are exported automatically when each task finishes</extracomment>
++        <translation>自动导出结果</translation>
++    </message>
++    <message>
++        <source>Output Directory</source>
++        <extracomment>Label for the folder path that batch processing results are exported to</extracomment>
++        <translation>输出目录</translation>
++    </message>
++    <message>
++        <source>Browse...</source>
++        <extracomment>Text on a button that opens a dialog for picking a folder</extracomment>
++        <translation>浏览...</translation>
++    </message>
++    <message>
++        <source>Formats</source>
++        <extracomment>Label for the row of checkboxes that select which file formats the batch results are exported as</extracomment>
++        <translation>导出格式</translation>
++    </message>
++    <message>
++        <source>PNG image</source>
++        <extracomment>Checkbox that enables exporting the bitmap result of each batch task as a PNG image</extracomment>
++        <translation>PNG 图像</translation>
++    </message>
++    <message>
++        <source>SVG vector</source>
++        <extracomment>Checkbox that enables exporting the vector shapes of each batch task as an SVG file</extracomment>
++        <translation>SVG 矢量</translation>
++    </message>
++</context>
++<context>
+     <name>WelcomeWindow</name>
+     <message>
+         <source>Welcome to Geometrize. Watch the video tutorials below to learn the basics.</source>
+@@ -807,6 +1227,13 @@
+     </message>
+ </context>
+ <context>
++    <name>geometrize::dialog::GlobalPreferencesDialog</name>
++    <message>
++        <source>Color Picker</source>
++        <translation>取色器</translation>
++    </message>
++</context>
++<context>
+     <name>geometrize::dialog::ImageTaskExportWidget</name>
+     <message>
+         <source>Failed to run exporter</source>
+@@ -818,6 +1245,98 @@
+         <comment>Error message text shown when an attempt to save/export a file failed</comment>
+         <translation>导出程序运行失败。导出程序配置错误。</translation>
+     </message>
++    <message>
++        <source>Export dimensions too large</source>
++        <comment>Title of error message shown when the scaled output resolution exceeds export limits</comment>
++        <translation>导出尺寸超限</translation>
++    </message>
++    <message>
++        <source>The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.</source>
++        <comment>Error message text shown when the scaled output resolution exceeds export limits</comment>
++        <translation>输出分辨率 %1x%2 超出导出上限：输出需保持在 2 GB RGBA 像素以内（GIF 另需每边不超过 65535 像素）。请调低输出倍率或处理分辨率。</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::ImageTaskScriptingWidget</name>
++    <message>
++        <source>Before Step Callback</source>
++        <translation>步进前回调</translation>
++    </message>
++    <message>
++        <source>After Step Callback</source>
++        <translation>步进后回调</translation>
++    </message>
++    <message>
++        <source>Custom Stop Condition</source>
++        <translation>自定义停止条件</translation>
++    </message>
++    <message>
++        <source>On Stop Condition Met Callback</source>
++        <translation>停止条件达成时回调</translation>
++    </message>
++    <message>
++        <source>Add Shape Precondition</source>
++        <translation>添加形状前条件</translation>
++    </message>
++    <message>
++        <source>Before Add Shape Callback</source>
++        <translation>添加形状前回调</translation>
++    </message>
++    <message>
++        <source>After Add Shape Callback</source>
++        <translation>添加形状后回调</translation>
++    </message>
++    <message>
++        <source>On Pen Input Callback</source>
++        <translation>手写笔输入回调</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Enter Callback</source>
++        <translation>手写笔临近进入回调</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Exit Callback</source>
++        <translation>手写笔临近离开回调</translation>
++    </message>
++    <message>
++        <source>On Key Down Callback</source>
++        <translation>按键按下回调</translation>
++    </message>
++    <message>
++        <source>On Key Up Callback</source>
++        <translation>按键抬起回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Down Callback</source>
++        <translation>鼠标按下回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Up Callback</source>
++        <translation>鼠标抬起回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Move Callback</source>
++        <translation>鼠标移动回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Wheel Callback</source>
++        <translation>鼠标滚轮回调</translation>
++    </message>
++    <message>
++        <source>On Timed Update Callback</source>
++        <translation>定时更新回调</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::ImageTaskShapeScriptingPanel</name>
++    <message>
++        <source>Default Scripts</source>
++        <translation>默认脚本</translation>
++    </message>
++    <message>
++        <source>Area Focus Scripts</source>
++        <translation>区域聚焦脚本</translation>
++    </message>
+ </context>
+ <context>
+     <name>geometrize::dialog::ImageTaskStatsWidget</name>
+@@ -840,6 +1359,11 @@
+ <context>
+     <name>geometrize::dialog::ImageTaskWindow</name>
+     <message>
++        <source>Priority region limit (16) reached — clear regions to add more</source>
++        <comment>Status bar message shown when the user tries to add more priority regions than the allowed maximum</comment>
++        <translation>已达优先区域上限（16）——请先清除部分区域再继续框选</translation>
++    </message>
++    <message>
+         <source>%1x%2</source>
+         <comment>Dimensions of an image e.g. width-x-height, 1024x800</comment>
+         <translation>%1x%2</translation>
+@@ -868,6 +1392,56 @@
+ <context>
+     <name>geometrize::dialog::LaunchWindow</name>
+     <message>
++        <source>Processing Resolution</source>
++        <extracomment>Label next to a combo box that selects the maximum processing resolution for opened images. Images larger than the limit are proportionally downscaled</extracomment>
++        <translation>处理分辨率上限</translation>
++    </message>
++    <message>
++        <source>Images with a side longer than the selected limit are proportionally downscaled before processing</source>
++        <extracomment>Tooltip explaining that images with a side longer than the selected limit are proportionally downscaled before processing</extracomment>
++        <translation>单边超过所选上限的图像,会在处理前按比例缩小到限内</translation>
++    </message>
++    <message>
++        <source>Suitable for high-resolution sources, but each step is significantly slower and memory usage is higher</source>
++        <extracomment>Tooltip for the 4096 resolution option, warning about slower processing and higher memory usage</extracomment>
++        <translation>适合高分辨率原图,但单步明显更慢、内存占用更高</translation>
++    </message>
++    <message>
++        <source>Process images at their original size</source>
++        <extracomment>Tooltip for the unlimited resolution option</extracomment>
++        <translation>按原图尺寸处理,不做缩放</translation>
++    </message>
++    <message>
++        <source>Unlimited</source>
++        <extracomment>Combo box item that disables resolution capping, processing images at their original size</extracomment>
++        <translation>无限制</translation>
++    </message>
++    <message>
++        <source>Custom</source>
++        <extracomment>Combo box item shown when the current resolution limit does not match any preset, e.g. set via the global preferences dialog</extracomment>
++        <translation>自定义</translation>
++    </message>
++    <message>
++        <source>256 × 256</source>
++        <translation>256 × 256</translation>
++    </message>
++    <message>
++        <source>512 × 512</source>
++        <translation>512 × 512</translation>
++    </message>
++    <message>
++        <source>1024 × 1024</source>
++        <translation>1024 × 1024</translation>
++    </message>
++    <message>
++        <source>2048 × 2048</source>
++        <translation>2048 × 2048</translation>
++    </message>
++    <message>
++        <source>4096 × 4096</source>
++        <translation>4096 × 4096</translation>
++    </message>
++    <message>
+         <source>Get more online</source>
+         <comment>Text on a button the user presses to open a page containing more resources for using the app, such as extra images, information and help</comment>
+         <translation>在线获取更多</translation>
+@@ -884,7 +1458,19 @@
+     </message>
+ </context>
+ <context>
+-    <name>geometrize::dialog::RecentItemWidget</name>
++    <name>geometrize::dialog::ScriptConsole</name>
++    <message>
++        <source>Type 'help' in console for a list of commands</source>
++        <comment>Instructional text shown in the command/scripting console. The 'help' string should not be translated</comment>
++        <translation>在控制台中输入“help”以获取命令列表</translation>
++    </message>
++    <message>
++        <source>No script engine is set up on this console, commands won't be handled</source>
++        <translation>此控制台未设置脚本引擎,命令将不会被处理</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::TaskItemWidget</name>
+     <message>
+         <source>Open</source>
+         <comment>Text on a menu item the user presses to open a file/image</comment>
+@@ -893,12 +1479,12 @@
+     <message>
+         <source>Open in viewer</source>
+         <comment>Text on a menu item the user presses to open an image/piece of media in a viewer</comment>
+-        <translation>在视图中打开</translation>
++        <translation>在查看器中打开</translation>
+     </message>
+     <message>
+         <source>Reveal in file explorer</source>
+         <comment>Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer</comment>
+-        <translation>在文件导出程序中显示</translation>
++        <translation>在文件资源管理器中显示</translation>
+     </message>
+     <message>
+         <source>Copy file path to clipboard</source>
+@@ -908,15 +1494,42 @@
+     <message>
+         <source>Remove from list</source>
+         <comment>Text on a menu item the user presses to remove an item from a list of items</comment>
+-        <translation>从列表中移除</translation>
++        <translation>从列表移除</translation>
+     </message>
+ </context>
+ <context>
+-    <name>geometrize::dialog::ScriptConsole</name>
++    <name>geometrize::dialog::TaskQueueWindow</name>
+     <message>
+-        <source>Type 'help' in console for a list of commands</source>
+-        <comment>Instructional text shown in the command/scripting console. The 'help' string should not be translated</comment>
+-        <translation>在控制台中输入“help”以获取命令列表</translation>
++        <source>Script Editor</source>
++        <translation>脚本编辑器</translation>
++    </message>
++    <message>
++        <source>Task Queue (%1/%2)</source>
++        <extracomment>Window title showing batch progress: completed tasks out of tracked tasks</extracomment>
++        <translation>任务队列 (%1/%2)</translation>
++    </message>
++    <message>
++        <source>Select Output Directory</source>
++        <extracomment>Title of a dialog for picking the folder that batch results are exported to</extracomment>
++        <translation>选择输出目录</translation>
++    </message>
++    <message>
++        <source>Failed to create output directory: %1</source>
++        <extracomment>Status bar message shown when the automatic export output directory could not be created</extracomment>
++        <translation>无法创建输出目录:%1</translation>
++    </message>
++    <message>
++        <source>Failed to export some results to %1</source>
++        <extracomment>Status bar message shown when one or more batch exports failed to write to disk (e.g. disk full or read-only directory)</extracomment>
++        <translation>部分结果导出失败:%1</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::ImageTaskRunnerWidget</name>
++    <message>
++        <source>Priority Regions: %1</source>
++        <extracomment>Label showing the number of priority regions currently set (e.g. "Priority Regions: 2"). Set on the Impl of the runner widget, whose tr() resolves to the outer class full-name context</extracomment>
++        <translation>优先区域:%1</translation>
+     </message>
+ </context>
+ <context>
+@@ -941,6 +1554,10 @@
+         <comment>Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer</comment>
+         <translation>在文件导出程序中显示</translation>
+     </message>
++    <message>
++        <source>Drag and drop template contents</source>
++        <translation>拖放模板内容</translation>
++    </message>
+ </context>
+ <context>
+     <name>geometrize::dialog::WelcomeWindow</name>
+@@ -963,11 +1580,6 @@
+         <translation>Geometrize 使用简单的几何形状重新创建照片，将其转换为独特的艺术作品。</translation>
+     </message>
+     <message>
+-        <source>Copyright 2015-2017 Sam Twidale</source>
+-        <comment>This is the copyright notice of the application.</comment>
+-        <translation>版权 2015-2017 Sam Twidale</translation>
+-    </message>
+-    <message>
+         <source>Rectangles</source>
+         <comment>Plural form of rectangle geometric shape</comment>
+         <translation>矩形</translation>
+@@ -1017,5 +1629,10 @@
+         <comment>Plural form of an unknown type of shapes</comment>
+         <translation>未知形状</translation>
+     </message>
++    <message>
++        <source>Copyright 2015-2021 Sam Twidale</source>
++        <comment>This is the copyright notice of the application.</comment>
++        <translation>版权所有 2015-2021 Sam Twidale</translation>
++    </message>
+ </context>
+ </TS>
+\ No newline at end of file

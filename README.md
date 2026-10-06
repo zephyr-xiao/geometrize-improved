@@ -100,6 +100,18 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
   BurstLinker 透传 loopCount("Loop Forever" 勾选恢复生效)、`CoInitialize` 只在 S_OK 时配对 Uninitialize、
   SvgItem 提升 maximumCacheSize(Qt 默认 1024×768 会让设备坐标缓存整体旁路)、前条件脚本改跑克隆引擎(消除主引擎竞争)
 
+**审查遗留清理(第十五批,2026-10-06)**——§4.6 跟踪项的 C 组大头清账(复现证据与论证见 ROADMAP §5/§7 陷阱 #23):
+- **导出尺寸护栏**:Qt6/64 位 QImage 无固定单边上限,内存压力下 `scaled` 返回空图会让 GIF 量化器
+  按 init 尺寸读 0 像素缓冲(堆越界读,守护页实测 0xC0000005);GIF 头部宽高 uint16 超 65535 静默截断。
+  防线 = 导出面板三入口(PNG 单帧/序列/GIF)预检弹窗(宽×高×4 ≤2GB、GIF 每边 ≤65535)+
+  `gifexporter` 内部空图检查/尺寸护栏 + 帧失败接线(删除半截文件返回 false)。
+- **批处理导出命名防覆盖**:纯内存计数器改"内存∨磁盘"取首个空闲名,重启后重跑同名批次不再覆盖旧导出。
+- **队列移除回调延迟删除**:原代码在 itemWidget 自己的信号栈内 `delete item`(销毁 sender),改延迟执行。
+- 顺手:16 区域上限状态栏提示、脚本下拉 `operator[]` 读副作用、`test_goldens.h`/`--dump-golden`
+  死机制删除、geobench `--dump-final` 改 .part 原子写、`sha256.h` 补 include、
+  `gen_test_images.py` 补上游资产复制(`tree_under_clouds.png`)。
+- 验证:四道门禁全绿(ctest 2/2、run_ab 26/26、verify_patches、qt_render_ab check 含 GIF 字节级一致)。
+
 ## 目录结构
 
 ```
@@ -158,8 +170,7 @@ ctest --test-dir build -C Release --output-on-failure        # 2/2 PASS
 # 双变体全绿 = 函数级 bit-exact 门禁;
 # 变体分叉点(Ellipse 边界笔误修复、scanlines 末像素、move 构造、异常重抛、线程池保序)
 # 用 GEOTEST_BASE / GEOTEST_FAST 宏各自锁定行为。
-# (注:test_goldens.h 仍是预留占位(无消费方);函数级等价由双变体行为断言承载,
-#  端到端值级锁定由 tools\goldens.csv 承载)
+# (注:函数级等价由双变体行为断言承载,端到端值级锁定由 tools\goldens.csv 承载)
 # 注:Model 级用例在 Debug 构建下会被 drain 里的 assert(0) 中断(异常传播用例属预期路径),
 #    门禁一律用 Release(NDEBUG)跑
 

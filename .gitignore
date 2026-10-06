@@ -30,3 +30,6 @@ Thumbs.db
 
 # 内嵌仓库元数据(改名为 .git-disabled 保留在盘,内容已入库;恢复 VCS 时改回 .git)
 .git-disabled/
+
+# 第十五批临时产物(复现程序/验证输出)
+.tmp_batch15/
