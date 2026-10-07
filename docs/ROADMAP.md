@@ -1,7 +1,7 @@
 # Geometrize Improved — 迭代路线图
 
-> 版本基准:2026-10-07 第十七次交付(**大图评估内核融合**:内置能量函数"混色→差分"融合为一遍只读扫描 + 混合查找表,4096 单步 1.77x,位精确)
-> 下次会话:§4.6 仅剩有意搁置项(见该节第 7 条"仍有意未做");**大图性能二阶段已挂账在 §5.1**(SIMD 等,用户选择单独开轮);§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(26 条)
+> 版本基准:2026-10-07 第十八次交付(**融合内核 AVX2 化**:混合改无除法式 + 取色改字节和 + 差分向量化,4096 单步再 2.41x、+金字塔 2.74x,位精确)
+> 下次会话:§5.1 剩三项挂账(增强轨道同模式融合 / 大图未开金字塔提示 / 候选预算降档);§4.6 仅剩有意搁置项(见该节第 7 条"仍有意未做");§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(27 条)
 > 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ **Qt 6.8.3 LTS(msvc2022_64)**
 > 使用约定:**双轨制**——纯性能优化维持 bit-exact 门禁(与上游逐位一致);算法增强做成独立开关(默认关),不破坏验证体系。暂自用,不排开源工程项。
 
@@ -11,7 +11,7 @@
 
 | 项 | 状态 | 备注 |
 |---|---|---|
-| 核心库 | B1-B7 全部落地 + P1.1 金字塔(opt-in) + **P1.6 评估内核融合(第十七批,位精确)** | 内联/memcpy/isqrt 圆/扁平化 polygon/补丁快照/scratch 复用/持久线程池;金字塔=搜索启发式轨道;内核融合=融合为一遍只读扫描 + 4×256 混合查找表(4096 单步 1.77x,输出零变化) |
+| 核心库 | B1-B7 全部落地 + P1.1 金字塔(opt-in) + **P1.6 评估内核融合 + P1.7 内核 AVX2(第十七/十八批,位精确)** | 内联/memcpy/isqrt 圆/扁平化 polygon/补丁快照/scratch 复用/持久线程池;金字塔=搜索启发式轨道;融合=一遍只读扫描 + 4×256 混合查找表;AVX2=无除法混合 + 取色字节和 + 差分向量化(运行时派发,非 AVX2 机器走标量;4096 单步累计 4.48x→10.8x,输出零变化) |
 | 交付物 | `dist\Geometrize-Improved\` | 免安装绿色包(与 release exe 同步);第十四批起为纯 Qt6 包(无 Qt5/ANGLE 残留) |
 | 端到端门禁 | `tools\run_ab.ps1` **26 用例矩阵** | 11 个 bit-exact + 15 个 EXPECTED_DIFF(边界修复/增强/区域/分段哨兵);`-BaselineExe` 支持外部基线;FAIL 自动留痕 .raw,单侧无输出自动重试一次(陷阱 #11) |
 | 单测门禁 | `src\test\` doctest 双变体 | 111 用例 × fast / 39 × base(ctest);Model 级哨兵已全部启用(2026-09-29,原 16 个 `#if 0 // CD`);变体分叉宏分流锁定 |
@@ -91,6 +91,23 @@
   三条口径 STEP_FINGERPRINT 与改动前逐位相同;run_ab 26/26;新增单测(72 断言)锁定融合≡逐遍。
 - 复现:`geobench-fast --input <4096.png> --steps 5 --threads 8 --types ellipse`(金字塔口径加 `--pyramid`)。
 - 后续可选:融合遍 SIMD(6~7 ns/px 仍算术主导,预估 1.5~2x);增强轨道(分段颜色/自适应步长)同模式融合。
+
+### P1.7 融合内核 AVX2 化(混合无除法式 + 取色字节和 + 差分向量化) — ✓ 已落地(2026-10-07,第十八批,位精确)
+- **实现**:新增 `core/energykernelsimd.cpp`(单独按 `/arch:AVX2` 编译,库其余部分保持基线指令集)+
+  `core::avx2EnergyKernelAvailable()` 运行时派发(CPUID + OSXSAVE + XGETBV,结果缓存;探测代码本身不带 AVX2
+  指令,放在 lib.cpp 同级的 core.cpp 里)。第十七批原实现保留为 `defaultEnergyFunctionFusedScalar`,
+  `defaultEnergyFunctionFused` 按探测结果二选一。三条等价依据全部是整数恒等(无近似):
+  ①**混合的无除法式** `floor(V/65535) == (W + (W>>16) + 1) >> 16`(W = V >> 8;V = d*aa + s*m 上界 65535²
+  已证不回绕)——替代 LUT 查表(AVX2 无字节 gather);全输入域 256³ = 16,777,216 组合穷举比对零差异;
+  ②**取色重排** `Σ[(t-c)*a + c*257] == a*Σt + (257-a)*Σc`,像素循环退化为按通道字节和(vpsadbw 一条指令
+  汇总 8 字节);③**差分/平方/累加** 2 像素(8 通道)一组向量化,32 位车道累加器每 4096 向量并入 64 位基数
+  (uint64 加减满足结合律,分块求和与逐像素交错求和 mod 2^64 等价)。越界行列统一裁剪,裁剪后无像素可统计时
+  退回标量取色(契约外输入保持既有可见行为;宿主 creator 越界扫描线的回归用例即走此分支)。
+- **实测**(同机同参数):4096² 无金字塔 36.4 → **15.1 s/步(2.41x)**;+金字塔 8.5 → **3.1 s/步(2.74x)**;
+  2048² wide_bandwidth 5.5 → **1.9 s/步(2.90x)**;**4096² 相对上游 163.0 → 15.1 s/步(10.8x)**;
+  run_ab 同轮 wide_bandwidth 396.2 → 35.4 s(11.2x)。三条口径 `STEP_FINGERPRINT` + `FINAL_SHA256` 与改动前
+  逐位相同;`qt_render_ab check` 6/6 全 SAME(含 GIF 字节级一致);ctest 2/2(单测扩为三实现互等 +276 断言)。
+- **陷阱 #27(按文件指令集开关静默失效 + 32 位车道误按 64 位归约)**;复现命令同 P1.6(阈值坑见 #26)。
 
 ---
 
@@ -292,6 +309,9 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 12. ⏳ 第十七批大图提速待用户体感确认(2026-10-07):内核融合为**位精确**改动(指纹/门禁证据充分,
    见 §1 P1.6),用户侧只需体感核对——4096 图同参数下单步应约为原来的 1/1.7;勾选"金字塔搜索(快速)"
    后合计约为原来的 1/7.6。若体感不符(例如仍明显卡顿),回报具体操作路径与耗时。
+13. ⏳ 第十八批 AVX2 提速待用户体感确认(2026-10-07):同为**位精确**改动(见 §1 P1.7),用户侧可再核一次
+   ——4096 图同参数下单步应约为第十七批的 1/2.4(即相对最初约 1/4,勾"金字塔"约 1/2.7 再叠加);
+   非 AVX2 老机器自动走标量实现,行为与第十七批一致(速度不变属预期,不是 bug)。
 
 ---
 
@@ -418,24 +438,35 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
   门禁:ctest 2/2(新增融合一致性单测 72 断言)、run_ab 26/26(golden 全 OK)、verify_patches 重导出 PASS;
     镜像同步进 improved-app/lib 并重建交付包(dist 已同步 + fix_integrity_label)。
   → 后续可选项:融合遍 SIMD(预估 1.5~2x);增强轨道同模式融合;大图默认提示金字塔(RUN 面板)
+
+✅ 已完成(第十八批,2026-10-07:融合内核 AVX2 化,位精确)
+  实现:新增 core/energykernelsimd.cpp(单独 /arch:AVX2 编译)+ avx2EnergyKernelAvailable() 运行时派发;
+    混合改"无除法式"(floor(V/65535) == (W+(W>>16)+1)>>16,全输入域 256³ 穷举验证)、
+    取色改按通道字节和(vpsadbw)、差分/平方/累加 2 像素一组向量化;原实现保留为 ...FusedScalar。
+  实测:4096² 36.4→15.1 s/步(2.41x)、+金字塔 8.5→3.1 s/步(2.74x)、2048² 5.5→1.9 s/步(2.90x);
+    相对上游 10.8x(run_ab 同轮 wide_bandwidth 396.2→35.4 s,11.2x);三条口径指纹/SHA 逐位不变。
+  门禁:ctest 2/2(单测三实现互等 + 宽图尾部,276 断言)、run_ab 26/26(golden 全 OK)、
+    qt_render_ab check 6/6 全 SAME、verify_patches 重导出 PASS;镜像同步 + dist 同步 + fix_integrity_label。
+    注:本轮 run_ab 与 Qt 应用构建并行(8 线程机器),wide_bandwidth 的 base 侧耗时被拉长到 396 s
+    (常态 ~211 s),PASS/哈希判定不受影响;CSV 已入库,时序仅作参考。
+  → 后续可选项:增强轨道(分段颜色)同模式融合;大图未开金字塔提示;候选预算降档(opt-in)——见 §5.1
 ```
 
-## 5.1 下一轮挂账:大图性能二阶段(2026-10-07 与用户确认"单独开一轮",本批不做)
+## 5.1 大图性能二阶段(第十八批已做第 1 项;第 2~4 项仍挂账)
 
-第十七批后的现状基线(4096² / 8 线程 / 默认预算 / `--types ellipse`,直接可比):
-**单步 36.4 s(无金字塔)、8.5 s(金字塔);融合遍 6.1~7.1 ns/px + 取色 3.8 ns/px;每次评估平均 161 万像素。**
-按性价比排序的候选(动手前先读本条与 §1 P1.6、§7 陷阱 #22/#26):
+**第十八批后的现状基线**(4096² / 8 线程 / 默认预算 / `--types ellipse`,直接可比):
+**单步 15.1 s(无金字塔)、3.1 s(金字塔);相对上游 10.8x / 11.2x(run_ab 同轮)。**
+候选按性价比排序(动手前先读本条与 §1 P1.6/P1.7、§7 陷阱 #22/#26/#27):
 
-1. **融合遍 SIMD(AVX2)**:目标对象是 `defaultEnergyFunctionFused` 的"混合+差分"一遍扫描
-   (4×256 LUT 查表 + 8 个差分/平方/累加),预估 **1.5~2x**。三个必须注意的点:
-   ① §1 P1.3 的旧 AVX2 否决**只覆盖旧四遍内核**,且门槛是"整管线 40%"——本项应按"融合遍自身"重设门槛;
-   ② LUT 查表在 AVX2 下没有 gather 优势(且 vpgatherdd 慢),向量化应先把 LUT 换回算术式或用
-   pshufb 分通道 16 项小表;③ 位精确红线不变:任何 SIMD 变体都要与标量融合实现逐位一致
-   (test_core 的对照用例可直接扩成"三实现互等")。
-2. **增强轨道同模式融合**:`defaultEnergyFunctionSegmented`(分段颜色)与增强轨道当前仍走旧四遍
-   内核 + 整图 scratch 拷贝(实测 segment_color_threads1 相对上游 0.354x);按第十七批同模式融合,
-   注意 segment 版的分行取色与 LUT 需逐行重建。
-3. **大图提示**:处理分辨率 ≥2048 且"金字塔搜索"未勾选时提示一次(本次未做,~10 行 + 1 条翻译)。
+1. ✅ **融合遍 SIMD(AVX2)** — 已落地(第十八批,§1 P1.7):无除法混合式 + 取色字节和 + 差分向量化,
+   实测 2.41x/2.74x/2.90x,"三实现互等"单测与三条口径指纹锁定位精确。**旧 AVX2 否决(P1.3)与
+   LUT gather 两点顾虑都在实测中证伪**:LUT 换成算术式的代价被 vpsadbw/无分支派发完全覆盖。
+2. **增强轨道同模式融合**(本批未做,下一步首选):`defaultEnergyFunctionSegmented`(分段颜色)与
+   增强轨道当前仍走旧四遍内核 + 整图 scratch 拷贝(实测 segment_color_threads1 相对上游 0.354x、
+   本轮 run_ab 0.815x;adaptive_step/alpha_search/priority_region 等也都是 0.58~1.3x)。
+   按第十八批同模式融合(segmented 只有"取色"是逐行的,混合/差分公式与单色版相同——逐行重建
+   预乘常量即可复用向量内核;线型退化路径与单色逐位一致这条契约不能破)。
+3. **大图提示**:处理分辨率 ≥2048 且"金字塔搜索"未勾选时提示一次(未做,~10 行 + 1 条翻译)。
 4. 可选:把"候选预算按面积降档"做成 opt-in 档位(质量换速度,需先定验收口径)。
 
 复现与资产:测试图不入库(4096 版约 41 MB,2048 版已 10.4 MB 在 `src\testdata\images\`),
@@ -461,7 +492,7 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 | 补丁一致性校验 | tools\verify_patches.py + patches\regen\(规范全量补丁;G1 重放复现 / G2 归档新鲜度;历史拆分系列经实测不可顺序重放——行尾混杂/缺 hunk 头/同文件重复导出,详见 patches\regen\README) |
 | 单元测试 | src\test\(doctest 双变体,CMake target 在 src\geobench\CMakeLists.txt,ctest 门禁) |
 | 测试图 | src\testdata\images\(gen_test_images.py 可再生) |
-| 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间/0018 评估内核融合) |
+| 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间/0018 评估内核融合/0019 内核 AVX2) |
 | 应用补丁 | patches\qt\0001-0028(0026 批处理增强/0027 导出性能/0028 Qt6 迁移,累计 diff 含附注) |
 | Qt 渲染侧对拍 | tools\qt_render_ab.py(+ tools\qt_render_ab\cases\ 用例、tools\qt_goldens.csv 严格项哈希、tools\qt_render_ref\ 光栅化参考图;用法见 tools\qt_render_ab\README.md) |
 | 等价性论证 | docs\bitwise-equivalence-notes.md |
@@ -509,3 +540,13 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
     **2026-10-06 追查 dsh 本体后的补充**:① **语义实证**——写操作的强制完整性规则是「进程 IL ≥ 对象标签」,policy 位(NO_WRITE_UP)**不能放开写**:Medium(policy 0) 与 Medium(NW) 同样拒绝低完整性进程写入;因此被重置为 Medium 的文件,**dsh 沙箱子进程无法再覆盖**(沙箱内构建需覆盖这些 exe 时,改在沙箱外跑,或临时 `icacls <文件> /setintegritylevel Low`)。② 已建**工作区级自动修复**:计划任务 `dsh-low-integrity-autofix`(每 15 分钟,脚本 `scripts\dsh-label-autofix\autofix.py`)把继承 Low 的启动文件自动重置为 Medium——新构建/新文件自愈,不必再手工跑本项目的 `tools\fix_integrity_label.py`(保留作单项目手动兜底)。③ 根源 = 本地 dsh **0.2.0-rc.2** 的沙箱后端 `@deepseek-ai/dsh-sandbox-windows-acl`(`restrictTokenIntegrity` 令牌降 Low + `buildLowLabelAcl` 给授权根盖 OI|CI Low 标签 + 对 world 拒绝 FILE_DELETE_CHILD,一次授权全树传播);该版本**不含**上游"顶层启动器豁免",且其 README 明说常驻标签不回收。
 25. **Qt6 标准按钮中文要靠 `qtbase_<lang>.qm`,旧的 `qt_<lang>.qm` 不够(第十六批实测)**:应用按 `qt_`/`qtbase_` 两个前缀 × locale 降级链加载 Qt 翻译(localization.cpp);资源里中文只有 Qt5 时代的 `qt_zh.qm` 整目录,**没有 `QPlatformTheme` 上下文**,而 Qt6 的标准按钮文案(OK/Yes/No/Cancel)恰好查它 → `QMessageBox` 按钮全回退英文(实测确认框显示 "Yes/No")。注意 Qt6 自带的 `qt_zh_CN.qm` 只是 **99 字节伞目录**,真正内容在 `qtbase_zh_CN.qm`。**判据**:`lconvert -i <qm> -o x.ts` 后 grep `<name>QPlatformTheme</name>`,没有即命中此坑。**修法**:把 `D:\Qt\6.8.3\msvc2022_64\translations\qtbase_zh_CN.qm` 存为 `resources\translations\qt\qtbase_zh.qm`(+`qtbase_zh_CN.qm`,对齐其余 20 个语言的 `qtbase_<lang>.qm` 惯例),再重跑 `scripts\generate_geometrize_qrcs.py` —— 该脚本**必须在 `resources\` 目录下运行**(内部用相对路径,在别处跑会 FileNotFoundError:'templates/templates');重建后确认框即显示"是/否"、其余对话框"确定/取消"。残余缺口:`qtbase_zh_TW.qm` 未补(繁体中文的标准按钮仍是英文)。
 26. **`qt_render_ab check` 的用例 06 依赖应用全局偏好(处理分辨率上限)——参考是在阈值 256 下冻结的(第十七批实测)**:case 06 走 `convertImageToBitmapWithDownscaling(loadImage(gradnoise_512.png))`,缩不缩放由持久化的 `global_preferences.json`(`%APPDATA%\Sam Twidale\Geometrize\global_preferences.json`,字段 `imageTaskImageResizeThreshold`)决定:阈值 256(上游默认,参考冻结时的环境)→ 输出 256×256 与参考逐字节一致;阈值 1024(本分支默认)→ 512 源图不再缩放 → check 报 `[DIFF] 06_image_scaling.qtinput.png`(实测 74.68% 字节不同、最大差 253,极易误判成回归)。**判据**:DIFF 只出现在 06、且差异是"整幅不同"而非 1 LSB 级;先看 `%APPDATA%` 里那个 JSON 的阈值。**跑 check 前**把阈值设回 256(或改用 `accept` 在目标环境下重采参考);注意 GUI 会话改过分辨率(如做护栏测试时设 4096)会持久生效,不仅让 check 误报,也让之后每个任务都按该分辨率处理。另:陷阱 #22 的"1 LSB 级"差异与本案是两回事,不要混为一谈。
+27. **按文件指令集开关会因路径字符串不匹配而静默失效;SIMD 归约的"车道读法"必须与累加器位宽一致(第十八批实测)**:
+   ① `set_source_files_properties(<file> PROPERTIES COMPILE_OPTIONS "/arch:AVX2")` 按**路径字符串精确匹配**——用
+   `${LIB_SRC_DIR}/...`(目录变量里带 `..`)去匹配 `file(GLOB_RECURSE)` 收集到的源文件,字符串不一致时属性被
+   **静默丢弃、不报错**;MSVC 对 AVX2 intrinsic 不挑 `/arch`(照样编过),只在运行期表现为"结果与标量不一致"。
+   **判据**:生成工程里搜 `EnableEnhancedInstructionSet`(VS 生成器把 `/arch:AVX2` 翻成它)或 `arch:AVX2` 是否为
+   `AdvancedVectorExtensions2`;**预防**:先 `get_filename_component(<var> <dir> ABSOLUTE)` 规范化,GLOB 与按文件属性用同一变量。
+   ② 同批定位到的伴生问题:**32 位车道累加器不能按 64 位车道读**(`add_epi32` 累的 8 个 32 位部分和,直接
+   `add_epi64` + 两段求和 = 把相邻两车道拼成一个 64 位数,量级错到 2^32 倍且不崩)——32 位车道要"折半相加 → hadd ×2",
+   64 位车道(vpsadbw 结果)才用 add_epi64。**症状是"能量值巨大而非 NaN/崩溃"**(total 回绕到 2^64 附近),
+   遇到这类"数值离谱但不崩"的 SIMD 结果,先查归约路径的位宽。
