@@ -1405,6 +1405,10 @@ Continue?</source>
         <translation>已达优先区域上限（16）——请先清除部分区域再继续框选</translation>
     </message>
     <message>
+        <source>Large image with Pyramid Search off — enabling it can be several times faster (opt-in enhancement, output differs)</source>
+        <translation>大图未勾选「金字塔搜索（快速）」——勾选后单步可快数倍（算法增强，输出与关闭时不同属预期）</translation>
+    </message>
+    <message>
         <source>%1x%2</source>
         <comment>Dimensions of an image e.g. width-x-height, 1024x800</comment>
         <translation>%1x%2</translation>

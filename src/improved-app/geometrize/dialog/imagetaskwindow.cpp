@@ -964,6 +964,16 @@ private:
 
     void stepModel()
     {
+        // 大图未开金字塔提示(§5.1 第 3 条):处理分辨率 ≥2048 且未勾选"金字塔搜索(快速)"时,每张图提示一次。
+        // 用状态栏而非模态框——脚本控制台/批处理也会程序化触发 stepModel,模态框会把它们挂住(陷阱 #21)。
+        if(m_task != nullptr && !m_largeCanvasPyramidHintShown
+                && !m_task->getPreferences().getImageRunnerOptions().pyramidSearch) {
+            const Bitmap& target{m_task->getTarget()};
+            if(target.getWidth() >= 2048U || target.getHeight() >= 2048U) {
+                m_largeCanvasPyramidHintShown = true;
+                q->statusBar()->showMessage(tr("Large image with Pyramid Search off — enabling it can be several times faster (opt-in enhancement, output differs)"), 10000);
+            }
+        }
         m_task->stepModel();
     }
 
@@ -1054,6 +1064,8 @@ private:
     {
         Bitmap& targetBitmap{m_task->getTargetMutable()};
         targetBitmap = bitmap;
+        // 换了图就重新给一次大图提示的机会(提示按任务计一次,不按窗口生命周期)
+        m_largeCanvasPyramidHintShown = false;
     }
 
     void switchCurrentImage(Bitmap& bitmap)
@@ -1141,6 +1153,8 @@ private:
     bool m_regionSelectMode{false}; ///> Whether Ctrl+Drag is currently routed to region selection
     bool m_regionDragActive{false}; ///> A region drag is in progress
     QPointF m_regionDragStart; ///> Scene-space start point of the active drag
+
+    bool m_largeCanvasPyramidHintShown{false}; ///> 大图未开金字塔的状态栏提示是否已给过(换图时复位)
 
     geometrize::task::ShapeCollection m_shapes; ///> Collection of shapes added so far
 
