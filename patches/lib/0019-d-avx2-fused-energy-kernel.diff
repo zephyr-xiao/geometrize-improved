@@ -16,10 +16,20 @@
 #     退回标量取色(保持既有可见行为)。
 #   C CMakeLists(app 侧)/ src\geobench\CMakeLists.txt(工具树,不入补丁):仅对 SIMD TU
 #     单独加指令集开关,库其余部分保持基线指令集。
+#   D 增强轨道同模式融合:bestHillClimbStateEnhanced 两条分支都切到融合实现(分段颜色 →
+#     新增的 defaultEnergyFunctionSegmentedFused;其余增强开关 → defaultEnergyFunctionFused),
+#     model.cpp 增强分支随之传空位图(免掉每线程每步整图拷贝)。分段融合的差别只在"逐行重建
+#     预乘常量"(drawLinesSegmented 的常量本就按行算),线型形状退回整形状单色;混合走共享头
+#     core/energykernelmath.h 的无除法式(标量与 AVX2 同源,不建 LUT——分段场景行多像素少,
+#     建表开销会盖过收益)。实测(快侧同参数):adaptive_step_fork 17067→4145ms、
+#     adaptive_step_threads1 7503→1651、alpha_search_fork 16374→3156、enhanced_combo_fork
+#     16745→3506、priority_region_fork 19335→2974(相对上游 3.8~6.1x);segment_color_fork
+#     41325→22888、segment_color_threads1 19844→10207(相对上游仍 0.83x/0.55x:取色
+#     computeSegmentColors 与分段内核尚未 SIMD,列为 §5.1 后续)。
 # 验证:4096² 无金字塔 36.4→15.1 s/步(2.41x)、+金字塔 8.5→3.1 s/步(2.74x)、
 #   2048² wide_bandwidth 5.5→1.9 s/步(2.90x),三条口径 STEP_FINGERPRINT 与 FINAL_SHA256
-#   与改动前逐位相同;ctest 2/2(融合一致性单测扩为三实现互等 + 宽图尾部覆盖,276 断言);
-#   run_ab 26/26(golden 全 OK);verify_patches 重导出后 G1/G2 全 PASS。
+#   与改动前逐位相同;ctest 2/2(融合一致性单测扩为三实现互等 + 宽图尾部覆盖,再补分段融合
+#   一致性用例,合计 348 断言);run_ab 26/26(golden 全 OK);verify_patches 重导出后 G1/G2 全 PASS。
 # 应用时保持 -utf-8 与 CRLF。
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/core.h b/geometrize/core.h
 --- upstream/geometrize-lib/geometrize/geometrize/core.h
@@ -64,7 +74,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * The core functions for Geometrize.
   * @author Sam Twidale (https://samcodes.co.uk/)
   */
-@@ -62,6 +88,96 @@
+@@ -62,6 +88,114 @@
          double score);
  
  /**
@@ -74,6 +84,24 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 + * 差分公式与累加次序与 defaultEnergyFunction 完全相同(differencePartial 对颜色来源无感知)。
 + */
 +double defaultEnergyFunctionSegmented(
++        const std::vector<geometrize::Scanline>& lines,
++        const std::uint32_t alpha,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        double score);
++
++/**
++ * @brief defaultEnergyFunctionSegmentedFused 分段颜色版的融合实现(第十八批,位精确):
++ * 与 defaultEnergyFunctionFused 同款思路——把"混色(drawLinesSegmented)→差分"并为一遍只读扫描,
++ * 混合值不写 scratch buffer。分段与单色的差别只在混色常量:**逐行重建**预乘常量
++ * (分段落画 drawLinesSegmented 的常量就是按行算的,公式与 drawLines 逐字相同),
++ * 线型形状(computeSegmentColors 返回空)退回整形状单色 computeColor,与 defaultEnergyFunction
++ * 逐位一致。取色仍走 computeSegmentColors(两遍结构里颜色必须先于混合确定,无法再融合)。
++ * 混合用无除法等价式(见 core/energykernelmath.h),不建 4×256 LUT——分段场景行多而每行像素少,
++ * 建表开销会盖过收益。buffer 仅为复用签名保留,实现不读不写。
++ */
++double defaultEnergyFunctionSegmentedFused(
 +        const std::vector<geometrize::Scanline>& lines,
 +        const std::uint32_t alpha,
 +        const geometrize::Bitmap& target,
@@ -161,7 +189,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * @brief computeColor Calculates the color of the scanlines.
   * @param target The target image.
   * @param current The current image.
-@@ -124,6 +240,59 @@
+@@ -124,6 +258,59 @@
          double lastScore,
          const EnergyFunction& customEnergyFunction = nullptr);
  
@@ -224,7 +252,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/core.cpp b/geometrize/core.cpp
 --- upstream/geometrize-lib/geometrize/geometrize/core.cpp
 +++ src/improved-lib/geometrize/geometrize/core.cpp
-@@ -7,35 +7,46 @@
+@@ -7,35 +7,47 @@
  #include <memory>
  #include <vector>
  
@@ -235,6 +263,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  #include "bitmap/bitmap.h"
  #include "bitmap/rgba.h"
  #include "commonutil.h"
++#include "core/energykernelmath.h"
 +#include "core/errorweightmap.h"
  #include "rasterizer/rasterizer.h"
  #include "rasterizer/scanline.h"
@@ -283,7 +312,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  {
      geometrize::State s(state);
      geometrize::State bestState(state);
-@@ -44,7 +55,8 @@
+@@ -44,7 +56,8 @@
      std::uint32_t age{0};
      while(age < maxAge) {
          const geometrize::State undo{s.mutate()};
@@ -293,7 +322,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = s.m_score;
          if(energy >= bestEnergy) {
              s = undo;
-@@ -59,18 +71,288 @@
+@@ -59,18 +72,288 @@
      return bestState;
  }
  
@@ -594,7 +623,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
          const std::uint32_t alpha,
          const std::uint32_t n,
-@@ -78,15 +360,49 @@
+@@ -78,15 +361,49 @@
          const geometrize::Bitmap& current,
          geometrize::Bitmap& buffer,
          const double lastScore,
@@ -649,7 +678,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = state.m_score;
          if(i == 0 || energy < bestEnergy) {
              bestEnergy = energy;
-@@ -119,6 +435,176 @@
+@@ -119,6 +436,247 @@
      return geometrize::core::differencePartial(target, current, buffer, score, lines); // Get error measure between areas of current and modified buffers covered by scanlines
  }
  
@@ -823,10 +852,81 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    return geometrize::core::differencePartial(target, current, buffer, score, lines);
 +}
 +
++double defaultEnergyFunctionSegmentedFused(
++        const std::vector<geometrize::Scanline>& lines,
++        const std::uint32_t alpha,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& /*buffer*/,
++        const double score)
++{
++    // 第 1 遍(只读):行级取色,与逐遍实现共用 computeSegmentColors(含线型空向量语义)
++    const std::vector<geometrize::rgba> colors{geometrize::core::computeSegmentColors(target, current, lines, static_cast<std::uint8_t>(alpha))};
++    const bool perLine{!colors.empty()};
++
++    // 线型形状退回整形状单色:与逐遍实现里 drawLines(computeColor(...)) 的那条分支同源
++    geometrize::rgba singleColor{0, 0, 0, 0};
++    if(!perLine) {
++        singleColor = geometrize::core::computeColor(target, current, lines, alpha);
++    }
++
++    // 与 differencePartial 相同的基数与收尾公式(score 基数的浮点截断行为是输出的一部分,原样保留)
++    const std::uint64_t rgbaCount{static_cast<std::uint64_t>(target.getWidth()) * target.getHeight() * 4U};
++    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * static_cast<double>(rgbaCount))};
++    if(target.getDataRef().empty() || current.getDataRef().empty()) {
++        return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
++    }
++
++    const auto* targetData = target.getDataRef().data();
++    const auto* currentData = current.getDataRef().data();
++    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
++    const std::int32_t width{static_cast<std::int32_t>(target.getWidth())};
++    const std::int32_t height{static_cast<std::int32_t>(target.getHeight())};
++
++    std::uint64_t afterSum{0};
++    std::uint64_t beforeSum{0};
++
++    for(std::size_t i = 0; i < lines.size(); i++) {
++        const geometrize::Scanline& line = lines[i];
++        // 越界行:与标量融合版一致跳过(库内扫描线恒已裁剪)
++        if(line.y < 0 || line.y >= height) {
++            continue;
++        }
++        const std::int32_t xStart{line.x1 < 0 ? 0 : line.x1};
++        const std::int32_t xEnd{line.x2 >= width ? width - 1 : line.x2};
++        if(xStart > xEnd) {
++            continue;
++        }
++
++        // 每行重建预乘常量:drawLinesSegmented 的常量就是按行算的(公式与 drawLines 逐字相同)
++        const geometrize::core::energykernel::PremultipliedColor premul{
++            geometrize::core::energykernel::premultiply(perLine ? colors[i] : singleColor)};
++
++        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
++        const auto* cRow = currentData + rowStride * static_cast<std::size_t>(line.y);
++
++        for(std::int32_t x = xStart; x <= xEnd; x++) {
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
++            for(std::size_t channel = 0; channel < 4U; channel++) {
++                const std::uint32_t currentChannel{cRow[offset + channel]};
++                const std::int32_t targetChannel{static_cast<std::int32_t>(tRow[offset + channel])};
++                const std::int32_t blended{geometrize::core::energykernel::blendChannel(currentChannel, premul.aa, premul.k[channel])};
++                const std::int32_t dtb{targetChannel - static_cast<std::int32_t>(currentChannel)};
++                const std::int32_t dta{targetChannel - blended};
++                beforeSum += static_cast<std::uint64_t>(dtb * dtb);
++                afterSum += static_cast<std::uint64_t>(dta * dta);
++            }
++        }
++    }
++
++    total = total - beforeSum + afterSum;
++    return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
++}
++
  geometrize::rgba computeColor(
          const geometrize::Bitmap& target,
          const geometrize::Bitmap& current,
-@@ -134,27 +620,33 @@
+@@ -134,27 +692,33 @@
      std::int64_t totalGreen{0};
      std::int64_t totalBlue{0};
      std::int64_t count{0};
@@ -874,7 +974,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              count++;
          }
      }
-@@ -171,6 +663,90 @@
+@@ -171,6 +735,90 @@
      return geometrize::rgba{r, g, b, alpha};
  }
  
@@ -965,7 +1065,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  double differenceFull(const geometrize::Bitmap& first, const geometrize::Bitmap& second)
  {
      assert(first.getWidth() == second.getWidth());
-@@ -180,15 +756,21 @@
+@@ -180,15 +828,21 @@
      const std::size_t height{first.getHeight()};
      std::uint64_t total{0};
  
@@ -993,7 +1093,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              total += (dr * dr + dg * dg + db * db + da * da);
          }
      }
-@@ -202,24 +784,39 @@
+@@ -202,24 +856,39 @@
          const double score,
          const std::vector<Scanline>& lines)
  {
@@ -1049,7 +1149,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
              total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
              total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
-@@ -241,10 +838,61 @@
+@@ -241,10 +910,63 @@
          const double lastScore,
          const EnergyFunction& customEnergyFunction)
  {
@@ -1103,9 +1203,11 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +{
 +    // A2.4 分段取色:开关开启时评估侧换分段能量函数(评估与落画同一颜色模型)。
 +    // 自定义能量函数在增强轨道本就被忽略(既有文档语义),不新增优先级分支。
++    // 第十八批:两条分支都切到融合实现(位精确)——增强轨道此前仍走逐遍内核 + 整图 scratch 拷贝,
++    // 是"勾选增强就比上游还慢"的直接原因;buffer 参数随之不再被读写(调用侧可传空位图)。
 +    const EnergyFunction& e = enhancements.segmentColors
-+        ? geometrize::core::defaultEnergyFunctionSegmented
-+        : geometrize::core::defaultEnergyFunction;
++        ? geometrize::core::defaultEnergyFunctionSegmentedFused
++        : geometrize::core::defaultEnergyFunctionFused;
 +
 +    std::vector<geometrize::Scanline> lines;
 +    std::vector<geometrize::Scanline> halfLines;
@@ -1117,7 +1219,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/core/energykernelsimd.cpp b/geometrize/core/energykernelsimd.cpp
 --- upstream/geometrize-lib/geometrize/geometrize/core/energykernelsimd.cpp
 +++ src/improved-lib/geometrize/geometrize/core/energykernelsimd.cpp
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,313 @@
 +// 融合能量内核的 AVX2 实现(第十八批,位精确)。
 +// 本 TU 由 CMake 单独按 /arch:AVX2(-mavx2)编译,与库其余部分指令集隔离;
 +// 所有入口只在 avx2EnergyKernelAvailable()(定义在 core.cpp,不带 AVX2 指令)为真时被调用。
@@ -1132,6 +1234,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +#include "../bitmap/rgba.h"
 +#include "../commonutil.h"
 +#include "../rasterizer/scanline.h"
++#include "energykernelmath.h"
 +
 +#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 +#define GEOMETRIZE_X86_SIMD 1
@@ -1142,16 +1245,6 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +namespace
 +{
-+
-+/// 混合公式的无除法标量复刻(尾部像素与向量式同源,返回 floor(V / (65535*256)))。
-+/// 展开:V = hi*65536 + lo 时 floor(V/65535) = hi + [hi + lo >= 65535];记 W = V >> 8,
-+/// 由嵌套整除 floor(V/16776960) == floor(W/65535),再代入数字和恒等式得下式。
-+inline std::int32_t blendChannel(const std::uint32_t d, const std::uint32_t aa, const std::uint32_t sTimesM)
-+{
-+    const std::uint32_t v{d * aa + sTimesM};
-+    const std::uint32_t w{v >> 8U};
-+    return static_cast<std::int32_t>((w + (w >> 16U) + 1U) >> 16U);
-+}
 +
 +/// 256 位向量的 4×64 位车道归约(整数加法精确,分块求和与逐像素求和 mod 2^64 等价)
 +inline std::uint64_t sumLanes64(const __m256i v)
@@ -1312,29 +1405,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
 +    }
 +
-+    // drawLines 的单次预乘常量,与标量融合版逐语句同源(注意 d*aa + s*m 允许 uint32 回绕后再除)
-+    std::uint32_t sr{color.r};
-+    sr |= sr << 8;
-+    sr *= color.a;
-+    sr /= UINT8_MAX;
-+    std::uint32_t sg{color.g};
-+    sg |= sg << 8;
-+    sg *= color.a;
-+    sg /= UINT8_MAX;
-+    std::uint32_t sb{color.b};
-+    sb |= sb << 8;
-+    sb *= color.a;
-+    sb /= UINT8_MAX;
-+    std::uint32_t sa{color.a};
-+    sa |= sa << 8;
-+
-+    const std::uint32_t m{UINT16_MAX};
-+    const std::uint32_t aa{(m - sa) * 257U};
-+    const std::uint32_t kR{sr * m};
-+    const std::uint32_t kG{sg * m};
-+    const std::uint32_t kB{sb * m};
-+    const std::uint32_t kA{sa * m};
-+    const std::uint32_t kChannels[4]{kR, kG, kB, kA};
++    // drawLines 的单次预乘常量(与标量融合版共用 core/energykernelmath.h 的同一实现)
++    const geometrize::core::energykernel::PremultipliedColor premul{geometrize::core::energykernel::premultiply(color)};
 +
 +    const auto* targetData = target.getDataRef().data();
 +    const auto* currentData = current.getDataRef().data();
@@ -1344,10 +1416,10 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +    // V = d*aa + k 恒小于 2^32(见 core.h),按无符号解释走逻辑移位;k 向量按 RGBA 交错布局,
 +    // 一次覆盖两个像素的 8 个通道(所有通道共用 aa,只有加性常量不同)
-+    const __m256i aaVector{_mm256_set1_epi32(static_cast<int>(aa))};
++    const __m256i aaVector{_mm256_set1_epi32(static_cast<int>(premul.aa))};
 +    const __m256i kVector{_mm256_setr_epi32(
-+        static_cast<int>(kR), static_cast<int>(kG), static_cast<int>(kB), static_cast<int>(kA),
-+        static_cast<int>(kR), static_cast<int>(kG), static_cast<int>(kB), static_cast<int>(kA))};
++        static_cast<int>(premul.k[0]), static_cast<int>(premul.k[1]), static_cast<int>(premul.k[2]), static_cast<int>(premul.k[3]),
++        static_cast<int>(premul.k[0]), static_cast<int>(premul.k[1]), static_cast<int>(premul.k[2]), static_cast<int>(premul.k[3]))};
 +    const __m256i oneVector{_mm256_set1_epi32(1)};
 +
 +    __m256i afterAcc{_mm256_setzero_si256()};
@@ -1416,7 +1488,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            for(std::size_t channel = 0; channel < 4U; channel++) {
 +                const std::int32_t targetChannel{static_cast<std::int32_t>(tRow[offset + channel])};
 +                const std::int32_t currentChannel{static_cast<std::int32_t>(cRow[offset + channel])};
-+                const std::int32_t blended{blendChannel(cRow[offset + channel], aa, kChannels[channel])};
++                const std::int32_t blended{geometrize::core::energykernel::blendChannel(cRow[offset + channel], premul.aa, premul.k[channel])};
 +                const std::int32_t dtb{targetChannel - currentChannel};
 +                const std::int32_t dta{targetChannel - blended};
 +                beforeSum += static_cast<std::uint64_t>(dtb * dtb);
@@ -1461,6 +1533,88 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +#endif
 +
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/core/energykernelmath.h b/geometrize/core/energykernelmath.h
+--- upstream/geometrize-lib/geometrize/geometrize/core/energykernelmath.h
++++ src/improved-lib/geometrize/geometrize/core/energykernelmath.h
+@@ -0,0 +1,78 @@
++// 融合能量内核的共享算术(标量融合实现与 AVX2 实现同源,防止两份公式漂移)。
++// 这里只放"位等价由构造保证"的整数恒等式,不含任何近似:
++//   ① blendChannel:drawLines/drawLinesSegmented 的表项 ((d*aa + s*m)/65535)>>8 的无除法等价式
++//      (全输入域 256³ 组合已穷举比对,见 docs/ROADMAP.md §1 P1.7);
++//   ② premultiply:drawLines 的预乘常量(sr/sg/sb/sa 与 aa),逐语句照搬含 uint32 回绕的写法。
++#pragma once
++
++#include <cstdint>
++
++#include "../bitmap/rgba.h"
++
++namespace geometrize
++{
++
++namespace core
++{
++
++namespace energykernel
++{
++
++/**
++ * @brief blendChannel 混合公式的无除法等价式:floor((d*aa + s*m) / (65535*256))。
++ * 展开:V = d*aa + s*m(上界 65535²,已证不回绕);记 W = V >> 8,
++ * floor(V/16776960) == floor(W/65535) == (W + (W>>16) + 1) >> 16。
++ */
++inline std::int32_t blendChannel(const std::uint32_t d, const std::uint32_t aa, const std::uint32_t sTimesM)
++{
++    const std::uint32_t v{d * aa + sTimesM};
++    const std::uint32_t w{v >> 8U};
++    return static_cast<std::int32_t>((w + (w >> 16U) + 1U) >> 16U);
++}
++
++/**
++ * @brief PremultipliedColor 混合用的预乘常量:k[0..3] 依次为 R/G/B/A 通道的 s*m,aa 为公共乘子。
++ */
++struct PremultipliedColor
++{
++    std::uint32_t k[4];
++    std::uint32_t aa;
++};
++
++/**
++ * @brief premultiply 由形状颜色求混合常量,表达式与 drawLines/drawLinesSegmented 完全一致
++ * (含 uint32 回绕语义;sa 用 257*a,aa = (65535 - sa) * 257)。
++ */
++inline PremultipliedColor premultiply(const geometrize::rgba& color)
++{
++    const std::uint32_t m{UINT16_MAX};
++
++    std::uint32_t sr{color.r};
++    sr |= sr << 8;
++    sr *= color.a;
++    sr /= UINT8_MAX;
++    std::uint32_t sg{color.g};
++    sg |= sg << 8;
++    sg *= color.a;
++    sg /= UINT8_MAX;
++    std::uint32_t sb{color.b};
++    sb |= sb << 8;
++    sb *= color.a;
++    sb /= UINT8_MAX;
++    std::uint32_t sa{color.a};
++    sa |= sa << 8;
++
++    PremultipliedColor out;
++    out.k[0] = sr * m;
++    out.k[1] = sg * m;
++    out.k[2] = sb * m;
++    out.k[3] = sa * m;
++    out.aa = (m - sa) * 257U;
++    return out;
++}
++
++}
++
++}
++
++}
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/CMakeLists.txt b/CMakeLists.txt
 --- upstream/geometrize-app/CMakeLists.txt
 +++ src/improved-app/CMakeLists.txt
@@ -1604,7 +1758,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * The core functions for Geometrize.
   * @author Sam Twidale (https://samcodes.co.uk/)
   */
-@@ -62,6 +88,96 @@
+@@ -62,6 +88,114 @@
          double score);
  
  /**
@@ -1614,6 +1768,24 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 + * 差分公式与累加次序与 defaultEnergyFunction 完全相同(differencePartial 对颜色来源无感知)。
 + */
 +double defaultEnergyFunctionSegmented(
++        const std::vector<geometrize::Scanline>& lines,
++        const std::uint32_t alpha,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        double score);
++
++/**
++ * @brief defaultEnergyFunctionSegmentedFused 分段颜色版的融合实现(第十八批,位精确):
++ * 与 defaultEnergyFunctionFused 同款思路——把"混色(drawLinesSegmented)→差分"并为一遍只读扫描,
++ * 混合值不写 scratch buffer。分段与单色的差别只在混色常量:**逐行重建**预乘常量
++ * (分段落画 drawLinesSegmented 的常量就是按行算的,公式与 drawLines 逐字相同),
++ * 线型形状(computeSegmentColors 返回空)退回整形状单色 computeColor,与 defaultEnergyFunction
++ * 逐位一致。取色仍走 computeSegmentColors(两遍结构里颜色必须先于混合确定,无法再融合)。
++ * 混合用无除法等价式(见 core/energykernelmath.h),不建 4×256 LUT——分段场景行多而每行像素少,
++ * 建表开销会盖过收益。buffer 仅为复用签名保留,实现不读不写。
++ */
++double defaultEnergyFunctionSegmentedFused(
 +        const std::vector<geometrize::Scanline>& lines,
 +        const std::uint32_t alpha,
 +        const geometrize::Bitmap& target,
@@ -1701,7 +1873,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * @brief computeColor Calculates the color of the scanlines.
   * @param target The target image.
   * @param current The current image.
-@@ -124,6 +240,59 @@
+@@ -124,6 +258,59 @@
          double lastScore,
          const EnergyFunction& customEnergyFunction = nullptr);
  
@@ -1764,7 +1936,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/core.cpp b/lib/geometrize/geometrize/geometrize/core.cpp
 --- upstream/geometrize-app/lib/geometrize/geometrize/geometrize/core.cpp
 +++ src/improved-app/lib/geometrize/geometrize/geometrize/core.cpp
-@@ -7,35 +7,46 @@
+@@ -7,35 +7,47 @@
  #include <memory>
  #include <vector>
  
@@ -1775,6 +1947,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  #include "bitmap/bitmap.h"
  #include "bitmap/rgba.h"
  #include "commonutil.h"
++#include "core/energykernelmath.h"
 +#include "core/errorweightmap.h"
  #include "rasterizer/rasterizer.h"
  #include "rasterizer/scanline.h"
@@ -1823,7 +1996,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  {
      geometrize::State s(state);
      geometrize::State bestState(state);
-@@ -44,7 +55,8 @@
+@@ -44,7 +56,8 @@
      std::uint32_t age{0};
      while(age < maxAge) {
          const geometrize::State undo{s.mutate()};
@@ -1833,7 +2006,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = s.m_score;
          if(energy >= bestEnergy) {
              s = undo;
-@@ -59,18 +71,288 @@
+@@ -59,18 +72,288 @@
      return bestState;
  }
  
@@ -2134,7 +2307,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
          const std::uint32_t alpha,
          const std::uint32_t n,
-@@ -78,15 +360,49 @@
+@@ -78,15 +361,49 @@
          const geometrize::Bitmap& current,
          geometrize::Bitmap& buffer,
          const double lastScore,
@@ -2189,7 +2362,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = state.m_score;
          if(i == 0 || energy < bestEnergy) {
              bestEnergy = energy;
-@@ -119,6 +435,176 @@
+@@ -119,6 +436,247 @@
      return geometrize::core::differencePartial(target, current, buffer, score, lines); // Get error measure between areas of current and modified buffers covered by scanlines
  }
  
@@ -2363,10 +2536,81 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    return geometrize::core::differencePartial(target, current, buffer, score, lines);
 +}
 +
++double defaultEnergyFunctionSegmentedFused(
++        const std::vector<geometrize::Scanline>& lines,
++        const std::uint32_t alpha,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& /*buffer*/,
++        const double score)
++{
++    // 第 1 遍(只读):行级取色,与逐遍实现共用 computeSegmentColors(含线型空向量语义)
++    const std::vector<geometrize::rgba> colors{geometrize::core::computeSegmentColors(target, current, lines, static_cast<std::uint8_t>(alpha))};
++    const bool perLine{!colors.empty()};
++
++    // 线型形状退回整形状单色:与逐遍实现里 drawLines(computeColor(...)) 的那条分支同源
++    geometrize::rgba singleColor{0, 0, 0, 0};
++    if(!perLine) {
++        singleColor = geometrize::core::computeColor(target, current, lines, alpha);
++    }
++
++    // 与 differencePartial 相同的基数与收尾公式(score 基数的浮点截断行为是输出的一部分,原样保留)
++    const std::uint64_t rgbaCount{static_cast<std::uint64_t>(target.getWidth()) * target.getHeight() * 4U};
++    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * static_cast<double>(rgbaCount))};
++    if(target.getDataRef().empty() || current.getDataRef().empty()) {
++        return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
++    }
++
++    const auto* targetData = target.getDataRef().data();
++    const auto* currentData = current.getDataRef().data();
++    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
++    const std::int32_t width{static_cast<std::int32_t>(target.getWidth())};
++    const std::int32_t height{static_cast<std::int32_t>(target.getHeight())};
++
++    std::uint64_t afterSum{0};
++    std::uint64_t beforeSum{0};
++
++    for(std::size_t i = 0; i < lines.size(); i++) {
++        const geometrize::Scanline& line = lines[i];
++        // 越界行:与标量融合版一致跳过(库内扫描线恒已裁剪)
++        if(line.y < 0 || line.y >= height) {
++            continue;
++        }
++        const std::int32_t xStart{line.x1 < 0 ? 0 : line.x1};
++        const std::int32_t xEnd{line.x2 >= width ? width - 1 : line.x2};
++        if(xStart > xEnd) {
++            continue;
++        }
++
++        // 每行重建预乘常量:drawLinesSegmented 的常量就是按行算的(公式与 drawLines 逐字相同)
++        const geometrize::core::energykernel::PremultipliedColor premul{
++            geometrize::core::energykernel::premultiply(perLine ? colors[i] : singleColor)};
++
++        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
++        const auto* cRow = currentData + rowStride * static_cast<std::size_t>(line.y);
++
++        for(std::int32_t x = xStart; x <= xEnd; x++) {
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
++            for(std::size_t channel = 0; channel < 4U; channel++) {
++                const std::uint32_t currentChannel{cRow[offset + channel]};
++                const std::int32_t targetChannel{static_cast<std::int32_t>(tRow[offset + channel])};
++                const std::int32_t blended{geometrize::core::energykernel::blendChannel(currentChannel, premul.aa, premul.k[channel])};
++                const std::int32_t dtb{targetChannel - static_cast<std::int32_t>(currentChannel)};
++                const std::int32_t dta{targetChannel - blended};
++                beforeSum += static_cast<std::uint64_t>(dtb * dtb);
++                afterSum += static_cast<std::uint64_t>(dta * dta);
++            }
++        }
++    }
++
++    total = total - beforeSum + afterSum;
++    return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
++}
++
  geometrize::rgba computeColor(
          const geometrize::Bitmap& target,
          const geometrize::Bitmap& current,
-@@ -134,27 +620,33 @@
+@@ -134,27 +692,33 @@
      std::int64_t totalGreen{0};
      std::int64_t totalBlue{0};
      std::int64_t count{0};
@@ -2414,7 +2658,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              count++;
          }
      }
-@@ -171,6 +663,90 @@
+@@ -171,6 +735,90 @@
      return geometrize::rgba{r, g, b, alpha};
  }
  
@@ -2505,7 +2749,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  double differenceFull(const geometrize::Bitmap& first, const geometrize::Bitmap& second)
  {
      assert(first.getWidth() == second.getWidth());
-@@ -180,15 +756,21 @@
+@@ -180,15 +828,21 @@
      const std::size_t height{first.getHeight()};
      std::uint64_t total{0};
  
@@ -2533,7 +2777,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              total += (dr * dr + dg * dg + db * db + da * da);
          }
      }
-@@ -202,24 +784,39 @@
+@@ -202,24 +856,39 @@
          const double score,
          const std::vector<Scanline>& lines)
  {
@@ -2589,7 +2833,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
              total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
              total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
-@@ -241,10 +838,61 @@
+@@ -241,10 +910,63 @@
          const double lastScore,
          const EnergyFunction& customEnergyFunction)
  {
@@ -2643,9 +2887,11 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +{
 +    // A2.4 分段取色:开关开启时评估侧换分段能量函数(评估与落画同一颜色模型)。
 +    // 自定义能量函数在增强轨道本就被忽略(既有文档语义),不新增优先级分支。
++    // 第十八批:两条分支都切到融合实现(位精确)——增强轨道此前仍走逐遍内核 + 整图 scratch 拷贝,
++    // 是"勾选增强就比上游还慢"的直接原因;buffer 参数随之不再被读写(调用侧可传空位图)。
 +    const EnergyFunction& e = enhancements.segmentColors
-+        ? geometrize::core::defaultEnergyFunctionSegmented
-+        : geometrize::core::defaultEnergyFunction;
++        ? geometrize::core::defaultEnergyFunctionSegmentedFused
++        : geometrize::core::defaultEnergyFunctionFused;
 +
 +    std::vector<geometrize::Scanline> lines;
 +    std::vector<geometrize::Scanline> halfLines;
@@ -2657,7 +2903,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/core/energykernelsimd.cpp b/lib/geometrize/geometrize/geometrize/core/energykernelsimd.cpp
 --- upstream/geometrize-app/lib/geometrize/geometrize/geometrize/core/energykernelsimd.cpp
 +++ src/improved-app/lib/geometrize/geometrize/geometrize/core/energykernelsimd.cpp
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,313 @@
 +// 融合能量内核的 AVX2 实现(第十八批,位精确)。
 +// 本 TU 由 CMake 单独按 /arch:AVX2(-mavx2)编译,与库其余部分指令集隔离;
 +// 所有入口只在 avx2EnergyKernelAvailable()(定义在 core.cpp,不带 AVX2 指令)为真时被调用。
@@ -2672,6 +2918,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +#include "../bitmap/rgba.h"
 +#include "../commonutil.h"
 +#include "../rasterizer/scanline.h"
++#include "energykernelmath.h"
 +
 +#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 +#define GEOMETRIZE_X86_SIMD 1
@@ -2682,16 +2929,6 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +namespace
 +{
-+
-+/// 混合公式的无除法标量复刻(尾部像素与向量式同源,返回 floor(V / (65535*256)))。
-+/// 展开:V = hi*65536 + lo 时 floor(V/65535) = hi + [hi + lo >= 65535];记 W = V >> 8,
-+/// 由嵌套整除 floor(V/16776960) == floor(W/65535),再代入数字和恒等式得下式。
-+inline std::int32_t blendChannel(const std::uint32_t d, const std::uint32_t aa, const std::uint32_t sTimesM)
-+{
-+    const std::uint32_t v{d * aa + sTimesM};
-+    const std::uint32_t w{v >> 8U};
-+    return static_cast<std::int32_t>((w + (w >> 16U) + 1U) >> 16U);
-+}
 +
 +/// 256 位向量的 4×64 位车道归约(整数加法精确,分块求和与逐像素求和 mod 2^64 等价)
 +inline std::uint64_t sumLanes64(const __m256i v)
@@ -2852,29 +3089,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
 +    }
 +
-+    // drawLines 的单次预乘常量,与标量融合版逐语句同源(注意 d*aa + s*m 允许 uint32 回绕后再除)
-+    std::uint32_t sr{color.r};
-+    sr |= sr << 8;
-+    sr *= color.a;
-+    sr /= UINT8_MAX;
-+    std::uint32_t sg{color.g};
-+    sg |= sg << 8;
-+    sg *= color.a;
-+    sg /= UINT8_MAX;
-+    std::uint32_t sb{color.b};
-+    sb |= sb << 8;
-+    sb *= color.a;
-+    sb /= UINT8_MAX;
-+    std::uint32_t sa{color.a};
-+    sa |= sa << 8;
-+
-+    const std::uint32_t m{UINT16_MAX};
-+    const std::uint32_t aa{(m - sa) * 257U};
-+    const std::uint32_t kR{sr * m};
-+    const std::uint32_t kG{sg * m};
-+    const std::uint32_t kB{sb * m};
-+    const std::uint32_t kA{sa * m};
-+    const std::uint32_t kChannels[4]{kR, kG, kB, kA};
++    // drawLines 的单次预乘常量(与标量融合版共用 core/energykernelmath.h 的同一实现)
++    const geometrize::core::energykernel::PremultipliedColor premul{geometrize::core::energykernel::premultiply(color)};
 +
 +    const auto* targetData = target.getDataRef().data();
 +    const auto* currentData = current.getDataRef().data();
@@ -2884,10 +3100,10 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +    // V = d*aa + k 恒小于 2^32(见 core.h),按无符号解释走逻辑移位;k 向量按 RGBA 交错布局,
 +    // 一次覆盖两个像素的 8 个通道(所有通道共用 aa,只有加性常量不同)
-+    const __m256i aaVector{_mm256_set1_epi32(static_cast<int>(aa))};
++    const __m256i aaVector{_mm256_set1_epi32(static_cast<int>(premul.aa))};
 +    const __m256i kVector{_mm256_setr_epi32(
-+        static_cast<int>(kR), static_cast<int>(kG), static_cast<int>(kB), static_cast<int>(kA),
-+        static_cast<int>(kR), static_cast<int>(kG), static_cast<int>(kB), static_cast<int>(kA))};
++        static_cast<int>(premul.k[0]), static_cast<int>(premul.k[1]), static_cast<int>(premul.k[2]), static_cast<int>(premul.k[3]),
++        static_cast<int>(premul.k[0]), static_cast<int>(premul.k[1]), static_cast<int>(premul.k[2]), static_cast<int>(premul.k[3]))};
 +    const __m256i oneVector{_mm256_set1_epi32(1)};
 +
 +    __m256i afterAcc{_mm256_setzero_si256()};
@@ -2956,7 +3172,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            for(std::size_t channel = 0; channel < 4U; channel++) {
 +                const std::int32_t targetChannel{static_cast<std::int32_t>(tRow[offset + channel])};
 +                const std::int32_t currentChannel{static_cast<std::int32_t>(cRow[offset + channel])};
-+                const std::int32_t blended{blendChannel(cRow[offset + channel], aa, kChannels[channel])};
++                const std::int32_t blended{geometrize::core::energykernel::blendChannel(cRow[offset + channel], premul.aa, premul.k[channel])};
 +                const std::int32_t dtb{targetChannel - currentChannel};
 +                const std::int32_t dta{targetChannel - blended};
 +                beforeSum += static_cast<std::uint64_t>(dtb * dtb);
@@ -3001,3 +3217,85 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +#endif
 +
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/core/energykernelmath.h b/lib/geometrize/geometrize/geometrize/core/energykernelmath.h
+--- upstream/geometrize-app/lib/geometrize/geometrize/geometrize/core/energykernelmath.h
++++ src/improved-app/lib/geometrize/geometrize/geometrize/core/energykernelmath.h
+@@ -0,0 +1,78 @@
++// 融合能量内核的共享算术(标量融合实现与 AVX2 实现同源,防止两份公式漂移)。
++// 这里只放"位等价由构造保证"的整数恒等式,不含任何近似:
++//   ① blendChannel:drawLines/drawLinesSegmented 的表项 ((d*aa + s*m)/65535)>>8 的无除法等价式
++//      (全输入域 256³ 组合已穷举比对,见 docs/ROADMAP.md §1 P1.7);
++//   ② premultiply:drawLines 的预乘常量(sr/sg/sb/sa 与 aa),逐语句照搬含 uint32 回绕的写法。
++#pragma once
++
++#include <cstdint>
++
++#include "../bitmap/rgba.h"
++
++namespace geometrize
++{
++
++namespace core
++{
++
++namespace energykernel
++{
++
++/**
++ * @brief blendChannel 混合公式的无除法等价式:floor((d*aa + s*m) / (65535*256))。
++ * 展开:V = d*aa + s*m(上界 65535²,已证不回绕);记 W = V >> 8,
++ * floor(V/16776960) == floor(W/65535) == (W + (W>>16) + 1) >> 16。
++ */
++inline std::int32_t blendChannel(const std::uint32_t d, const std::uint32_t aa, const std::uint32_t sTimesM)
++{
++    const std::uint32_t v{d * aa + sTimesM};
++    const std::uint32_t w{v >> 8U};
++    return static_cast<std::int32_t>((w + (w >> 16U) + 1U) >> 16U);
++}
++
++/**
++ * @brief PremultipliedColor 混合用的预乘常量:k[0..3] 依次为 R/G/B/A 通道的 s*m,aa 为公共乘子。
++ */
++struct PremultipliedColor
++{
++    std::uint32_t k[4];
++    std::uint32_t aa;
++};
++
++/**
++ * @brief premultiply 由形状颜色求混合常量,表达式与 drawLines/drawLinesSegmented 完全一致
++ * (含 uint32 回绕语义;sa 用 257*a,aa = (65535 - sa) * 257)。
++ */
++inline PremultipliedColor premultiply(const geometrize::rgba& color)
++{
++    const std::uint32_t m{UINT16_MAX};
++
++    std::uint32_t sr{color.r};
++    sr |= sr << 8;
++    sr *= color.a;
++    sr /= UINT8_MAX;
++    std::uint32_t sg{color.g};
++    sg |= sg << 8;
++    sg *= color.a;
++    sg /= UINT8_MAX;
++    std::uint32_t sb{color.b};
++    sb |= sb << 8;
++    sb *= color.a;
++    sb /= UINT8_MAX;
++    std::uint32_t sa{color.a};
++    sa |= sa << 8;
++
++    PremultipliedColor out;
++    out.k[0] = sr * m;
++    out.k[1] = sg * m;
++    out.k[2] = sb * m;
++    out.k[3] = sa * m;
++    out.aa = (m - sa) * 257U;
++    return out;
++}
++
++}
++
++}
++
++}
