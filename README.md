@@ -124,8 +124,9 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 - **Qt 标准按钮中文化**:资源里中文只有 Qt5 时代目录(无 `QPlatformTheme` 上下文),Qt6 下标准按钮
   OK/Yes/No 全回退英文;补入 Qt 6.8.3 的 `qtbase_zh_CN.qm`(存为 `qtbase_zh.qm` + `qtbase_zh_CN.qm`,
   对齐其余 20 个语言的 `qtbase_<lang>.qm` 惯例),确认框按钮显示"是/否"、其余对话框"确定/取消"同步转中文。
-- 验证:ctest 2/2、run_ab 26/26、verify_patches 重导出 PASS;真机(Computer Use 冒烟 + 用户复核):
-  28 形状 → 弹窗报 28 张 → 目录落盘 28 个 PNG 一一对应;Esc/"否"路径零写盘。
+- 验证:ctest 2/2、run_ab 26/26、verify_patches 重导出 PASS;真机(Computer Use 冒烟 + 用户实测复核):
+  28 形状 → 弹窗报 28 张 → 目录落盘 28 个 PNG 一一对应;Esc/"否"路径零写盘;尺寸护栏补测
+  (4096×4096 图 + 输出倍率 8 → 弹出"导出尺寸超限")与确认框/中文化按钮等全项通过。
 
 ## 目录结构
 
