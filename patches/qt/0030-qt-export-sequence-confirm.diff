@@ -1,0 +1,1517 @@
+# 序列导出"明确告知 + 二次确认" + Qt 标准按钮中文化补齐(第十六批,2026-10-07)—— 补丁定位说明
+# baseline 侧 = 纯上游快照,+ 侧 = improved-app 累积态(与既有拆分系列同款口径)。
+# 背景(真机回归反馈):中文界面 Save Image / Save Images 同译"保存图像",第二个按钮会把渲染
+#   过程每步各存一张 PNG(exported_image_<i>.png,最多 1000 张)直接铺进所选目录,目录选择框
+#   标题也只有"保存图像",全程无提示无确认——用户把整批序列图存到了桌面。
+# 内容:
+#   A 确认框(imagetaskexportwidget.cpp):选目录后、写盘前弹确认,明确告知"每步一张"、实际
+#     张数与目标目录;Yes/No 默认与 Esc 都落在"否"。0 形状时不弹"将写入 0 张"的空确认
+#     (导出器本就静默失败,保持既有行为)。进度框文案改为带张数的 "Exporting %1 images..."。
+#   B 张数单一真源(imageexporter.{h,cpp}):新增 exportedFrameCount(shapeCount) 与共享常量
+#     maxSequenceFrames(1000),写盘循环与确认框共用同一公式(stride=ceil(N/1000),取帧数 =
+#     N/stride + (N%stride!=0)),避免告知数与实际写盘数漂移。真机实测:28 形状 → 弹窗"28 张"
+#     → 目录落盘 28 个 PNG,一一对应。
+#   C 界面文案(imagetaskexportwidget.ui):序列按钮加 tooltip(新增 source 串;英文按钮文字
+#     不动,保其他 28 个语言的翻译不失效)。
+#   D 翻译(geometrize_zh.ts + qm,二进制豁免):按钮 Save Images → "保存序列图像";目录选择
+#     标题 → "选择序列图像导出目录";新增 tooltip/确认框标题/确认框正文(两变体)/进度文案
+#     共 5 条。英文 source 字符串一律未改。
+#   E Qt 标准按钮中文化(translations.qrc + qtbase_zh*.qm,qm 二进制豁免):原资源里中文只有
+#     Qt5 时代目录(qt_zh.qm 无 QPlatformTheme 上下文),Qt6 标准按钮(OK/Yes/No)全回退英文;
+#     补入 Qt 6.8.3 的 qtbase_zh_CN.qm(改名 qtbase_zh.qm + qtbase_zh_CN.qm,与其余 20 个语言
+#     的 qtbase_<lang>.qm 惯例对齐),应用加载链(qt_/qtbase_ 前缀 × locale 降级)即可命中,
+#     确认框按钮显示"是/否"、其他对话框"确定/取消"同步转中文。
+# 验证:四道门禁——ctest 2/2(geotest-base 39/39、geotest-fast 111/111);run_ab 26/26(值级
+#   golden 锁定);verify_patches 重导出后 G1/G2 全 PASS;qt_render_ab 未跑(纯对话框/资源改动,
+#   不碰渲染路径)。真机:Computer Use 冒烟(确认框文案/张数/默认否 + 尺寸护栏弹窗)+ 用户复测。
+# 应用时保持 -utf-8 与 CRLF。
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/dialog/imagetaskexportwidget.cpp b/geometrize/dialog/imagetaskexportwidget.cpp
+--- a/geometrize/dialog/imagetaskexportwidget.cpp
++++ b/geometrize/dialog/imagetaskexportwidget.cpp
+@@ -1,10 +1,16 @@
+ #include "imagetaskexportwidget.h"
+ #include "ui_imagetaskexportwidget.h"
+ 
++#include <algorithm>
+ #include <memory>
+ #include <vector>
+ 
+ #include <QMessageBox>
++#include <QPointer>
++#include <QProgressDialog>
++
++#include <QtConcurrent/QtConcurrentRun>
++#include <QFutureWatcher>
+ 
+ #include "geometrize/shaperesult.h"
+ #include "geometrize/exporter/shapearrayexporter.h"
+@@ -70,10 +76,13 @@
+             return;
+         }
+ 
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
++        // 按用户倍率在放大画布上重放形状矢量:形状坐标不变,放大由 SVG viewBox→输出尺寸映射完成
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
+         const std::uint32_t width{m_task->getCurrent().getWidth()};
+         const std::uint32_t height{m_task->getCurrent().getHeight()};
++        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, false)) {
++            return;
++        }
+         geometrize::exporter::exportRasterizedSvg(
+                     *m_shapes,
+                     width,
+@@ -95,19 +104,31 @@
+             return;
+         }
+ 
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
++        // 按用户倍率在放大画布上重放形状矢量,逐步前缀各存一帧(导出器内部已做增量渲染+帧数上限)
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->imageScaleSpinBox->value()))};
+         const std::uint32_t width{m_task->getCurrent().getWidth()};
+         const std::uint32_t height{m_task->getCurrent().getHeight()};
+-        geometrize::exporter::exportRasterizedSvgs(
+-                    *m_shapes,
+-                    width,
+-                    height,
+-                    width * scaleFactor,
+-                    height * scaleFactor,
+-                    path.toStdString(),
+-                    "exported_image",
+-                    ".png");
++        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, false)) {
++            return;
++        }
++
++        // 0 形状时导出器本就静默失败(既有行为),别弹"将写入 0 张"的空确认框
++        if(m_shapes->empty()) {
++            return;
++        }
++
++        // 会向目录批量写盘(每步一张,最多 1000 张),写盘前明确告知张数与目标目录
++        if(!confirmImageSequenceExport(m_shapes->size(), path)) {
++            return;
++        }
++
++        const std::size_t imageCount{geometrize::exporter::exportedFrameCount(m_shapes->size())};
++        runExportInBackground(tr("Exporting %1 images...", "Progress dialog text shown while exporting one image per step; %1 = number of files").arg(imageCount),
++            [shapes = *m_shapes, width, height, scaleFactor, targetDir = path.toStdString()]() {
++                geometrize::exporter::exportRasterizedSvgs(shapes, width, height,
++                    width * scaleFactor, height * scaleFactor,
++                    targetDir, "exported_image", ".png");
++            });
+     }
+ 
+     void saveGeometryData() const
+@@ -145,26 +166,31 @@
+             return;
+         }
+ 
+-        // Rasterize as x3 normal size and downscale for less jaggy result
+-        const std::uint32_t scaleFactor{3};
++        // 参数与控件默认值对齐:每 20 shape 一帧、20FPS(GIF 延迟下限 20ms,上限 50)、x1 输出、无限循环、末帧 2 秒
++        const std::size_t frameStep{static_cast<std::size_t>(std::max(1, ui->frameStepSpinBox->value()))};
++        const std::uint32_t frameDelayMs{static_cast<std::uint32_t>(1000 / std::max(1, ui->frameRateSpinBox->value()))};
++        const std::uint32_t scaleFactor{static_cast<std::uint32_t>(std::max(1, ui->scaleFactorSpinBox->value()))};
++        const std::uint32_t loopCount{ui->loopGifCheckbox->isChecked() ? 0U : 1U};
++        const std::uint32_t endPauseMs{ui->endPauseCheckbox->isChecked() ? 2000U : 0U};
++
+         const std::uint32_t width{m_task->getCurrent().getWidth()};
+         const std::uint32_t height{m_task->getCurrent().getHeight()};
++        if(!warnIfOutputDimensionsExceedLimits(width * scaleFactor, height * scaleFactor, true)) {
++            return;
++        }
+ 
+-        auto frameSkipPredicate = [](const std::size_t frameIdx) {
+-            if(frameIdx % 2 == 0) {
+-                return true;
+-            }
+-            return false;
++        auto frameSkipPredicate = [frameStep](const std::size_t frameIdx) {
++            return frameIdx % frameStep != 0; // 保留每第 N 个形状处取帧
+         };
+ 
+-        geometrize::exporter::exportGIF(
+-            *m_shapes,
+-            width,
+-            height,
+-            width * scaleFactor,
+-            height * scaleFactor,
+-            frameSkipPredicate,
+-            path.toStdString());
++        // 后台执行:导出走 QtConcurrent 线程,UI 弹进度框。shapes 以 shared_ptr 列表浅拷贝
++        // 持有(形状本体共享,不随任务销毁失效)
++        runExportInBackground(tr("Exporting GIF..."),
++            [shapes = *m_shapes, width, height, scaleFactor, frameSkipPredicate, frameDelayMs, loopCount, endPauseMs, filePath = path.toStdString()]() {
++                geometrize::exporter::exportGIF(shapes, width, height,
++                    width * scaleFactor, height * scaleFactor,
++                    frameSkipPredicate, filePath, frameDelayMs, loopCount, endPauseMs);
++            });
+     }
+ 
+     void saveHTML5WebpageButton() const
+@@ -216,6 +242,78 @@
+                              tr("Failed to run exporter. Exporter was misconfigured.", "Error message text shown when an attempt to save/export a file failed"));
+     }
+ 
++    /// 输出尺寸预检:Qt6/64 位 QImage 无固定单边上限,超限输入不再被 Qt 拒绝——内存压力下
++    /// scaled 返回空图会引爆 GIF 量化器的堆越界读,GIF 头部宽高超过 uint16 还会静默截断。
++    /// 这里按确定性上限(总 RGBA 字节 ≤ 2GB、GIF 每边 ≤ 65535)提前拒绝,把失败从后台线程
++    /// 挪到用户可见的弹窗,而不是丢弃导出函数的 bool 返回值。
++    bool warnIfOutputDimensionsExceedLimits(const std::uint32_t outputWidth, const std::uint32_t outputHeight, const bool gifHeaderLimit) const
++    {
++        constexpr std::uint64_t maxOutputBytes{0x7FFFFFFFULL};
++        constexpr std::uint32_t maxGifSide{65535U};
++        const bool tooLarge{static_cast<std::uint64_t>(outputWidth) * outputHeight * 4U > maxOutputBytes};
++        const bool overGifSide{gifHeaderLimit && (outputWidth > maxGifSide || outputHeight > maxGifSide)};
++        if(!tooLarge && !overGifSide) {
++            return true;
++        }
++        QMessageBox::warning(q,
++            tr("Export dimensions too large", "Title of error message shown when the scaled output resolution exceeds export limits"),
++            tr("The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.",
++               "Error message text shown when the scaled output resolution exceeds export limits").arg(outputWidth).arg(outputHeight));
++        return false;
++    }
++
++    /// 序列导出确认:这是唯一会向所选目录批量写盘的入口(每步一张 PNG),不弹确认就会在用户
++    /// 毫无预期的情况下把目录(常见如桌面)铺满文件。张数取自导出器的 exportedFrameCount,
++    /// 与写盘循环同一公式,避免告知数与实际写盘数漂移。
++    bool confirmImageSequenceExport(const std::size_t shapeCount, const QString& targetDir) const
++    {
++        const std::size_t imageCount{geometrize::exporter::exportedFrameCount(shapeCount)};
++        const QString text{(shapeCount > imageCount)
++            ? tr("This will write %1 PNG images into the chosen folder, one image for each step of the rendering process, evenly sampled from %2 steps (at most 1000 images):\n\n%3\n\nContinue?",
++                 "Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = number of steps, %3 = target folder")
++                  .arg(imageCount).arg(shapeCount).arg(targetDir)
++            : tr("This will write %1 PNG images into the chosen folder, one image for each step of the rendering process (at most 1000 images):\n\n%2\n\nContinue?",
++                 "Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = target folder")
++                  .arg(imageCount).arg(targetDir)};
++        QMessageBox confirm{QMessageBox::Icon::Question,
++                            tr("Export image sequence", "Title of the confirmation dialog shown before exporting one image per step"),
++                            text,
++                            QMessageBox::StandardButton::Yes | QMessageBox::StandardButton::No,
++                            q};
++        // 破坏面在"目录被铺满"一侧,默认与 Esc 都落在"否"上
++        confirm.setDefaultButton(QMessageBox::StandardButton::No);
++        confirm.setEscapeButton(QMessageBox::StandardButton::No);
++        confirm.setWindowModality(Qt::WindowModality::WindowModal);
++        confirm.setWindowFlags(confirm.windowFlags() & ~Qt::WindowContextHelpButtonHint);
++        return confirm.exec() == QMessageBox::StandardButton::Yes;
++    }
++
++    /// 把耗时导出挂到 QtConcurrent 线程:期间弹不可取消的进度框并禁用导出按钮,
++    /// 完成后自动恢复。widget 是 WA_DeleteOnClose 链上的一环,watcher 以 q 为 parent、
++    /// 回调以 QPointer 守护,窗口先关也不会拍悬空对象。
++    template<typename Func>
++    void runExportInBackground(const QString& message, Func&& work) const
++    {
++        QPointer<ImageTaskExportWidget> guard{q};
++        auto* dialog = new QProgressDialog(message, QString(), 0, 0, q);
++        dialog->setWindowModality(Qt::WindowModal);
++        dialog->setCancelButton(nullptr);
++        dialog->setMinimumDuration(0);
++        dialog->show();
++
++        auto* watcher = new QFutureWatcher<void>(q);
++        q->connect(watcher, &QFutureWatcher<void>::finished, q, [guard, dialog]() {
++            if(guard.isNull()) {
++                return;
++            }
++            dialog->deleteLater();
++            guard->setEnabled(true);
++        });
++
++        q->setEnabled(false);
++        watcher->setFuture(QtConcurrent::run(std::forward<Func>(work)));
++    }
++
+     const geometrize::task::ImageTask* m_task;
+     const std::vector<geometrize::ShapeResult>* m_shapes;
+ 
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/dialog/imagetaskexportwidget.ui b/geometrize/dialog/imagetaskexportwidget.ui
+--- a/geometrize/dialog/imagetaskexportwidget.ui
++++ b/geometrize/dialog/imagetaskexportwidget.ui
+@@ -33,6 +33,33 @@
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_2">
+       <item>
++       <layout class="QFormLayout" name="imageOptionsFormLayout">
++        <item row="0" column="0">
++         <widget class="QLabel" name="imageScaleLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the output resolution multiplier of the exported image">Output Scale</string>
++          </property>
++         </widget>
++        </item>
++        <item row="0" column="1">
++         <widget class="QSpinBox" name="imageScaleSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>8</number>
++          </property>
++          <property name="value">
++           <number>3</number>
++          </property>
++          <property name="toolTip">
++           <string>Output resolution multiplier. Higher values render smoother shapes but export slower.</string>
++          </property>
++         </widget>
++        </item>
++       </layout>
++      </item>
++      <item>
+        <widget class="QPushButton" name="saveImageButton">
+         <property name="text">
+          <string extracomment="Text on a button that opens a dialog that allows the user to save an image file">Save Image</string>
+@@ -44,6 +71,9 @@
+         <property name="text">
+          <string extracomment="Text on a button that opens a dialog that allows a user to save multiple image files">Save Images</string>
+         </property>
++        <property name="toolTip">
++         <string extracomment="Tooltip for the button that exports one image per rendering step into a folder">Saves one PNG image per step of the rendering process into the chosen folder (up to 1000 images).</string>
++        </property>
+        </widget>
+       </item>
+      </layout>
+@@ -72,6 +102,99 @@
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_4">
+       <item>
++       <layout class="QFormLayout" name="gifOptionsFormLayout">
++        <item row="0" column="0">
++         <widget class="QLabel" name="frameStepLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls how many shapes are added between frames of the GIF animation">Shapes Per Frame</string>
++          </property>
++         </widget>
++        </item>
++        <item row="0" column="1">
++         <widget class="QSpinBox" name="frameStepSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>1000</number>
++          </property>
++          <property name="value">
++           <number>20</number>
++          </property>
++          <property name="toolTip">
++           <string>Take one animation frame for every N shapes. Higher values make smaller, faster animations.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="0">
++         <widget class="QLabel" name="frameRateLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the playback speed of the GIF animation">Frame Rate (FPS)</string>
++          </property>
++         </widget>
++        </item>
++        <item row="1" column="1">
++         <widget class="QSpinBox" name="frameRateSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>50</number>
++          </property>
++          <property name="value">
++           <number>20</number>
++          </property>
++          <property name="toolTip">
++           <string>Playback speed of the animation in frames per second. The GIF format floors frame delays at 20ms, so 50 is the practical maximum.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="2" column="0">
++         <widget class="QLabel" name="scaleFactorLabel">
++          <property name="text">
++           <string extracomment="Label for the spinner that controls the output resolution multiplier of the GIF animation">Output Scale</string>
++          </property>
++         </widget>
++        </item>
++        <item row="2" column="1">
++         <widget class="QSpinBox" name="scaleFactorSpinBox">
++          <property name="minimum">
++           <number>1</number>
++          </property>
++          <property name="maximum">
++           <number>8</number>
++          </property>
++          <property name="value">
++           <number>1</number>
++          </property>
++          <property name="toolTip">
++           <string>Output resolution multiplier. Higher values render smoother shapes but export slower.</string>
++          </property>
++         </widget>
++        </item>
++        <item row="3" column="0" colspan="2">
++         <widget class="QCheckBox" name="loopGifCheckbox">
++          <property name="text">
++           <string extracomment="Checkbox that controls whether the GIF animation loops forever">Loop Forever</string>
++          </property>
++          <property name="checked">
++           <bool>true</bool>
++          </property>
++         </widget>
++        </item>
++        <item row="4" column="0" colspan="2">
++         <widget class="QCheckBox" name="endPauseCheckbox">
++          <property name="text">
++           <string extracomment="Checkbox that controls whether the last frame of the GIF animation pauses for two seconds">Pause at End</string>
++          </property>
++          <property name="checked">
++           <bool>true</bool>
++          </property>
++         </widget>
++        </item>
++       </layout>
++      </item>
++      <item>
+        <widget class="QPushButton" name="saveGIFButton">
+         <property name="text">
+          <string extracomment="Text on a button that opens a dialog that allows a user to save a GIF animation image file">Save GIF</string>
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/exporter/imageexporter.cpp b/geometrize/exporter/imageexporter.cpp
+--- a/geometrize/exporter/imageexporter.cpp
++++ b/geometrize/exporter/imageexporter.cpp
+@@ -11,6 +11,9 @@
+ #include "geometrize/bitmap/bitmap.h"
+ #include "geometrize/commonutil.h"
+ #include "geometrize/exporter/svgexporter.h"
++#include "geometrize/rasterizer/rasterizer.h"
++#include "geometrize/rasterizer/scanline.h"
++#include "geometrize/shape/shape.h"
+ #include "geometrize/shaperesult.h"
+ 
+ #include "image/imageloader.h"
+@@ -83,6 +86,26 @@
+     return geometrize::exporter::exportImage(image, filePath);
+ }
+ 
++namespace
++{
++
++/// 序列导出每批最多写盘的图片数(百万形状会产生百万张 PNG,超出时均匀抽稀到上限)。
++/// 唯一真源:写盘循环与 exportedFrameCount 共用,防止"告知用户的张数"与"实际写盘张数"漂移。
++constexpr std::size_t maxSequenceFrames{1000};
++
++}
++
++std::size_t exportedFrameCount(const std::size_t shapeCount)
++{
++    if(shapeCount == 0) {
++        return 0;
++    }
++
++    // 与 exportRasterizedSvgs 的取帧规则一致:每 frameStride 个形状取一帧,且末帧必写
++    const std::size_t frameStride{(shapeCount + maxSequenceFrames - 1) / maxSequenceFrames};
++    return (shapeCount / frameStride) + ((shapeCount % frameStride != 0) ? 1 : 0);
++}
++
+ bool exportRasterizedSvgs(
+         const std::vector<geometrize::ShapeResult>& shapes,
+         std::uint32_t inputWidth,
+@@ -93,11 +116,38 @@
+         const std::string& baseFilename,
+         const std::string& fileExtension)
+ {
++    if(shapes.empty()) {
++        return false;
++    }
++
++    // 增量帧:画布逐帧累积新形状,每帧存一张 PNG。老路线"每帧序列化 SVG 前缀整帧重放"
++    // 是 O(N²)(百万形状 = 10^11 级绘制指令,不可完成),增量路线总成本 O(N)。
++    const std::size_t frameStride{(shapes.size() + maxSequenceFrames - 1) / maxSequenceFrames};
++
++    geometrize::Bitmap canvas{inputWidth, inputHeight, geometrize::rgba{0, 0, 0, 0}};
+     for(std::size_t i = 0; i < shapes.size(); i++) {
+-        const std::string path{targetDir + "/" + baseFilename + "_" + std::to_string(i) + fileExtension};
++        std::vector<geometrize::Scanline> lines{shapes[i].shape->rasterize(*shapes[i].shape)};
++        if(!shapes[i].segments.empty()) {
++            std::vector<geometrize::rgba> colors;
++            colors.reserve(shapes[i].segments.size());
++            for(const geometrize::ScanlineColor& segment : shapes[i].segments) {
++                colors.push_back(segment.color);
++            }
++            geometrize::drawLinesSegmented(canvas, colors, lines);
++        } else {
++            geometrize::drawLines(canvas, shapes[i].color, lines);
++        }
+ 
+-        const std::vector<geometrize::ShapeResult> shapeSubset(shapes.begin(), shapes.begin() + i);
+-        if(!exportRasterizedSvg(shapeSubset, inputWidth, inputHeight, outputWidth, outputHeight, path)) {
++        if((i + 1) % frameStride != 0 && i != shapes.size() - 1U) {
++            continue;
++        }
++        const std::string path{targetDir + "/" + baseFilename + "_" + std::to_string(i) + fileExtension};
++        QImage image{geometrize::image::createImage(canvas)};
++        if(static_cast<std::uint32_t>(image.width()) != outputWidth || static_cast<std::uint32_t>(image.height()) != outputHeight) {
++            image = image.scaled(static_cast<int>(outputWidth), static_cast<int>(outputHeight),
++                                 Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
++        }
++        if(!exportImage(image, path)) {
+             return false;
+         }
+     }
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/exporter/imageexporter.h b/geometrize/exporter/imageexporter.h
+--- a/geometrize/exporter/imageexporter.h
++++ b/geometrize/exporter/imageexporter.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <cstddef>
+ #include <cstdint>
+ #include <string>
+ #include <vector>
+@@ -81,6 +82,16 @@
+         const std::string& filePath);
+ 
+ /**
++ * @brief exportedFrameCount The number of image files exportRasterizedSvgs will write for the given shape count.
++ * Frames are taken every stride shapes and thinned evenly when the shape count exceeds the frame cap, so the
++ * count is not simply the shape count. Callers that need to tell users how many files an export will create
++ * (e.g. a confirmation dialog) should use this instead of re-deriving the rule.
++ * @param shapeCount The number of shapes to be exported.
++ * @return The number of images that will be written to disk.
++ */
++std::size_t exportedFrameCount(std::size_t shapeCount);
++
++/**
+  * @brief exportRasterizedSvgs Exports the shape data to images by rasterizing SVGs rendered from the shape data.
+  * Exports one image for each shape i.e. an image with one shape, two shapes, three shapes.
+  * @param shapes The shape data to export.
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/resources/translations.qrc b/resources/translations.qrc
+--- a/resources/translations.qrc
++++ b/resources/translations.qrc
+@@ -0,0 +1,83 @@
++<RCC>
++    <qresource prefix="/">
++        <file>translations/app/geometrize_ar.qm</file>
++        <file>translations/app/geometrize_bg.qm</file>
++        <file>translations/app/geometrize_cs.qm</file>
++        <file>translations/app/geometrize_da.qm</file>
++        <file>translations/app/geometrize_de.qm</file>
++        <file>translations/app/geometrize_el.qm</file>
++        <file>translations/app/geometrize_en.qm</file>
++        <file>translations/app/geometrize_es.qm</file>
++        <file>translations/app/geometrize_fi.qm</file>
++        <file>translations/app/geometrize_fr.qm</file>
++        <file>translations/app/geometrize_id.qm</file>
++        <file>translations/app/geometrize_it.qm</file>
++        <file>translations/app/geometrize_ja.qm</file>
++        <file>translations/app/geometrize_ko.qm</file>
++        <file>translations/app/geometrize_ms.qm</file>
++        <file>translations/app/geometrize_nl.qm</file>
++        <file>translations/app/geometrize_no.qm</file>
++        <file>translations/app/geometrize_pl.qm</file>
++        <file>translations/app/geometrize_pt.qm</file>
++        <file>translations/app/geometrize_pt_BR.qm</file>
++        <file>translations/app/geometrize_ru.qm</file>
++        <file>translations/app/geometrize_sk.qm</file>
++        <file>translations/app/geometrize_sr.qm</file>
++        <file>translations/app/geometrize_sv.qm</file>
++        <file>translations/app/geometrize_th.qm</file>
++        <file>translations/app/geometrize_tr.qm</file>
++        <file>translations/app/geometrize_uk.qm</file>
++        <file>translations/app/geometrize_vi.qm</file>
++        <file>translations/app/geometrize_zh.qm</file>
++        <file>translations/qt/qtbase_bg.qm</file>
++        <file>translations/qt/qtbase_ca.qm</file>
++        <file>translations/qt/qtbase_cs.qm</file>
++        <file>translations/qt/qtbase_da.qm</file>
++        <file>translations/qt/qtbase_de.qm</file>
++        <file>translations/qt/qtbase_en.qm</file>
++        <file>translations/qt/qtbase_es.qm</file>
++        <file>translations/qt/qtbase_fi.qm</file>
++        <file>translations/qt/qtbase_fr.qm</file>
++        <file>translations/qt/qtbase_gd.qm</file>
++        <file>translations/qt/qtbase_he.qm</file>
++        <file>translations/qt/qtbase_hu.qm</file>
++        <file>translations/qt/qtbase_it.qm</file>
++        <file>translations/qt/qtbase_ja.qm</file>
++        <file>translations/qt/qtbase_ko.qm</file>
++        <file>translations/qt/qtbase_lv.qm</file>
++        <file>translations/qt/qtbase_pl.qm</file>
++        <file>translations/qt/qtbase_ru.qm</file>
++        <file>translations/qt/qtbase_sk.qm</file>
++        <file>translations/qt/qtbase_uk.qm</file>
++        <file>translations/qt/qtbase_zh.qm</file>
++        <file>translations/qt/qtbase_zh_CN.qm</file>
++        <file>translations/qt/qt_ar.qm</file>
++        <file>translations/qt/qt_bg.qm</file>
++        <file>translations/qt/qt_ca.qm</file>
++        <file>translations/qt/qt_cs.qm</file>
++        <file>translations/qt/qt_da.qm</file>
++        <file>translations/qt/qt_de.qm</file>
++        <file>translations/qt/qt_en.qm</file>
++        <file>translations/qt/qt_es.qm</file>
++        <file>translations/qt/qt_fa.qm</file>
++        <file>translations/qt/qt_fi.qm</file>
++        <file>translations/qt/qt_fr.qm</file>
++        <file>translations/qt/qt_gl.qm</file>
++        <file>translations/qt/qt_he.qm</file>
++        <file>translations/qt/qt_hu.qm</file>
++        <file>translations/qt/qt_it.qm</file>
++        <file>translations/qt/qt_ja.qm</file>
++        <file>translations/qt/qt_ko.qm</file>
++        <file>translations/qt/qt_lt.qm</file>
++        <file>translations/qt/qt_pl.qm</file>
++        <file>translations/qt/qt_pt.qm</file>
++        <file>translations/qt/qt_ru.qm</file>
++        <file>translations/qt/qt_sk.qm</file>
++        <file>translations/qt/qt_sl.qm</file>
++        <file>translations/qt/qt_sv.qm</file>
++        <file>translations/qt/qt_uk.qm</file>
++        <file>translations/qt/qt_zh.qm</file>
++        <file>translations/qt/qt_zh_CN.qm</file>
++        <file>translations/qt/qt_zh_TW.qm</file>
++    </qresource>
++</RCC>
+\ No newline at end of file
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/translations/app/geometrize_zh.ts b/translations/app/geometrize_zh.ts
+--- a/translations/app/geometrize_zh.ts
++++ b/translations/app/geometrize_zh.ts
+@@ -1,4 +1,5 @@
+-<TS language="zh" version="2.1">
++<?xml version='1.0' encoding='utf-8'?>
++<TS version="2.1" language="zh">
+ <context>
+     <name>AboutDialog</name>
+     <message>
+@@ -59,19 +60,6 @@
+     </message>
+ </context>
+ <context>
+-    <name>FolderSelectionWidget</name>
+-    <message>
+-        <source>Folder Name</source>
+-        <extracomment>A text label next to a button that opens a dialog which allows the user to select a folder</extracomment>
+-        <translation>文件夹名称</translation>
+-    </message>
+-    <message>
+-        <source>Select Folder</source>
+-        <extracomment>Text on a button that opens a folder selection dialog</extracomment>
+-        <translation>选择文件夹</translation>
+-    </message>
+-</context>
+-<context>
+     <name>GlobalPreferencesDialog</name>
+     <message>
+         <source>Global Preferences</source>
+@@ -150,7 +138,9 @@
+     </message>
+     <message>
+         <source>Image Geometrizer Settings</source>
+-        <extracomment>Title for the app settings section that contains options that affect the area of the app that turns images into shapes (the image geometrizer)</extracomment>
++        <extracomment>Title for the image geometrize settings section. Settings in this section are used when a task for transforming an image into shapes is created
++----------
++Title for the app settings section that contains options that affect the area of the app that turns images into shapes (the image geometrizer)</extracomment>
+         <translation>图像几何化设置</translation>
+     </message>
+     <message>
+@@ -183,6 +173,44 @@
+         <extracomment>A text label next to a value that describes the maximum number of CPU threads the computer can use when recreating an image using shapes</extracomment>
+         <translation>每张图像最大线程</translation>
+     </message>
++    <message>
++        <source>Loading &amp; Saving</source>
++        <translation>加载与保存</translation>
++    </message>
++    <message>
++        <source>Use custom starting background color for image</source>
++        <extracomment>Label text for a checkbox option that controls whether a custom background color (e.g. red, yellow, blue) is set when initially opening an image task</extracomment>
++        <translation>为图像使用自定义初始背景色</translation>
++    </message>
++    <message>
++        <source>Replace alpha channel in target images</source>
++        <extracomment>Label text for a checkbox option that controls whether a custom color (e.g. red, yellow, blue) is used to replace the alpha channel of the target image when opening an image task</extracomment>
++        <translation>替换目标图像的 alpha 通道</translation>
++    </message>
++    <message>
++        <source>Autoloading &amp; Autosaving</source>
++        <extracomment>Title text for a section of app settings relating to automatic loading/saving of preferences</extracomment>
++        <translation>自动加载与自动保存</translation>
++    </message>
++    <message>
++        <source>Autoloading</source>
++        <extracomment>Title for the on startup section of app settings. Settings in this section are applied when the app launches or first starts up</extracomment>
++        <translation>自动加载</translation>
++    </message>
++    <message>
++        <source>Automatically restore saved image task settings</source>
++        <extracomment>Label text for a checkbox option that controls whether the application automatically restores saved settings when opening a task for geometrizing an image</extracomment>
++        <translation>自动恢复已保存的图像任务设置</translation>
++    </message>
++    <message>
++        <source>Autosaving</source>
++        <translation>自动保存</translation>
++    </message>
++    <message>
++        <source>Automatically save image task settings</source>
++        <extracomment>Label text for a checkbox option that controls whether the application automatically saves settings when closing a task for geometrizing an image (ready to restore the settings later)</extracomment>
++        <translation>自动保存图像任务设置</translation>
++    </message>
+ </context>
+ <context>
+     <name>ImageTaskExportWidget</name>
+@@ -192,6 +220,46 @@
+         <translation>导出图像</translation>
+     </message>
+     <message>
++        <source>Shapes Per Frame</source>
++        <extracomment>Label for the spinner that controls how many shapes are added between frames of the GIF animation</extracomment>
++        <translation>每帧形状数</translation>
++    </message>
++    <message>
++        <source>Frame Rate (FPS)</source>
++        <extracomment>Label for the spinner that controls the playback speed of the GIF animation</extracomment>
++        <translation>帧率 (FPS)</translation>
++    </message>
++    <message>
++        <source>Output Scale</source>
++        <extracomment>Label for the spinner that controls the output resolution multiplier of the GIF animation</extracomment>
++        <translation>输出倍率</translation>
++    </message>
++    <message>
++        <source>Loop Forever</source>
++        <extracomment>Checkbox that controls whether the GIF animation loops forever</extracomment>
++        <translation>循环播放</translation>
++    </message>
++    <message>
++        <source>Pause at End</source>
++        <extracomment>Checkbox that controls whether the last frame of the GIF animation pauses for two seconds</extracomment>
++        <translation>末帧停顿</translation>
++    </message>
++    <message>
++        <source>Take one animation frame for every N shapes. Higher values make smaller, faster animations.</source>
++        <extracomment>Tooltip for the shapes per frame spinner</extracomment>
++        <translation>每添加 N 个形状取一帧。数值越大,动画越小、导出越快。</translation>
++    </message>
++    <message>
++        <source>Playback speed of the animation in frames per second.</source>
++        <extracomment>Tooltip for the frame rate spinner</extracomment>
++        <translation>动画播放速度(帧每秒)。</translation>
++    </message>
++    <message>
++        <source>Output resolution multiplier. Higher values render smoother shapes but export slower.</source>
++        <extracomment>Tooltip for the output scale spinner</extracomment>
++        <translation>输出分辨率倍率。数值越大形状边缘越平滑,但导出更慢。</translation>
++    </message>
++    <message>
+         <source>Save Image</source>
+         <extracomment>Text on a button that opens a dialog that allows the user to save an image file</extracomment>
+         <translation>保存图像</translation>
+@@ -199,7 +267,12 @@
+     <message>
+         <source>Save Images</source>
+         <extracomment>Text on a button that opens a dialog that allows a user to save multiple image files</extracomment>
+-        <translation>保存图像</translation>
++        <translation>保存序列图像</translation>
++    </message>
++    <message>
++        <source>Saves one PNG image per step of the rendering process into the chosen folder (up to 1000 images).</source>
++        <extracomment>Tooltip for the button that exports one image per rendering step into a folder</extracomment>
++        <translation>将渲染过程的每一步各存为一张 PNG,写入所选目录(最多 1000 张)。</translation>
+     </message>
+     <message>
+         <source>Export SVG</source>
+@@ -341,19 +414,207 @@
+         <source>Clear</source>
+         <extracomment>Text on a button that clears/resets the results of a task back to a starting value when pressed</extracomment>
+         <translation>清除</translation>
++    </message>    <message>
++        <source>Undo</source>
++        <extracomment>Text on a button that removes the most recently added shape from the task when pressed</extracomment>
++        <translation>撤销</translation>
++    </message>
++    <message>
++        <source>Redo</source>
++        <extracomment>Text on a button that re-adds the most recently undone shape to the task when pressed</extracomment>
++        <translation>重做</translation>
++    </message>
++    <message>
++        <source>Priority Region Selection (Ctrl+Drag)</source>
++        <extracomment>Toggle for region selection mode: Ctrl+Drag on the image selects priority regions</extracomment>
++        <translation>框选优先区域(Ctrl+拖拽)</translation>
++    </message>
++    <message>
++        <source>While checked, Ctrl+Drag on the image selects priority regions (error weight x10 inside). Requires Error-Guided Shape Placement to take effect.</source>
++        <extracomment>Tooltip for the region selection toggle</extracomment>
++        <translation>勾选后在图上按住 Ctrl 拖拽即可框选优先区域(区域内误差权重 ×10)。需开启"误差图引导形状放置"才会生效。</translation>
++    </message>
++    <message>
++        <source>Clear Regions</source>
++        <extracomment>Text on a button that removes all priority regions from the task</extracomment>
++        <translation>清除区域</translation>
++    </message>
++    <message>
++        <source>Priority Regions: %1</source>
++        <extracomment>Label showing the number of priority regions currently set (e.g. "Priority Regions: 2")</extracomment>
++        <translation>优先区域:%1</translation>
++    </message>
++    <message>
++        <source>Priority Regions: 0</source>
++        <extracomment>Initial text of the priority regions count label in the UI form (replaced by the %1 version once a task is set)</extracomment>
++        <translation>优先区域:0</translation>
++    </message>
++
++    <message>
++        <source>Use Shape Bounding Area</source>
++        <translation>使用形状包围区域</translation>
++    </message>
++    <message>
++        <source>Pyramid Search (Fast)</source>
++        <extracomment>Algorithm enhancement toggle: hill-climb evaluation on a half-resolution image</extracomment>
++        <translation>金字塔搜索(快速)</translation>
++    </message>
++    <message>
++        <source>Adaptive Mutation Step</source>
++        <extracomment>Algorithm enhancement toggle: 1/5 success rule step size adaptation</extracomment>
++        <translation>自适应变异步长</translation>
++    </message>
++    <message>
++        <source>Per-Shape Alpha Search</source>
++        <extracomment>Algorithm enhancement toggle: search several opacity levels per shape</extracomment>
++        <translation>逐形状透明度搜索</translation>
++    </message>
++    <message>
++        <source>Evaluate hill-climbing candidates on a half-resolution image. Much faster on large images, output differs from the standard search.</source>
++        <extracomment>Tooltip for the pyramid search toggle</extracomment>
++        <translation>在半分辨率图上评估爬山候选。大图上大幅提速,输出与标准搜索不同。</translation>
++    </message>
++    <message>
++        <source>Shrink the mutation step when candidates keep failing, grow it back on successes (1/5 success rule). Better quality per step, slower.</source>
++        <extracomment>Tooltip for the adaptive step toggle</extracomment>
++        <translation>变异连续失败时收缩步长、连续成功时回升(1/5 成功法则)。同步数质量更好,速度更慢。</translation>
++    </message>
++    <message>
++        <source>Try several opacity levels per shape and keep the best. Better quality per step, much slower.</source>
++        <extracomment>Tooltip for the alpha search toggle</extracomment>
++        <translation>对每个形状尝试多个透明度档位并取最优。同步数质量更好,速度明显更慢。</translation>
++    </message>
++    <message>
++        <source>Error-Guided Shape Placement</source>
++        <extracomment>Algorithm enhancement toggle: sample new shape centers from the error map</extracomment>
++        <translation>误差图引导形状放置</translation>
++    </message>
++    <message>
++        <source>Place new shapes where the error is highest instead of uniformly at random. Helps most with low budgets (few candidates or mutations).</source>
++        <extracomment>Tooltip for the error guide toggle</extracomment>
++        <translation>新形状优先放置在误差最高处而非均匀随机。低预算(少候选/少变异)时收益最大。</translation>
++    </message>
++    <message>
++        <source>Segmented Colors (Per-Scanline)</source>
++        <extracomment>Algorithm enhancement toggle: per-scanline color search (A2.4)</extracomment>
++        <translation>分段颜色(按扫描线取色)</translation>
++    </message>
++    <message>
++        <source>Draw each scanline of a shape with its own best color, so shapes spanning light/dark edges no longer turn gray. Applies to SVG/PNG/GIF export too; uses the enhanced search path.</source>
++        <extracomment>Tooltip for the segment colors toggle</extracomment>
++        <translation>形状的每条扫描线独立取最优色,横跨明暗边界不再发灰。SVG/PNG/GIF 导出同步生效;开启后走增强搜索轨道。</translation>
+     </message>
+ </context>
+ <context>
+-    <name>ImageTaskScriptPanel</name>
++    <name>ImageTaskScriptingWidget</name>
+     <message>
+-        <source>Script Editor</source>
++        <source>Form</source>
++        <translation>窗体</translation>
++    </message>
++    <message>
++        <source>Edit Shape Creation/Mutation Scripts</source>
++        <translation>编辑形状生成/变异脚本</translation>
++    </message>
++    <message>
++        <source>Add And Edit Custom Scripts</source>
++        <translation>添加并编辑自定义脚本</translation>
++    </message>
++    <message>
++        <source>Before Step</source>
++        <translation>步进前</translation>
++    </message>
++    <message>
++        <source>After Step</source>
++        <translation>步进后</translation>
++    </message>
++    <message>
++        <source>Stop Condition</source>
++        <translation>停止条件</translation>
++    </message>
++    <message>
++        <source>On Stop Condition Met</source>
++        <translation>停止条件达成时</translation>
++    </message>
++    <message>
++        <source>Add Shape Precondition</source>
++        <translation>添加形状前条件</translation>
++    </message>
++    <message>
++        <source>Before Add Shape</source>
++        <translation>添加形状前</translation>
++    </message>
++    <message>
++        <source>After Add Shape</source>
++        <translation>添加形状后</translation>
++    </message>
++    <message>
++        <source>On Scene Pen Input</source>
++        <translation>场景手写笔输入时</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Enter</source>
++        <translation>手写笔临近进入时</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Exit</source>
++        <translation>手写笔临近离开时</translation>
++    </message>
++    <message>
++        <source>On Key Down</source>
++        <translation>按键按下时</translation>
++    </message>
++    <message>
++        <source>On Key Up</source>
++        <translation>按键抬起时</translation>
++    </message>
++    <message>
++        <source>On Mouse Down</source>
++        <translation>鼠标按下时</translation>
++    </message>
++    <message>
++        <source>On Mouse Up</source>
++        <translation>鼠标抬起时</translation>
++    </message>
++    <message>
++        <source>On Mouse Move</source>
++        <translation>鼠标移动时</translation>
++    </message>
++    <message>
++        <source>On Mouse Wheel</source>
++        <translation>鼠标滚轮时</translation>
++    </message>
++    <message>
++        <source>On Update</source>
++        <translation>定时更新时</translation>
++    </message>
++    <message>
++        <source>Rescan Scripts</source>
++        <translation>重新扫描脚本</translation>
++    </message>
++    <message>
++        <source>Clear Scripts</source>
++        <translation>清空脚本</translation>
++    </message>
++</context>
++<context>
++    <name>ImageTaskShapeScriptingPanel</name>
++    <message>
++        <source>Shape Script Editor</source>
+         <extracomment>Title of a window containing text editor panels for editing scripts. Scripts are pieces of code that are used to control how the app turns images into shapes</extracomment>
+-        <translation>脚本编辑器</translation>
++        <translation>形状脚本编辑器</translation>
+     </message>
+     <message>
+         <source>Scripting Engine Enabled</source>
+         <extracomment>Text next to a checkbox that enables or disables the scripting engine when pressed</extracomment>
+-        <translation>脚本引擎已启动</translation>
++        <translation>启用脚本引擎</translation>
++    </message>
++    <message>
++        <source>Preset Scripts</source>
++        <translation>预设脚本</translation>
++    </message>
++    <message>
++        <source>Rescan Custom Scripts</source>
++        <translation>重新扫描自定义脚本</translation>
+     </message>
+     <message>
+         <source>Reset Scripting Engine</source>
+@@ -397,6 +658,21 @@
+ <context>
+     <name>ImageTaskWindow</name>
+     <message>
++        <source>Edit</source>
++        <extracomment>The title of the Edit menu that contains commands relating to editing the task, such as undo and redo</extracomment>
++        <translation>编辑</translation>
++    </message>
++    <message>
++        <source>Undo</source>
++        <extracomment>Text on a menu item that removes the most recently added shape from the task when pressed</extracomment>
++        <translation>撤销</translation>
++    </message>
++    <message>
++        <source>Redo</source>
++        <extracomment>Text on a menu item that re-adds the most recently undone shape to the task when pressed</extracomment>
++        <translation>重做</translation>
++    </message>
++    <message>
+         <source>File</source>
+         <extracomment>The title of the File menu that contains commands relating to the handling of files, such as open, save, print, etc</extracomment>
+         <translation>文件</translation>
+@@ -466,6 +742,10 @@
+         <extracomment>Text on a menu item that shows or hides a window containing a vector-based (SVG) graphic of the shapes the app has created</extracomment>
+         <translation>矢量图形视图</translation>
+     </message>
++    <message>
++        <source>Scripts</source>
++        <translation>脚本</translation>
++    </message>
+ </context>
+ <context>
+     <name>LanguageSelectWidget</name>
+@@ -488,6 +768,16 @@
+         <translation>打开图像</translation>
+     </message>
+     <message>
++        <source>Processing Resolution</source>
++        <extracomment>Label next to a combo box that selects the maximum processing resolution for opened images. Images larger than the limit are proportionally downscaled (uic retranslateUi uses this plain-class-name context)</extracomment>
++        <translation>处理分辨率上限</translation>
++    </message>
++    <message>
++        <source>Images with a side longer than the selected limit are proportionally downscaled before processing</source>
++        <extracomment>Tooltip explaining that images with a side longer than the selected limit are proportionally downscaled before processing</extracomment>
++        <translation>单边超过所选上限的图像,会在处理前按比例缩小到限内</translation>
++    </message>
++    <message>
+         <source>Open Link</source>
+         <extracomment>Text on a button that opens a dialog that allows the user to enter a website link, which is then downloaded</extracomment>
+         <translation>打开链接</translation>
+@@ -498,6 +788,10 @@
+         <translation>运行脚本</translation>
+     </message>
+     <message>
++        <source>Open Task Queue</source>
++        <translation>打开任务队列</translation>
++    </message>
++    <message>
+         <source>Recent</source>
+         <extracomment>Title of a section that contains a list of files and items the user recently opened</extracomment>
+         <translation>最近</translation>
+@@ -580,6 +874,10 @@
+         <extracomment>Title of the window that contains legal/license information about the software</extracomment>
+         <translation>许可信息</translation>
+     </message>
++    <message>
++        <source>RangeSlider</source>
++        <translation>范围滑块</translation>
++    </message>
+ </context>
+ <context>
+     <name>OpenUrlDialog</name>
+@@ -595,6 +893,17 @@
+     </message>
+ </context>
+ <context>
++    <name>QObject</name>
++    <message>
++        <source>Stop Condition Met</source>
++        <translation>停止条件已达成</translation>
++    </message>
++    <message>
++        <source>Stop condition for geometrizing was met</source>
++        <translation>几何化的停止条件已达成</translation>
++    </message>
++</context>
++<context>
+     <name>QWidget</name>
+     <message>
+         <source>Open Image</source>
+@@ -629,7 +938,7 @@
+     <message>
+         <source>Save Images</source>
+         <comment>Title on a dialog that allows the user to save image files</comment>
+-        <translation>保存图像</translation>
++        <translation>选择序列图像导出目录</translation>
+     </message>
+     <message>
+         <source>Save Geometry Data</source>
+@@ -696,6 +1005,11 @@
+         <comment>Title on a dialog that allows the user to select an image file</comment>
+         <translation>选择图像</translation>
+     </message>
++    <message>
++        <source>Select Folder</source>
++        <comment>Title on a dialog that allows the user to select a folder</comment>
++        <translation>选择文件夹</translation>
++    </message>
+ </context>
+ <context>
+     <name>RunScriptDialog</name>
+@@ -747,17 +1061,128 @@
+ <context>
+     <name>ScriptEditorWidget</name>
+     <message>
+-        <source>Apply</source>
+-        <extracomment>Text on a button that applies an app settings change when pressed</extracomment>
+-        <translation>应用</translation>
+-    </message>
+-    <message>
+         <source>Reset</source>
+         <extracomment>Text on a button that resets an app setting to a default value when pressed</extracomment>
+         <translation>重设</translation>
+     </message>
+ </context>
+ <context>
++    <name>TaskQueueWindow</name>
++    <message>
++        <source>Drop image files onto the area below to batch process them via a script</source>
++        <extracomment>Instructions to the user explaining how to add items to the task queue list, by dragging items into a list below this text</extracomment>
++        <translation>将图像文件拖放到下方区域,通过脚本批量处理</translation>
++    </message>
++    <message>
++        <source>Run All</source>
++        <extracomment>Text on a button that starts running the tasks from the task queue when pressed</extracomment>
++        <translation>全部运行</translation>
++    </message>
++    <message>
++        <source>Clear</source>
++        <extracomment>Text on a button that removes any queued up tasks from the task queue in the user interface</extracomment>
++        <translation>清空</translation>
++    </message>
++    <message>
++        <source>Close Open Windows</source>
++        <translation>关闭已打开的窗口</translation>
++    </message>
++    <message>
++        <source>Select Script</source>
++        <translation>选择脚本</translation>
++    </message>
++    <message>
++        <source>File</source>
++        <extracomment>The title of the File menu that contains commands relating to the handling of files, such as open, save, print, etc</extracomment>
++        <translation>文件</translation>
++    </message>
++    <message>
++        <source>Clear Recent Items</source>
++        <extracomment>Text on a menu item that clears a list of recently loaded files when pressed</extracomment>
++        <translation>清空最近项目</translation>
++    </message>
++    <message>
++        <source>Exit</source>
++        <extracomment>Text on a menu item that closes the window when pressed</extracomment>
++        <translation>退出</translation>
++    </message>
++    <message>
++        <source>Tutorials</source>
++        <extracomment>Text on a menu item that opens the tutorials page when pressed</extracomment>
++        <translation>教程</translation>
++    </message>
++    <message>
++        <source>Support</source>
++        <extracomment>Text on a menu item that opens the customer support/help page when pressed</extracomment>
++        <translation>支持</translation>
++    </message>
++    <message>
++        <source>About</source>
++        <extracomment>Text on a menu item that opens the About page with information about the app when pressed</extracomment>
++        <translation>关于</translation>
++    </message>
++    <message>
++        <source>Script Console</source>
++        <extracomment>Text on a menu item that shows or hides the script console when pressed</extracomment>
++        <translation>脚本控制台</translation>
++    </message>
++    <message>
++        <source>Global Preferences</source>
++        <extracomment>Text on a menu item that opens the application-wide/global preferences page</extracomment>
++        <translation>全局偏好设置</translation>
++    </message>
++    <message>
++        <source>Load Global Preferences</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to load a file containing application-wide/global preferences page</extracomment>
++        <translation>加载全局偏好设置</translation>
++    </message>
++    <message>
++        <source>Save Global Preferences</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to save a file containing the current application-wide/global preferences page</extracomment>
++        <translation>保存全局偏好设置</translation>
++    </message>
++    <message>
++        <source>Load Task Queue Settings</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to load a file containing settings instructing the computer how to geometrize a group of queued up images</extracomment>
++        <translation>加载任务队列设置</translation>
++    </message>
++    <message>
++        <source>Save Task Queue Settings</source>
++        <extracomment>Text on a menu item that opens a dialog that allows the user to save a file containing settings instructing the computer how to geometrize a group of queued up images</extracomment>
++        <translation>保存任务队列设置</translation>
++    </message>
++    <message>
++        <source>Export Results Automatically</source>
++        <extracomment>Title of a settings group that controls whether batch processing results are exported automatically when each task finishes</extracomment>
++        <translation>自动导出结果</translation>
++    </message>
++    <message>
++        <source>Output Directory</source>
++        <extracomment>Label for the folder path that batch processing results are exported to</extracomment>
++        <translation>输出目录</translation>
++    </message>
++    <message>
++        <source>Browse...</source>
++        <extracomment>Text on a button that opens a dialog for picking a folder</extracomment>
++        <translation>浏览...</translation>
++    </message>
++    <message>
++        <source>Formats</source>
++        <extracomment>Label for the row of checkboxes that select which file formats the batch results are exported as</extracomment>
++        <translation>导出格式</translation>
++    </message>
++    <message>
++        <source>PNG image</source>
++        <extracomment>Checkbox that enables exporting the bitmap result of each batch task as a PNG image</extracomment>
++        <translation>PNG 图像</translation>
++    </message>
++    <message>
++        <source>SVG vector</source>
++        <extracomment>Checkbox that enables exporting the vector shapes of each batch task as an SVG file</extracomment>
++        <translation>SVG 矢量</translation>
++    </message>
++</context>
++<context>
+     <name>WelcomeWindow</name>
+     <message>
+         <source>Welcome to Geometrize. Watch the video tutorials below to learn the basics.</source>
+@@ -807,6 +1232,13 @@
+     </message>
+ </context>
+ <context>
++    <name>geometrize::dialog::GlobalPreferencesDialog</name>
++    <message>
++        <source>Color Picker</source>
++        <translation>取色器</translation>
++    </message>
++</context>
++<context>
+     <name>geometrize::dialog::ImageTaskExportWidget</name>
+     <message>
+         <source>Failed to run exporter</source>
+@@ -818,6 +1250,134 @@
+         <comment>Error message text shown when an attempt to save/export a file failed</comment>
+         <translation>导出程序运行失败。导出程序配置错误。</translation>
+     </message>
++    <message>
++        <source>Export dimensions too large</source>
++        <comment>Title of error message shown when the scaled output resolution exceeds export limits</comment>
++        <translation>导出尺寸超限</translation>
++    </message>
++    <message>
++        <source>The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.</source>
++        <comment>Error message text shown when the scaled output resolution exceeds export limits</comment>
++        <translation>输出分辨率 %1x%2 超出导出上限：输出需保持在 2 GB RGBA 像素以内（GIF 另需每边不超过 65535 像素）。请调低输出倍率或处理分辨率。</translation>
++    </message>
++    <message>
++        <source>Export image sequence</source>
++        <comment>Title of the confirmation dialog shown before exporting one image per step</comment>
++        <translation>导出序列图像</translation>
++    </message>
++    <message>
++        <source>This will write %1 PNG images into the chosen folder, one image for each step of the rendering process, evenly sampled from %2 steps (at most 1000 images):
++
++%3
++
++Continue?</source>
++        <comment>Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = number of steps, %3 = target folder</comment>
++        <translation>将向所选目录写入 %1 张 PNG 图片,从 %2 步中均匀抽稀(最多 1000 张):
++
++%3
++
++继续导出?</translation>
++    </message>
++    <message>
++        <source>This will write %1 PNG images into the chosen folder, one image for each step of the rendering process (at most 1000 images):
++
++%2
++
++Continue?</source>
++        <comment>Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = target folder</comment>
++        <translation>将向所选目录写入 %1 张 PNG 图片,对应渲染过程的每一步(最多 1000 张):
++
++%2
++
++继续导出?</translation>
++    </message>
++    <message>
++        <source>Exporting %1 images...</source>
++        <comment>Progress dialog text shown while exporting one image per step; %1 = number of files</comment>
++        <translation>正在导出 %1 张序列图像…</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::ImageTaskScriptingWidget</name>
++    <message>
++        <source>Before Step Callback</source>
++        <translation>步进前回调</translation>
++    </message>
++    <message>
++        <source>After Step Callback</source>
++        <translation>步进后回调</translation>
++    </message>
++    <message>
++        <source>Custom Stop Condition</source>
++        <translation>自定义停止条件</translation>
++    </message>
++    <message>
++        <source>On Stop Condition Met Callback</source>
++        <translation>停止条件达成时回调</translation>
++    </message>
++    <message>
++        <source>Add Shape Precondition</source>
++        <translation>添加形状前条件</translation>
++    </message>
++    <message>
++        <source>Before Add Shape Callback</source>
++        <translation>添加形状前回调</translation>
++    </message>
++    <message>
++        <source>After Add Shape Callback</source>
++        <translation>添加形状后回调</translation>
++    </message>
++    <message>
++        <source>On Pen Input Callback</source>
++        <translation>手写笔输入回调</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Enter Callback</source>
++        <translation>手写笔临近进入回调</translation>
++    </message>
++    <message>
++        <source>On Pen Proximity Exit Callback</source>
++        <translation>手写笔临近离开回调</translation>
++    </message>
++    <message>
++        <source>On Key Down Callback</source>
++        <translation>按键按下回调</translation>
++    </message>
++    <message>
++        <source>On Key Up Callback</source>
++        <translation>按键抬起回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Down Callback</source>
++        <translation>鼠标按下回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Up Callback</source>
++        <translation>鼠标抬起回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Move Callback</source>
++        <translation>鼠标移动回调</translation>
++    </message>
++    <message>
++        <source>On Mouse Wheel Callback</source>
++        <translation>鼠标滚轮回调</translation>
++    </message>
++    <message>
++        <source>On Timed Update Callback</source>
++        <translation>定时更新回调</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::ImageTaskShapeScriptingPanel</name>
++    <message>
++        <source>Default Scripts</source>
++        <translation>默认脚本</translation>
++    </message>
++    <message>
++        <source>Area Focus Scripts</source>
++        <translation>区域聚焦脚本</translation>
++    </message>
+ </context>
+ <context>
+     <name>geometrize::dialog::ImageTaskStatsWidget</name>
+@@ -840,6 +1400,11 @@
+ <context>
+     <name>geometrize::dialog::ImageTaskWindow</name>
+     <message>
++        <source>Priority region limit (16) reached — clear regions to add more</source>
++        <comment>Status bar message shown when the user tries to add more priority regions than the allowed maximum</comment>
++        <translation>已达优先区域上限（16）——请先清除部分区域再继续框选</translation>
++    </message>
++    <message>
+         <source>%1x%2</source>
+         <comment>Dimensions of an image e.g. width-x-height, 1024x800</comment>
+         <translation>%1x%2</translation>
+@@ -868,6 +1433,56 @@
+ <context>
+     <name>geometrize::dialog::LaunchWindow</name>
+     <message>
++        <source>Processing Resolution</source>
++        <extracomment>Label next to a combo box that selects the maximum processing resolution for opened images. Images larger than the limit are proportionally downscaled</extracomment>
++        <translation>处理分辨率上限</translation>
++    </message>
++    <message>
++        <source>Images with a side longer than the selected limit are proportionally downscaled before processing</source>
++        <extracomment>Tooltip explaining that images with a side longer than the selected limit are proportionally downscaled before processing</extracomment>
++        <translation>单边超过所选上限的图像,会在处理前按比例缩小到限内</translation>
++    </message>
++    <message>
++        <source>Suitable for high-resolution sources, but each step is significantly slower and memory usage is higher</source>
++        <extracomment>Tooltip for the 4096 resolution option, warning about slower processing and higher memory usage</extracomment>
++        <translation>适合高分辨率原图,但单步明显更慢、内存占用更高</translation>
++    </message>
++    <message>
++        <source>Process images at their original size</source>
++        <extracomment>Tooltip for the unlimited resolution option</extracomment>
++        <translation>按原图尺寸处理,不做缩放</translation>
++    </message>
++    <message>
++        <source>Unlimited</source>
++        <extracomment>Combo box item that disables resolution capping, processing images at their original size</extracomment>
++        <translation>无限制</translation>
++    </message>
++    <message>
++        <source>Custom</source>
++        <extracomment>Combo box item shown when the current resolution limit does not match any preset, e.g. set via the global preferences dialog</extracomment>
++        <translation>自定义</translation>
++    </message>
++    <message>
++        <source>256 × 256</source>
++        <translation>256 × 256</translation>
++    </message>
++    <message>
++        <source>512 × 512</source>
++        <translation>512 × 512</translation>
++    </message>
++    <message>
++        <source>1024 × 1024</source>
++        <translation>1024 × 1024</translation>
++    </message>
++    <message>
++        <source>2048 × 2048</source>
++        <translation>2048 × 2048</translation>
++    </message>
++    <message>
++        <source>4096 × 4096</source>
++        <translation>4096 × 4096</translation>
++    </message>
++    <message>
+         <source>Get more online</source>
+         <comment>Text on a button the user presses to open a page containing more resources for using the app, such as extra images, information and help</comment>
+         <translation>在线获取更多</translation>
+@@ -884,7 +1499,19 @@
+     </message>
+ </context>
+ <context>
+-    <name>geometrize::dialog::RecentItemWidget</name>
++    <name>geometrize::dialog::ScriptConsole</name>
++    <message>
++        <source>Type 'help' in console for a list of commands</source>
++        <comment>Instructional text shown in the command/scripting console. The 'help' string should not be translated</comment>
++        <translation>在控制台中输入“help”以获取命令列表</translation>
++    </message>
++    <message>
++        <source>No script engine is set up on this console, commands won't be handled</source>
++        <translation>此控制台未设置脚本引擎,命令将不会被处理</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::TaskItemWidget</name>
+     <message>
+         <source>Open</source>
+         <comment>Text on a menu item the user presses to open a file/image</comment>
+@@ -893,12 +1520,12 @@
+     <message>
+         <source>Open in viewer</source>
+         <comment>Text on a menu item the user presses to open an image/piece of media in a viewer</comment>
+-        <translation>在视图中打开</translation>
++        <translation>在查看器中打开</translation>
+     </message>
+     <message>
+         <source>Reveal in file explorer</source>
+         <comment>Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer</comment>
+-        <translation>在文件导出程序中显示</translation>
++        <translation>在文件资源管理器中显示</translation>
+     </message>
+     <message>
+         <source>Copy file path to clipboard</source>
+@@ -908,15 +1535,42 @@
+     <message>
+         <source>Remove from list</source>
+         <comment>Text on a menu item the user presses to remove an item from a list of items</comment>
+-        <translation>从列表中移除</translation>
++        <translation>从列表移除</translation>
+     </message>
+ </context>
+ <context>
+-    <name>geometrize::dialog::ScriptConsole</name>
++    <name>geometrize::dialog::TaskQueueWindow</name>
+     <message>
+-        <source>Type 'help' in console for a list of commands</source>
+-        <comment>Instructional text shown in the command/scripting console. The 'help' string should not be translated</comment>
+-        <translation>在控制台中输入“help”以获取命令列表</translation>
++        <source>Script Editor</source>
++        <translation>脚本编辑器</translation>
++    </message>
++    <message>
++        <source>Task Queue (%1/%2)</source>
++        <extracomment>Window title showing batch progress: completed tasks out of tracked tasks</extracomment>
++        <translation>任务队列 (%1/%2)</translation>
++    </message>
++    <message>
++        <source>Select Output Directory</source>
++        <extracomment>Title of a dialog for picking the folder that batch results are exported to</extracomment>
++        <translation>选择输出目录</translation>
++    </message>
++    <message>
++        <source>Failed to create output directory: %1</source>
++        <extracomment>Status bar message shown when the automatic export output directory could not be created</extracomment>
++        <translation>无法创建输出目录:%1</translation>
++    </message>
++    <message>
++        <source>Failed to export some results to %1</source>
++        <extracomment>Status bar message shown when one or more batch exports failed to write to disk (e.g. disk full or read-only directory)</extracomment>
++        <translation>部分结果导出失败:%1</translation>
++    </message>
++</context>
++<context>
++    <name>geometrize::dialog::ImageTaskRunnerWidget</name>
++    <message>
++        <source>Priority Regions: %1</source>
++        <extracomment>Label showing the number of priority regions currently set (e.g. "Priority Regions: 2"). Set on the Impl of the runner widget, whose tr() resolves to the outer class full-name context</extracomment>
++        <translation>优先区域:%1</translation>
+     </message>
+ </context>
+ <context>
+@@ -941,6 +1595,10 @@
+         <comment>Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer</comment>
+         <translation>在文件导出程序中显示</translation>
+     </message>
++    <message>
++        <source>Drag and drop template contents</source>
++        <translation>拖放模板内容</translation>
++    </message>
+ </context>
+ <context>
+     <name>geometrize::dialog::WelcomeWindow</name>
+@@ -963,11 +1621,6 @@
+         <translation>Geometrize 使用简单的几何形状重新创建照片，将其转换为独特的艺术作品。</translation>
+     </message>
+     <message>
+-        <source>Copyright 2015-2017 Sam Twidale</source>
+-        <comment>This is the copyright notice of the application.</comment>
+-        <translation>版权 2015-2017 Sam Twidale</translation>
+-    </message>
+-    <message>
+         <source>Rectangles</source>
+         <comment>Plural form of rectangle geometric shape</comment>
+         <translation>矩形</translation>
+@@ -1017,5 +1670,10 @@
+         <comment>Plural form of an unknown type of shapes</comment>
+         <translation>未知形状</translation>
+     </message>
++    <message>
++        <source>Copyright 2015-2021 Sam Twidale</source>
++        <comment>This is the copyright notice of the application.</comment>
++        <translation>版权所有 2015-2021 Sam Twidale</translation>
++    </message>
+ </context>
+ </TS>
+\ No newline at end of file

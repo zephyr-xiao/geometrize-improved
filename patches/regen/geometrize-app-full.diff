@@ -226,7 +226,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          geometrize::exporter::exportRasterizedSvg(
                      *m_shapes,
                      width,
-@@ -95,19 +104,20 @@
+@@ -95,19 +104,31 @@
              return;
          }
  
@@ -249,7 +249,18 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            return;
 +        }
 +
-+        runExportInBackground(tr("Exporting image sequence..."),
++        // 0 形状时导出器本就静默失败(既有行为),别弹"将写入 0 张"的空确认框
++        if(m_shapes->empty()) {
++            return;
++        }
++
++        // 会向目录批量写盘(每步一张,最多 1000 张),写盘前明确告知张数与目标目录
++        if(!confirmImageSequenceExport(m_shapes->size(), path)) {
++            return;
++        }
++
++        const std::size_t imageCount{geometrize::exporter::exportedFrameCount(m_shapes->size())};
++        runExportInBackground(tr("Exporting %1 images...", "Progress dialog text shown while exporting one image per step; %1 = number of files").arg(imageCount),
 +            [shapes = *m_shapes, width, height, scaleFactor, targetDir = path.toStdString()]() {
 +                geometrize::exporter::exportRasterizedSvgs(shapes, width, height,
 +                    width * scaleFactor, height * scaleFactor,
@@ -258,7 +269,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void saveGeometryData() const
-@@ -145,26 +155,31 @@
+@@ -145,26 +166,31 @@
              return;
          }
  
@@ -305,7 +316,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      void saveHTML5WebpageButton() const
-@@ -216,6 +231,52 @@
+@@ -216,6 +242,78 @@
                               tr("Failed to run exporter. Exporter was misconfigured.", "Error message text shown when an attempt to save/export a file failed"));
      }
  
@@ -327,6 +338,32 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            tr("The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.",
 +               "Error message text shown when the scaled output resolution exceeds export limits").arg(outputWidth).arg(outputHeight));
 +        return false;
++    }
++
++    /// 序列导出确认:这是唯一会向所选目录批量写盘的入口(每步一张 PNG),不弹确认就会在用户
++    /// 毫无预期的情况下把目录(常见如桌面)铺满文件。张数取自导出器的 exportedFrameCount,
++    /// 与写盘循环同一公式,避免告知数与实际写盘数漂移。
++    bool confirmImageSequenceExport(const std::size_t shapeCount, const QString& targetDir) const
++    {
++        const std::size_t imageCount{geometrize::exporter::exportedFrameCount(shapeCount)};
++        const QString text{(shapeCount > imageCount)
++            ? tr("This will write %1 PNG images into the chosen folder, one image for each step of the rendering process, evenly sampled from %2 steps (at most 1000 images):\n\n%3\n\nContinue?",
++                 "Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = number of steps, %3 = target folder")
++                  .arg(imageCount).arg(shapeCount).arg(targetDir)
++            : tr("This will write %1 PNG images into the chosen folder, one image for each step of the rendering process (at most 1000 images):\n\n%2\n\nContinue?",
++                 "Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = target folder")
++                  .arg(imageCount).arg(targetDir)};
++        QMessageBox confirm{QMessageBox::Icon::Question,
++                            tr("Export image sequence", "Title of the confirmation dialog shown before exporting one image per step"),
++                            text,
++                            QMessageBox::StandardButton::Yes | QMessageBox::StandardButton::No,
++                            q};
++        // 破坏面在"目录被铺满"一侧,默认与 Esc 都落在"否"上
++        confirm.setDefaultButton(QMessageBox::StandardButton::No);
++        confirm.setEscapeButton(QMessageBox::StandardButton::No);
++        confirm.setWindowModality(Qt::WindowModality::WindowModal);
++        confirm.setWindowFlags(confirm.windowFlags() & ~Qt::WindowContextHelpButtonHint);
++        return confirm.exec() == QMessageBox::StandardButton::Yes;
 +    }
 +
 +    /// 把耗时导出挂到 QtConcurrent 线程:期间弹不可取消的进度框并禁用导出按钮,
@@ -395,7 +432,17 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
         <widget class="QPushButton" name="saveImageButton">
          <property name="text">
           <string extracomment="Text on a button that opens a dialog that allows the user to save an image file">Save Image</string>
-@@ -72,6 +99,99 @@
+@@ -44,6 +71,9 @@
+         <property name="text">
+          <string extracomment="Text on a button that opens a dialog that allows a user to save multiple image files">Save Images</string>
+         </property>
++        <property name="toolTip">
++         <string extracomment="Tooltip for the button that exports one image per rendering step into a folder">Saves one PNG image per step of the rendering process into the chosen folder (up to 1000 images).</string>
++        </property>
+        </widget>
+       </item>
+      </layout>
+@@ -72,6 +102,99 @@
       </property>
       <layout class="QVBoxLayout" name="verticalLayout_4">
        <item>
@@ -2714,7 +2761,34 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  #include "geometrize/shaperesult.h"
  
  #include "image/imageloader.h"
-@@ -93,11 +96,40 @@
+@@ -83,6 +86,26 @@
+     return geometrize::exporter::exportImage(image, filePath);
+ }
+ 
++namespace
++{
++
++/// 序列导出每批最多写盘的图片数(百万形状会产生百万张 PNG,超出时均匀抽稀到上限)。
++/// 唯一真源:写盘循环与 exportedFrameCount 共用,防止"告知用户的张数"与"实际写盘张数"漂移。
++constexpr std::size_t maxSequenceFrames{1000};
++
++}
++
++std::size_t exportedFrameCount(const std::size_t shapeCount)
++{
++    if(shapeCount == 0) {
++        return 0;
++    }
++
++    // 与 exportRasterizedSvgs 的取帧规则一致:每 frameStride 个形状取一帧,且末帧必写
++    const std::size_t frameStride{(shapeCount + maxSequenceFrames - 1) / maxSequenceFrames};
++    return (shapeCount / frameStride) + ((shapeCount % frameStride != 0) ? 1 : 0);
++}
++
+ bool exportRasterizedSvgs(
+         const std::vector<geometrize::ShapeResult>& shapes,
+         std::uint32_t inputWidth,
+@@ -93,11 +116,38 @@
          const std::string& baseFilename,
          const std::string& fileExtension)
  {
@@ -2724,9 +2798,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +    // 增量帧:画布逐帧累积新形状,每帧存一张 PNG。老路线"每帧序列化 SVG 前缀整帧重放"
 +    // 是 O(N²)(百万形状 = 10^11 级绘制指令,不可完成),增量路线总成本 O(N)。
-+    // 帧数上限:百万形状会产生百万张 PNG,超出时均匀抽稀到上限。
-+    constexpr std::size_t maxFrames{1000};
-+    const std::size_t frameStride{(shapes.size() + maxFrames - 1) / maxFrames};
++    const std::size_t frameStride{(shapes.size() + maxSequenceFrames - 1) / maxSequenceFrames};
 +
 +    geometrize::Bitmap canvas{inputWidth, inputHeight, geometrize::rgba{0, 0, 0, 0}};
      for(std::size_t i = 0; i < shapes.size(); i++) {
@@ -2758,6 +2830,33 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              return false;
          }
      }
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/exporter/imageexporter.h b/geometrize/exporter/imageexporter.h
+--- a/geometrize/exporter/imageexporter.h
++++ b/geometrize/exporter/imageexporter.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <cstddef>
+ #include <cstdint>
+ #include <string>
+ #include <vector>
+@@ -81,6 +82,16 @@
+         const std::string& filePath);
+ 
+ /**
++ * @brief exportedFrameCount The number of image files exportRasterizedSvgs will write for the given shape count.
++ * Frames are taken every stride shapes and thinned evenly when the shape count exceeds the frame cap, so the
++ * count is not simply the shape count. Callers that need to tell users how many files an export will create
++ * (e.g. a confirmation dialog) should use this instead of re-deriving the rule.
++ * @param shapeCount The number of shapes to be exported.
++ * @return The number of images that will be written to disk.
++ */
++std::size_t exportedFrameCount(std::size_t shapeCount);
++
++/**
+  * @brief exportRasterizedSvgs Exports the shape data to images by rasterizing SVGs rendered from the shape data.
+  * Exports one image for each shape i.e. an image with one shape, two shapes, three shapes.
+  * @param shapes The shape data to export.
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/image/imageloader.cpp b/geometrize/image/imageloader.cpp
 --- a/geometrize/image/imageloader.cpp
 +++ b/geometrize/image/imageloader.cpp
@@ -10325,7 +10424,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/resources/translations.qrc b/resources/translations.qrc
 --- a/resources/translations.qrc
 +++ b/resources/translations.qrc
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,83 @@
 +<RCC>
 +    <qresource prefix="/">
 +        <file>translations/app/geometrize_ar.qm</file>
@@ -10377,6 +10476,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        <file>translations/qt/qtbase_ru.qm</file>
 +        <file>translations/qt/qtbase_sk.qm</file>
 +        <file>translations/qt/qtbase_uk.qm</file>
++        <file>translations/qt/qtbase_zh.qm</file>
++        <file>translations/qt/qtbase_zh_CN.qm</file>
 +        <file>translations/qt/qt_ar.qm</file>
 +        <file>translations/qt/qt_bg.qm</file>
 +        <file>translations/qt/qt_ca.qm</file>
@@ -10553,7 +10654,21 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          <source>Save Image</source>
          <extracomment>Text on a button that opens a dialog that allows the user to save an image file</extracomment>
          <translation>保存图像</translation>
-@@ -341,19 +409,207 @@
+@@ -199,7 +267,12 @@
+     <message>
+         <source>Save Images</source>
+         <extracomment>Text on a button that opens a dialog that allows a user to save multiple image files</extracomment>
+-        <translation>保存图像</translation>
++        <translation>保存序列图像</translation>
++    </message>
++    <message>
++        <source>Saves one PNG image per step of the rendering process into the chosen folder (up to 1000 images).</source>
++        <extracomment>Tooltip for the button that exports one image per rendering step into a folder</extracomment>
++        <translation>将渲染过程的每一步各存为一张 PNG,写入所选目录(最多 1000 张)。</translation>
+     </message>
+     <message>
+         <source>Export SVG</source>
+@@ -341,19 +414,207 @@
          <source>Clear</source>
          <extracomment>Text on a button that clears/resets the results of a task back to a starting value when pressed</extracomment>
          <translation>清除</translation>
@@ -10765,7 +10880,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      </message>
      <message>
          <source>Reset Scripting Engine</source>
-@@ -397,6 +653,21 @@
+@@ -397,6 +658,21 @@
  <context>
      <name>ImageTaskWindow</name>
      <message>
@@ -10787,7 +10902,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          <source>File</source>
          <extracomment>The title of the File menu that contains commands relating to the handling of files, such as open, save, print, etc</extracomment>
          <translation>文件</translation>
-@@ -466,6 +737,10 @@
+@@ -466,6 +742,10 @@
          <extracomment>Text on a menu item that shows or hides a window containing a vector-based (SVG) graphic of the shapes the app has created</extracomment>
          <translation>矢量图形视图</translation>
      </message>
@@ -10798,7 +10913,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  </context>
  <context>
      <name>LanguageSelectWidget</name>
-@@ -488,6 +763,16 @@
+@@ -488,6 +768,16 @@
          <translation>打开图像</translation>
      </message>
      <message>
@@ -10815,7 +10930,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          <source>Open Link</source>
          <extracomment>Text on a button that opens a dialog that allows the user to enter a website link, which is then downloaded</extracomment>
          <translation>打开链接</translation>
-@@ -498,6 +783,10 @@
+@@ -498,6 +788,10 @@
          <translation>运行脚本</translation>
      </message>
      <message>
@@ -10826,7 +10941,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          <source>Recent</source>
          <extracomment>Title of a section that contains a list of files and items the user recently opened</extracomment>
          <translation>最近</translation>
-@@ -580,6 +869,10 @@
+@@ -580,6 +874,10 @@
          <extracomment>Title of the window that contains legal/license information about the software</extracomment>
          <translation>许可信息</translation>
      </message>
@@ -10837,7 +10952,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  </context>
  <context>
      <name>OpenUrlDialog</name>
-@@ -595,6 +888,17 @@
+@@ -595,6 +893,17 @@
      </message>
  </context>
  <context>
@@ -10855,7 +10970,16 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      <name>QWidget</name>
      <message>
          <source>Open Image</source>
-@@ -696,6 +1000,11 @@
+@@ -629,7 +938,7 @@
+     <message>
+         <source>Save Images</source>
+         <comment>Title on a dialog that allows the user to save image files</comment>
+-        <translation>保存图像</translation>
++        <translation>选择序列图像导出目录</translation>
+     </message>
+     <message>
+         <source>Save Geometry Data</source>
+@@ -696,6 +1005,11 @@
          <comment>Title on a dialog that allows the user to select an image file</comment>
          <translation>选择图像</translation>
      </message>
@@ -10867,7 +10991,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  </context>
  <context>
      <name>RunScriptDialog</name>
-@@ -747,17 +1056,128 @@
+@@ -747,17 +1061,128 @@
  <context>
      <name>ScriptEditorWidget</name>
      <message>
@@ -11001,7 +11125,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      <name>WelcomeWindow</name>
      <message>
          <source>Welcome to Geometrize. Watch the video tutorials below to learn the basics.</source>
-@@ -807,6 +1227,13 @@
+@@ -807,6 +1232,13 @@
      </message>
  </context>
  <context>
@@ -11015,7 +11139,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      <name>geometrize::dialog::ImageTaskExportWidget</name>
      <message>
          <source>Failed to run exporter</source>
-@@ -818,6 +1245,98 @@
+@@ -818,6 +1250,134 @@
          <comment>Error message text shown when an attempt to save/export a file failed</comment>
          <translation>导出程序运行失败。导出程序配置错误。</translation>
      </message>
@@ -11028,6 +11152,42 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        <source>The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.</source>
 +        <comment>Error message text shown when the scaled output resolution exceeds export limits</comment>
 +        <translation>输出分辨率 %1x%2 超出导出上限：输出需保持在 2 GB RGBA 像素以内（GIF 另需每边不超过 65535 像素）。请调低输出倍率或处理分辨率。</translation>
++    </message>
++    <message>
++        <source>Export image sequence</source>
++        <comment>Title of the confirmation dialog shown before exporting one image per step</comment>
++        <translation>导出序列图像</translation>
++    </message>
++    <message>
++        <source>This will write %1 PNG images into the chosen folder, one image for each step of the rendering process, evenly sampled from %2 steps (at most 1000 images):
++
++%3
++
++Continue?</source>
++        <comment>Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = number of steps, %3 = target folder</comment>
++        <translation>将向所选目录写入 %1 张 PNG 图片,从 %2 步中均匀抽稀(最多 1000 张):
++
++%3
++
++继续导出?</translation>
++    </message>
++    <message>
++        <source>This will write %1 PNG images into the chosen folder, one image for each step of the rendering process (at most 1000 images):
++
++%2
++
++Continue?</source>
++        <comment>Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = target folder</comment>
++        <translation>将向所选目录写入 %1 张 PNG 图片,对应渲染过程的每一步(最多 1000 张):
++
++%2
++
++继续导出?</translation>
++    </message>
++    <message>
++        <source>Exporting %1 images...</source>
++        <comment>Progress dialog text shown while exporting one image per step; %1 = number of files</comment>
++        <translation>正在导出 %1 张序列图像…</translation>
 +    </message>
 +</context>
 +<context>
@@ -11114,7 +11274,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  </context>
  <context>
      <name>geometrize::dialog::ImageTaskStatsWidget</name>
-@@ -840,6 +1359,11 @@
+@@ -840,6 +1400,11 @@
  <context>
      <name>geometrize::dialog::ImageTaskWindow</name>
      <message>
@@ -11126,7 +11286,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          <source>%1x%2</source>
          <comment>Dimensions of an image e.g. width-x-height, 1024x800</comment>
          <translation>%1x%2</translation>
-@@ -868,6 +1392,56 @@
+@@ -868,6 +1433,56 @@
  <context>
      <name>geometrize::dialog::LaunchWindow</name>
      <message>
@@ -11183,7 +11343,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          <source>Get more online</source>
          <comment>Text on a button the user presses to open a page containing more resources for using the app, such as extra images, information and help</comment>
          <translation>在线获取更多</translation>
-@@ -884,7 +1458,19 @@
+@@ -884,7 +1499,19 @@
      </message>
  </context>
  <context>
@@ -11204,7 +11364,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      <message>
          <source>Open</source>
          <comment>Text on a menu item the user presses to open a file/image</comment>
-@@ -893,12 +1479,12 @@
+@@ -893,12 +1520,12 @@
      <message>
          <source>Open in viewer</source>
          <comment>Text on a menu item the user presses to open an image/piece of media in a viewer</comment>
@@ -11219,7 +11379,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      </message>
      <message>
          <source>Copy file path to clipboard</source>
-@@ -908,15 +1494,42 @@
+@@ -908,15 +1535,42 @@
      <message>
          <source>Remove from list</source>
          <comment>Text on a menu item the user presses to remove an item from a list of items</comment>
@@ -11267,7 +11427,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      </message>
  </context>
  <context>
-@@ -941,6 +1554,10 @@
+@@ -941,6 +1595,10 @@
          <comment>Text on a menu item the user presses to open an image/piece of media in a file viewer/explorer</comment>
          <translation>在文件导出程序中显示</translation>
      </message>
@@ -11278,7 +11438,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  </context>
  <context>
      <name>geometrize::dialog::WelcomeWindow</name>
-@@ -963,11 +1580,6 @@
+@@ -963,11 +1621,6 @@
          <translation>Geometrize 使用简单的几何形状重新创建照片，将其转换为独特的艺术作品。</translation>
      </message>
      <message>
@@ -11290,7 +11450,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          <source>Rectangles</source>
          <comment>Plural form of rectangle geometric shape</comment>
          <translation>矩形</translation>
-@@ -1017,5 +1629,10 @@
+@@ -1017,5 +1670,10 @@
          <comment>Plural form of an unknown type of shapes</comment>
          <translation>未知形状</translation>
      </message>
