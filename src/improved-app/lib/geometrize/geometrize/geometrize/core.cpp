@@ -431,6 +431,105 @@ double defaultEnergyFunction(
     return geometrize::core::differencePartial(target, current, buffer, score, lines); // Get error measure between areas of current and modified buffers covered by scanlines
 }
 
+double defaultEnergyFunctionFused(
+        const std::vector<geometrize::Scanline>& lines,
+        const std::uint32_t alpha,
+        const geometrize::Bitmap& target,
+        const geometrize::Bitmap& current,
+        geometrize::Bitmap& /*buffer*/,
+        const double score)
+{
+    // 第 1 遍(只读):最优平均色。与逐遍实现共用 computeColor,逐位一致(含空 lines 早退)。
+    const geometrize::rgba color(geometrize::core::computeColor(target, current, lines, alpha));
+
+    // 与 differencePartial 相同的基数与收尾公式(score 基数的浮点截断行为是输出的一部分,原样保留)。
+    // 空数据守卫只看 target/current:逐遍实现里 buffer 恒为 current 的拷贝,两者等价;
+    // 本实现不触碰 buffer(库内热路径传空位图,省掉每线程每步整图拷贝)。
+    const std::uint64_t rgbaCount{static_cast<std::uint64_t>(target.getWidth()) * target.getHeight() * 4U};
+    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * static_cast<double>(rgbaCount))};
+    if(target.getDataRef().empty() || current.getDataRef().empty()) {
+        return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
+    }
+
+    // drawLines 的单次预乘常量,逐位复刻(注意 d*aa + s*m 允许 uint32 回绕后再除,类型不可放宽)。
+    std::uint32_t sr{color.r};
+    sr |= sr << 8;
+    sr *= color.a;
+    sr /= UINT8_MAX;
+    std::uint32_t sg{color.g};
+    sg |= sg << 8;
+    sg *= color.a;
+    sg /= UINT8_MAX;
+    std::uint32_t sb{color.b};
+    sb |= sb << 8;
+    sb *= color.a;
+    sb /= UINT8_MAX;
+    std::uint32_t sa{color.a};
+    sa |= sa << 8;
+
+    const std::uint32_t m{UINT16_MAX};
+    const std::uint32_t aa{(m - sa) * 257U};
+
+    // 逐像素混合换成 256 项通道查找表:表值用与 drawLines 完全相同的表达式生成(含 uint32 回绕),
+    // 位等价由构造保证;每次评估只算 4×256 项,以 1KB L1 常驻免掉每像素约 30 条混合指令
+    // (4096 大图实测评估像素 161 万/次,瓶颈正是逐像素算术)。
+    std::uint8_t lutR[256];
+    std::uint8_t lutG[256];
+    std::uint8_t lutB[256];
+    std::uint8_t lutA[256];
+    for(std::uint32_t d = 0; d < 256U; d++) {
+        lutR[d] = static_cast<std::uint8_t>(((d * aa + sr * m) / m) >> 8);
+        lutG[d] = static_cast<std::uint8_t>(((d * aa + sg * m) / m) >> 8);
+        lutB[d] = static_cast<std::uint8_t>(((d * aa + sb * m) / m) >> 8);
+        lutA[d] = static_cast<std::uint8_t>(((d * aa + sa * m) / m) >> 8);
+    }
+
+    const auto* targetData = target.getDataRef().data();
+    const auto* currentData = current.getDataRef().data();
+    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
+    const std::int32_t width{static_cast<std::int32_t>(target.getWidth())};
+    const std::int32_t height{static_cast<std::int32_t>(target.getHeight())};
+
+    for(const geometrize::Scanline& line : lines) {
+        // 越界行:drawLines 跳过、差分不参与(库内扫描线恒已裁剪,此处对齐逐遍实现的可见语义)
+        if(line.y < 0 || line.y >= height) {
+            continue;
+        }
+        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
+        const auto* cRow = currentData + rowStride * static_cast<std::size_t>(line.y);
+
+        for(std::int32_t x = line.x1; x <= line.x2; x++) {
+            // 越界列:逐遍实现里 drawLines 钳制不写、差分对同一像素 before/after 同减同加,
+            // 净效应为零;直接跳过等价(见 core.h 的语义边界说明)。
+            if(x < 0 || x >= width) {
+                continue;
+            }
+            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
+
+            const auto afterR{static_cast<std::int32_t>(lutR[cRow[offset]])};
+            const auto afterG{static_cast<std::int32_t>(lutG[cRow[offset + 1U]])};
+            const auto afterB{static_cast<std::int32_t>(lutB[cRow[offset + 2U]])};
+            const auto afterA{static_cast<std::int32_t>(lutA[cRow[offset + 3U]])};
+
+            const std::int32_t dtbr{static_cast<std::int32_t>(tRow[offset]) - static_cast<std::int32_t>(cRow[offset])};
+            const std::int32_t dtbg{static_cast<std::int32_t>(tRow[offset + 1U]) - static_cast<std::int32_t>(cRow[offset + 1U])};
+            const std::int32_t dtbb{static_cast<std::int32_t>(tRow[offset + 2U]) - static_cast<std::int32_t>(cRow[offset + 2U])};
+            const std::int32_t dtba{static_cast<std::int32_t>(tRow[offset + 3U]) - static_cast<std::int32_t>(cRow[offset + 3U])};
+
+            const std::int32_t dtar{static_cast<std::int32_t>(tRow[offset]) - afterR};
+            const std::int32_t dtag{static_cast<std::int32_t>(tRow[offset + 1U]) - afterG};
+            const std::int32_t dtab{static_cast<std::int32_t>(tRow[offset + 2U]) - afterB};
+            const std::int32_t dtaa{static_cast<std::int32_t>(tRow[offset + 3U]) - afterA};
+
+            // 与 differencePartial 逐语句同序:先减 before 项再加 after 项(uint64 回绕语义一致)
+            total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
+            total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
+        }
+    }
+
+    return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
+}
+
 double defaultEnergyFunctionSegmented(
         const std::vector<geometrize::Scanline>& lines,
         const std::uint32_t alpha,
@@ -685,7 +784,8 @@ geometrize::State bestHillClimbState(
         const double lastScore,
         const EnergyFunction& customEnergyFunction)
 {
-    const EnergyFunction& e = customEnergyFunction ? customEnergyFunction : geometrize::core::defaultEnergyFunction;
+    // 内置默认函数走融合实现(不读 scratch buffer);自定义回调(脚本)语义不变
+    const EnergyFunction& e = customEnergyFunction ? customEnergyFunction : geometrize::core::defaultEnergyFunctionFused;
 
     // B6:lines 向量跨 bestRandomState/hillClimb 全程复用,值行为与上游逐位一致
     std::vector<geometrize::Scanline> lines;
@@ -705,8 +805,9 @@ geometrize::State bestHillClimbStatePyramid(
         const std::int32_t halfWidth,
         const std::int32_t halfHeight)
 {
-    // 金字塔轨道只走内置能量函数:自定义回调的语义按全分辨率位图约定,不接受半分辨率图
-    const EnergyFunction& e = geometrize::core::defaultEnergyFunction;
+    // 金字塔轨道只走内置能量函数:自定义回调的语义按全分辨率位图约定,不接受半分辨率图。
+    // 内置评估用融合实现(不读 scratch buffer,免半分辨率整图拷贝)。
+    const EnergyFunction& e = geometrize::core::defaultEnergyFunctionFused;
 
     std::vector<geometrize::Scanline> lines;
     std::vector<geometrize::Scanline> halfLines;

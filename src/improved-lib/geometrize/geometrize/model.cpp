@@ -468,10 +468,13 @@ public:
                             states[i] = core::bestHillClimbStateEnhanced(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, 0, 0, enhancements, errorMap);
                         }
                     } else if(usePyramid) {
-                        geometrize::Bitmap halfBuffer{*halfCurrent};
+                        // 金字塔内置评估走融合实现(defaultEnergyFunctionFused),不读 scratch buffer:
+                        // 免掉每线程每步的半分辨率整图拷贝(4096 场景实测可见)
+                        geometrize::Bitmap halfBuffer{};
                         states[i] = core::bestHillClimbStatePyramid(shapeCreator, alpha, shapeCount, maxShapeMutations, *halfTarget, *halfCurrent, halfBuffer, lastScore, static_cast<std::int32_t>(halfTarget->getWidth()), static_cast<std::int32_t>(halfTarget->getHeight()));
                     } else {
-                        geometrize::Bitmap buffer{m_current};
+                        // 仅自定义能量函数(脚本)保留整图拷贝的 buffer 语义;内置默认函数融合实现不读 buffer
+                        geometrize::Bitmap buffer{energyFunction ? geometrize::Bitmap{m_current} : geometrize::Bitmap{}};
                         states[i] = core::bestHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, energyFunction);
                     }
                 });

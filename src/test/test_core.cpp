@@ -291,6 +291,56 @@ TEST_CASE("defaultEnergyFunctionSegmented:线型退化与 defaultEnergyFunction 
     }
 }
 
+#if defined(GEOTEST_FAST)
+
+// 融合实现(defaultEnergyFunctionFused)与逐遍实现(computeColor+copyLines+drawLines+differencePartial)
+// 在位精确口径下等价,且完全不写 scratch buffer(库内热路径据此传空位图)。
+// 契约:扫描线落在图像范围内——库内光栅化保证(第十五批已实证 clipScanlinesToBitmap 对内置形状是恒等);
+// 越界行/列在逐遍实现里是未定义读取,不属对照范围。
+TEST_CASE("defaultEnergyFunctionFused 与逐遍实现逐位一致且不写 buffer")
+{
+    const auto target = makeGradientBitmap(32, 24);
+
+    // current 用逐像素花纹(通道值互相纠缠),让混合公式的整数运算与回绕语义充分暴露
+    std::vector<std::uint8_t> currentData(32U * 24U * 4U);
+    for(std::uint32_t y = 0; y < 24; y++) {
+        for(std::uint32_t x = 0; x < 32; x++) {
+            const std::size_t offset{(static_cast<std::size_t>(32U) * y + x) * 4U};
+            currentData[offset] = static_cast<std::uint8_t>((x * 7U + y * 13U) & 0xFFU);
+            currentData[offset + 1U] = static_cast<std::uint8_t>((x * 29U + y * 3U) & 0xFFU);
+            currentData[offset + 2U] = static_cast<std::uint8_t>((x * y * 5U) & 0xFFU);
+            currentData[offset + 3U] = static_cast<std::uint8_t>(200U - ((x + y) % 60U));
+        }
+    }
+    const geometrize::Bitmap current{32, 24, currentData};
+
+    const std::vector<std::vector<geometrize::Scanline>> cases{
+        {geometrize::Scanline{2, 4, 9}, geometrize::Scanline{3, 0, 31}, geometrize::Scanline{20, 7, 12}}, // 面状
+        {geometrize::Scanline{5, 6, 6}, geometrize::Scanline{6, 7, 7}, geometrize::Scanline{7, 8, 8}},    // 线型
+        {geometrize::Scanline{-3, 4, 9}, geometrize::Scanline{4, 3, 5}},                                 // 含 y<0 行(两侧同样跳过)
+        {}                                                                                               // 空扫描线
+    };
+    const std::vector<std::uint32_t> alphas{1U, 128U, 255U};
+    const std::vector<double> scores{0.0, 0.37, 0.9};
+
+    for(const auto& lines : cases) {
+        for(const std::uint32_t alpha : alphas) {
+            for(const double score : scores) {
+                geometrize::Bitmap buffer{current};
+                const double classic = geometrize::core::defaultEnergyFunction(lines, alpha, target, current, buffer, score);
+
+                geometrize::Bitmap sentinel{current};
+                const double fused = geometrize::core::defaultEnergyFunctionFused(lines, alpha, target, current, sentinel, score);
+
+                CHECK(fused == classic); // double 逐位相等(非 Approx)
+                CHECK(sentinel.getDataRef() == current.getDataRef()); // 融合实现不写 buffer
+            }
+        }
+    }
+}
+
+#endif
+
 // ---- A2.4 SVG/JSON 分段导出 ----
 
 TEST_CASE("SVG 分段导出:色带组替代基元,segments 空时与单色逐字节一致")

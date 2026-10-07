@@ -102,6 +102,26 @@ double defaultEnergyFunctionSegmented(
         double score);
 
 /**
+ * @brief defaultEnergyFunctionFused defaultEnergyFunction 的融合实现(大图性能,位精确):
+ * 把"混色(copyLines+drawLines)→差分(differencePartial)"两遍扫描合并为一遍只读扫描——
+ * 混合值不再写进 scratch buffer,而是在差分循环内按 drawLines 的同一整数公式(含预乘常量
+ * 与钳制语义)逐像素现算。每次候选评估因此省掉 copyLines 与 drawLines 的位图往返
+ * (实测 4096 大图上这三段占评估耗时约 76%),结果与 defaultEnergyFunction 逐位相等
+ * (由 test_core 的对照用例锁定)。
+ * 语义边界:buffer 参数仅为复用 EnergyFunction 签名而保留,实现不读不写——调用方可传空位图
+ * (库内热路径已据此省掉每线程每步的整图拷贝);空数据守卫只看 target/current(逐遍实现里
+ * buffer 是 current 的拷贝,两者等价)。扫描线互不重叠是库内光栅化不变量;越界 x 在逐遍
+ * 实现里净效应为零(drawLines 钳制不写、差分对 before/after 同减同加),此处直接跳过。
+ */
+double defaultEnergyFunctionFused(
+        const std::vector<geometrize::Scanline>& lines,
+        const std::uint32_t alpha,
+        const geometrize::Bitmap& target,
+        const geometrize::Bitmap& current,
+        geometrize::Bitmap& buffer,
+        double score);
+
+/**
  * @brief computeSegmentColors A2.4:每条扫描线独立按混合公式求最优色。
  * 返回向量与 lines 一一对应;线型形状(全部扫描线均为单像素宽)返回空向量,
  * 调用方(评估侧/落画侧)据此统一退回单色路径——判定共享保证两侧颜色模型一致。
