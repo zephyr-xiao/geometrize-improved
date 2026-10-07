@@ -4816,7 +4816,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/core.cpp b/lib/geometrize/geometrize/geometrize/core.cpp
 --- a/lib/geometrize/geometrize/geometrize/core.cpp
 +++ b/lib/geometrize/geometrize/geometrize/core.cpp
-@@ -10,32 +10,124 @@
+@@ -10,32 +10,39 @@
  #include "bitmap/bitmap.h"
  #include "bitmap/rgba.h"
  #include "commonutil.h"
@@ -4856,50 +4856,59 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +/// hillClimb 的 scratch 版本,行为与上游逐位一致(仅容器复用差异)
 +geometrize::State hillClimbScratch(
-+        const geometrize::State& state,
-+        const std::uint32_t maxAge,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        const double lastScore,
+         const geometrize::State& state,
+         const std::uint32_t maxAge,
+         const geometrize::Bitmap& target,
+         const geometrize::Bitmap& current,
+         geometrize::Bitmap& buffer,
+         const double lastScore,
+-        const geometrize::core::EnergyFunction& energyFunction)
 +        const geometrize::core::EnergyFunction& energyFunction,
 +        std::vector<geometrize::Scanline>& lines)
-+{
-+    geometrize::State s(state);
-+    geometrize::State bestState(state);
-+    double bestEnergy{bestState.m_score};
-+
-+    std::uint32_t age{0};
-+    while(age < maxAge) {
-+        const geometrize::State undo{s.mutate()};
+ {
+     geometrize::State s(state);
+     geometrize::State bestState(state);
+@@ -44,7 +51,8 @@
+     std::uint32_t age{0};
+     while(age < maxAge) {
+         const geometrize::State undo{s.mutate()};
+-        s.m_score = energyFunction(s.m_shape->rasterize(*s.m_shape), s.m_alpha, target, current, buffer, lastScore);
 +        rasterizeIntoVector(*s.m_shape, lines);
 +        s.m_score = energyFunction(lines, s.m_alpha, target, current, buffer, lastScore);
-+        const double energy = s.m_score;
-+        if(energy >= bestEnergy) {
-+            s = undo;
-+        } else {
-+            bestEnergy = energy;
-+            bestState = s;
-+            age = -1;
-+        }
-+        age++;
-+    }
-+
-+    return bestState;
-+}
-+
+         const double energy = s.m_score;
+         if(energy >= bestEnergy) {
+             s = undo;
+@@ -59,18 +67,8 @@
+     return bestState;
+ }
+ 
+-/**
+-* @brief bestRandomState Gets the best state using a random algorithm.
+-* @param shapeCreator A function that will create the shapes that will be chosen from.
+-* @param alpha The opacity of the shape.
+-* @param n The number of states to try.
+-* @param target The target bitmap.
+-* @param current The current bitmap.
+-* @param buffer The buffer bitmap.
+-* @param lastScore The last score.
+-* @return The best random state i.e. the one with the lowest energy.
+-*/
+-geometrize::State bestRandomState(
 +/// bestRandomState 的 scratch 版本,off-by-one 怪癖(RNG 消费 n+2 次)原样保留
 +geometrize::State bestRandomStateScratch(
-+        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
-+        const std::uint32_t alpha,
-+        const std::uint32_t n,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        const double lastScore,
+         const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
+         const std::uint32_t alpha,
+         const std::uint32_t n,
+@@ -78,15 +76,329 @@
+         const geometrize::Bitmap& current,
+         geometrize::Bitmap& buffer,
+         const double lastScore,
+-        const geometrize::core::EnergyFunction& energyFunction)
 +        const geometrize::core::EnergyFunction& energyFunction,
 +        std::vector<geometrize::Scanline>& lines)
-+{
+ {
+-    geometrize::State bestState(shapeCreator(), alpha);
+-    bestState.m_score = energyFunction(bestState.m_shape->rasterize(*bestState.m_shape), bestState.m_alpha, target, current, buffer, lastScore);
 +    // 上游语义:State 构造时恰好 setup 一次(shapeCreator 的建形不含 setup)。
 +    // 本函数手动 setup 一次后以裸 State 装配,避免 State 构造函数二次 setup 消耗双倍 RNG。
 +    const auto makeState = [alpha](std::shared_ptr<geometrize::Shape> shape) {
@@ -4915,9 +4924,11 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    rasterizeIntoVector(*firstShape, lines);
 +    geometrize::State bestState = makeState(firstShape);
 +    bestState.m_score = energyFunction(lines, bestState.m_alpha, target, current, buffer, lastScore);
-+    double bestEnergy = bestState.m_score;
-+
-+    for(std::uint32_t i = 0; i <= n; i++) {
+     double bestEnergy = bestState.m_score;
+ 
+     for(std::uint32_t i = 0; i <= n; i++) {
+-        geometrize::State state(shapeCreator(), alpha);
+-        state.m_score = energyFunction(state.m_shape->rasterize(*state.m_shape), state.m_alpha, target, current, buffer, lastScore);
 +        std::shared_ptr<geometrize::Shape> shape{shapeCreator()};
 +        shape->setup(*shape);
 +        rasterizeIntoVector(*shape, lines);
@@ -4938,48 +4949,42 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +/// 与 hillClimbScratch 故意保持复制而非参数化——bit-exact 路径一个字节不动,
 +/// 金字塔路径的 scanline 投影开销也不进全分辨率热循环。
 +geometrize::State hillClimbScratchPyramid(
-         const geometrize::State& state,
-         const std::uint32_t maxAge,
-         const geometrize::Bitmap& target,
-         const geometrize::Bitmap& current,
-         geometrize::Bitmap& buffer,
-         const double lastScore,
--        const geometrize::core::EnergyFunction& energyFunction)
++        const geometrize::State& state,
++        const std::uint32_t maxAge,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        const double lastScore,
 +        const geometrize::core::EnergyFunction& energyFunction,
 +        std::vector<geometrize::Scanline>& lines,
 +        std::vector<geometrize::Scanline>& halfLines,
 +        const std::int32_t halfWidth,
 +        const std::int32_t halfHeight)
- {
-     geometrize::State s(state);
-     geometrize::State bestState(state);
-@@ -44,7 +136,9 @@
-     std::uint32_t age{0};
-     while(age < maxAge) {
-         const geometrize::State undo{s.mutate()};
--        s.m_score = energyFunction(s.m_shape->rasterize(*s.m_shape), s.m_alpha, target, current, buffer, lastScore);
++{
++    geometrize::State s(state);
++    geometrize::State bestState(state);
++    double bestEnergy{bestState.m_score};
++
++    std::uint32_t age{0};
++    while(age < maxAge) {
++        const geometrize::State undo{s.mutate()};
 +        rasterizeIntoVector(*s.m_shape, lines);
 +        halfLines = geometrize::downscaleScanlines(lines, halfWidth, halfHeight);
 +        s.m_score = energyFunction(halfLines, s.m_alpha, target, current, buffer, lastScore);
-         const double energy = s.m_score;
-         if(energy >= bestEnergy) {
-             s = undo;
-@@ -59,18 +153,202 @@
-     return bestState;
- }
- 
--/**
--* @brief bestRandomState Gets the best state using a random algorithm.
--* @param shapeCreator A function that will create the shapes that will be chosen from.
--* @param alpha The opacity of the shape.
--* @param n The number of states to try.
--* @param target The target bitmap.
--* @param current The current bitmap.
--* @param buffer The buffer bitmap.
--* @param lastScore The last score.
--* @return The best random state i.e. the one with the lowest energy.
--*/
--geometrize::State bestRandomState(
++        const double energy = s.m_score;
++        if(energy >= bestEnergy) {
++            s = undo;
++        } else {
++            bestEnergy = energy;
++            bestState = s;
++            age = -1;
++        }
++        age++;
++    }
++
++    return bestState;
++}
++
 +/// bestRandomState 的金字塔 scratch 变体:RNG 消费序列与全分辨率版完全一致
 +/// (shapeCreator/setup 次序不变,评估分辨率不影响 RNG 流),仅评估换半分辨率。
 +geometrize::State bestRandomStateScratchPyramid(
@@ -5176,14 +5181,13 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +/// bestRandomState 的增强 scratch 变体:候选阶段不爬山,自适应步长只作用于爬山阶段
 +/// (与经典版两阶段结构一致)。alpha 搜索逐候选全档穷举;误差图引导候选放置。
 +geometrize::State bestRandomStateScratchEnhanced(
-         const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
-         const std::uint32_t alpha,
-         const std::uint32_t n,
-@@ -78,15 +356,49 @@
-         const geometrize::Bitmap& current,
-         geometrize::Bitmap& buffer,
-         const double lastScore,
--        const geometrize::core::EnergyFunction& energyFunction)
++        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
++        const std::uint32_t alpha,
++        const std::uint32_t n,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        const double lastScore,
 +        const geometrize::core::EnergyFunction& energyFunction,
 +        std::vector<geometrize::Scanline>& lines,
 +        std::vector<geometrize::Scanline>& halfLines,
@@ -5191,9 +5195,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        const std::int32_t halfHeight,
 +        const geometrize::core::HillClimbEnhancements& enhancements,
 +        const geometrize::core::ErrorWeightMap* errorMap)
- {
--    geometrize::State bestState(shapeCreator(), alpha);
--    bestState.m_score = energyFunction(bestState.m_shape->rasterize(*bestState.m_shape), bestState.m_alpha, target, current, buffer, lastScore);
++{
 +    const std::vector<std::uint8_t> alphaTiers{normalizeAlphaTiers(static_cast<std::uint8_t>(alpha), enhancements.alphaCandidates)};
 +
 +    const auto makeState = [alpha](std::shared_ptr<geometrize::Shape> shape) {
@@ -5219,11 +5221,9 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        const std::vector<geometrize::Scanline>* eval{nullptr};
 +        bestState.m_score = evaluateEnhanced(lines, halfLines, eval, energyFunction, bestState.m_alpha, static_cast<std::uint8_t>(alpha), alphaTiers, target, current, buffer, lastScore, halfWidth, halfHeight);
 +    }
-     double bestEnergy = bestState.m_score;
- 
-     for(std::uint32_t i = 0; i <= n; i++) {
--        geometrize::State state(shapeCreator(), alpha);
--        state.m_score = energyFunction(state.m_shape->rasterize(*state.m_shape), state.m_alpha, target, current, buffer, lastScore);
++    double bestEnergy = bestState.m_score;
++
++    for(std::uint32_t i = 0; i <= n; i++) {
 +        std::shared_ptr<geometrize::Shape> shape{shapeCreator()};
 +        setupCandidate(shape);
 +        rasterizeIntoVector(*shape, lines);
@@ -5234,10 +5234,109 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          const double energy = state.m_score;
          if(i == 0 || energy < bestEnergy) {
              bestEnergy = energy;
-@@ -119,6 +431,27 @@
+@@ -119,6 +431,126 @@
      return geometrize::core::differencePartial(target, current, buffer, score, lines); // Get error measure between areas of current and modified buffers covered by scanlines
  }
  
++double defaultEnergyFunctionFused(
++        const std::vector<geometrize::Scanline>& lines,
++        const std::uint32_t alpha,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& /*buffer*/,
++        const double score)
++{
++    // 第 1 遍(只读):最优平均色。与逐遍实现共用 computeColor,逐位一致(含空 lines 早退)。
++    const geometrize::rgba color(geometrize::core::computeColor(target, current, lines, alpha));
++
++    // 与 differencePartial 相同的基数与收尾公式(score 基数的浮点截断行为是输出的一部分,原样保留)。
++    // 空数据守卫只看 target/current:逐遍实现里 buffer 恒为 current 的拷贝,两者等价;
++    // 本实现不触碰 buffer(库内热路径传空位图,省掉每线程每步整图拷贝)。
++    const std::uint64_t rgbaCount{static_cast<std::uint64_t>(target.getWidth()) * target.getHeight() * 4U};
++    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * static_cast<double>(rgbaCount))};
++    if(target.getDataRef().empty() || current.getDataRef().empty()) {
++        return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
++    }
++
++    // drawLines 的单次预乘常量,逐位复刻(注意 d*aa + s*m 允许 uint32 回绕后再除,类型不可放宽)。
++    std::uint32_t sr{color.r};
++    sr |= sr << 8;
++    sr *= color.a;
++    sr /= UINT8_MAX;
++    std::uint32_t sg{color.g};
++    sg |= sg << 8;
++    sg *= color.a;
++    sg /= UINT8_MAX;
++    std::uint32_t sb{color.b};
++    sb |= sb << 8;
++    sb *= color.a;
++    sb /= UINT8_MAX;
++    std::uint32_t sa{color.a};
++    sa |= sa << 8;
++
++    const std::uint32_t m{UINT16_MAX};
++    const std::uint32_t aa{(m - sa) * 257U};
++
++    // 逐像素混合换成 256 项通道查找表:表值用与 drawLines 完全相同的表达式生成(含 uint32 回绕),
++    // 位等价由构造保证;每次评估只算 4×256 项,以 1KB L1 常驻免掉每像素约 30 条混合指令
++    // (4096 大图实测评估像素 161 万/次,瓶颈正是逐像素算术)。
++    std::uint8_t lutR[256];
++    std::uint8_t lutG[256];
++    std::uint8_t lutB[256];
++    std::uint8_t lutA[256];
++    for(std::uint32_t d = 0; d < 256U; d++) {
++        lutR[d] = static_cast<std::uint8_t>(((d * aa + sr * m) / m) >> 8);
++        lutG[d] = static_cast<std::uint8_t>(((d * aa + sg * m) / m) >> 8);
++        lutB[d] = static_cast<std::uint8_t>(((d * aa + sb * m) / m) >> 8);
++        lutA[d] = static_cast<std::uint8_t>(((d * aa + sa * m) / m) >> 8);
++    }
++
++    const auto* targetData = target.getDataRef().data();
++    const auto* currentData = current.getDataRef().data();
++    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
++    const std::int32_t width{static_cast<std::int32_t>(target.getWidth())};
++    const std::int32_t height{static_cast<std::int32_t>(target.getHeight())};
++
++    for(const geometrize::Scanline& line : lines) {
++        // 越界行:drawLines 跳过、差分不参与(库内扫描线恒已裁剪,此处对齐逐遍实现的可见语义)
++        if(line.y < 0 || line.y >= height) {
++            continue;
++        }
++        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
++        const auto* cRow = currentData + rowStride * static_cast<std::size_t>(line.y);
++
++        for(std::int32_t x = line.x1; x <= line.x2; x++) {
++            // 越界列:逐遍实现里 drawLines 钳制不写、差分对同一像素 before/after 同减同加,
++            // 净效应为零;直接跳过等价(见 core.h 的语义边界说明)。
++            if(x < 0 || x >= width) {
++                continue;
++            }
++            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
++
++            const auto afterR{static_cast<std::int32_t>(lutR[cRow[offset]])};
++            const auto afterG{static_cast<std::int32_t>(lutG[cRow[offset + 1U]])};
++            const auto afterB{static_cast<std::int32_t>(lutB[cRow[offset + 2U]])};
++            const auto afterA{static_cast<std::int32_t>(lutA[cRow[offset + 3U]])};
++
++            const std::int32_t dtbr{static_cast<std::int32_t>(tRow[offset]) - static_cast<std::int32_t>(cRow[offset])};
++            const std::int32_t dtbg{static_cast<std::int32_t>(tRow[offset + 1U]) - static_cast<std::int32_t>(cRow[offset + 1U])};
++            const std::int32_t dtbb{static_cast<std::int32_t>(tRow[offset + 2U]) - static_cast<std::int32_t>(cRow[offset + 2U])};
++            const std::int32_t dtba{static_cast<std::int32_t>(tRow[offset + 3U]) - static_cast<std::int32_t>(cRow[offset + 3U])};
++
++            const std::int32_t dtar{static_cast<std::int32_t>(tRow[offset]) - afterR};
++            const std::int32_t dtag{static_cast<std::int32_t>(tRow[offset + 1U]) - afterG};
++            const std::int32_t dtab{static_cast<std::int32_t>(tRow[offset + 2U]) - afterB};
++            const std::int32_t dtaa{static_cast<std::int32_t>(tRow[offset + 3U]) - afterA};
++
++            // 与 differencePartial 逐语句同序:先减 before 项再加 after 项(uint64 回绕语义一致)
++            total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
++            total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
++        }
++    }
++
++    return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
++}
++
 +double defaultEnergyFunctionSegmented(
 +        const std::vector<geometrize::Scanline>& lines,
 +        const std::uint32_t alpha,
@@ -5262,7 +5361,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  geometrize::rgba computeColor(
          const geometrize::Bitmap& target,
          const geometrize::Bitmap& current,
-@@ -134,27 +467,33 @@
+@@ -134,27 +566,33 @@
      std::int64_t totalGreen{0};
      std::int64_t totalBlue{0};
      std::int64_t count{0};
@@ -5310,7 +5409,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              count++;
          }
      }
-@@ -171,6 +510,90 @@
+@@ -171,6 +609,90 @@
      return geometrize::rgba{r, g, b, alpha};
  }
  
@@ -5401,7 +5500,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  double differenceFull(const geometrize::Bitmap& first, const geometrize::Bitmap& second)
  {
      assert(first.getWidth() == second.getWidth());
-@@ -180,15 +603,21 @@
+@@ -180,15 +702,21 @@
      const std::size_t height{first.getHeight()};
      std::uint64_t total{0};
  
@@ -5429,7 +5528,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
              total += (dr * dr + dg * dg + db * db + da * da);
          }
      }
-@@ -202,24 +631,39 @@
+@@ -202,24 +730,39 @@
          const double score,
          const std::vector<Scanline>& lines)
  {
@@ -5485,12 +5584,14 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  
              total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
              total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
-@@ -243,8 +687,57 @@
+@@ -241,10 +784,61 @@
+         const double lastScore,
+         const EnergyFunction& customEnergyFunction)
  {
-     const EnergyFunction& e = customEnergyFunction ? customEnergyFunction : geometrize::core::defaultEnergyFunction;
- 
--    const geometrize::State state{bestRandomState(shapeCreator, alpha, n, target, current, buffer, lastScore, e)};
--    return ::hillClimb(state, age, target, current, buffer, lastScore, e);
+-    const EnergyFunction& e = customEnergyFunction ? customEnergyFunction : geometrize::core::defaultEnergyFunction;
++    // 内置默认函数走融合实现(不读 scratch buffer);自定义回调(脚本)语义不变
++    const EnergyFunction& e = customEnergyFunction ? customEnergyFunction : geometrize::core::defaultEnergyFunctionFused;
++
 +    // B6:lines 向量跨 bestRandomState/hillClimb 全程复用,值行为与上游逐位一致
 +    std::vector<geometrize::Scanline> lines;
 +    const geometrize::State state{bestRandomStateScratch(shapeCreator, alpha, n, target, current, buffer, lastScore, e, lines)};
@@ -5509,15 +5610,18 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        const std::int32_t halfWidth,
 +        const std::int32_t halfHeight)
 +{
-+    // 金字塔轨道只走内置能量函数:自定义回调的语义按全分辨率位图约定,不接受半分辨率图
-+    const EnergyFunction& e = geometrize::core::defaultEnergyFunction;
++    // 金字塔轨道只走内置能量函数:自定义回调的语义按全分辨率位图约定,不接受半分辨率图。
++    // 内置评估用融合实现(不读 scratch buffer,免半分辨率整图拷贝)。
++    const EnergyFunction& e = geometrize::core::defaultEnergyFunctionFused;
 +
 +    std::vector<geometrize::Scanline> lines;
 +    std::vector<geometrize::Scanline> halfLines;
 +    const geometrize::State state{bestRandomStateScratchPyramid(shapeCreator, alpha, n, target, current, buffer, lastScore, e, lines, halfLines, halfWidth, halfHeight)};
 +    return ::hillClimbScratchPyramid(state, age, target, current, buffer, lastScore, e, lines, halfLines, halfWidth, halfHeight);
 +}
-+
+ 
+-    const geometrize::State state{bestRandomState(shapeCreator, alpha, n, target, current, buffer, lastScore, e)};
+-    return ::hillClimb(state, age, target, current, buffer, lastScore, e);
 +geometrize::State bestHillClimbStateEnhanced(
 +        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
 +        const std::uint32_t alpha,
@@ -5588,7 +5692,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * The core functions for Geometrize.
   * @author Sam Twidale (https://samcodes.co.uk/)
   */
-@@ -62,6 +88,39 @@
+@@ -62,6 +88,59 @@
          double score);
  
  /**
@@ -5598,6 +5702,26 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 + * 差分公式与累加次序与 defaultEnergyFunction 完全相同(differencePartial 对颜色来源无感知)。
 + */
 +double defaultEnergyFunctionSegmented(
++        const std::vector<geometrize::Scanline>& lines,
++        const std::uint32_t alpha,
++        const geometrize::Bitmap& target,
++        const geometrize::Bitmap& current,
++        geometrize::Bitmap& buffer,
++        double score);
++
++/**
++ * @brief defaultEnergyFunctionFused defaultEnergyFunction 的融合实现(大图性能,位精确):
++ * 把"混色(copyLines+drawLines)→差分(differencePartial)"两遍扫描合并为一遍只读扫描——
++ * 混合值不再写进 scratch buffer,而是在差分循环内按 drawLines 的同一整数公式(含预乘常量
++ * 与钳制语义)逐像素现算。每次候选评估因此省掉 copyLines 与 drawLines 的位图往返
++ * (实测 4096 大图上这三段占评估耗时约 76%),结果与 defaultEnergyFunction 逐位相等
++ * (由 test_core 的对照用例锁定)。
++ * 语义边界:buffer 参数仅为复用 EnergyFunction 签名而保留,实现不读不写——调用方可传空位图
++ * (库内热路径已据此省掉每线程每步的整图拷贝);空数据守卫只看 target/current(逐遍实现里
++ * buffer 是 current 的拷贝,两者等价)。扫描线互不重叠是库内光栅化不变量;越界 x 在逐遍
++ * 实现里净效应为零(drawLines 钳制不写、差分对 before/after 同减同加),此处直接跳过。
++ */
++double defaultEnergyFunctionFused(
 +        const std::vector<geometrize::Scanline>& lines,
 +        const std::uint32_t alpha,
 +        const geometrize::Bitmap& target,
@@ -5628,7 +5752,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * @brief computeColor Calculates the color of the scanlines.
   * @param target The target image.
   * @param current The current image.
-@@ -124,6 +183,59 @@
+@@ -124,6 +203,59 @@
          double lastScore,
          const EnergyFunction& customEnergyFunction = nullptr);
  
@@ -6335,7 +6459,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      {
          // Ensure that the maximum number of threads is a sane value
          if(maxThreads == 0) {
-@@ -99,34 +415,101 @@
+@@ -99,34 +415,104 @@
              }
          }
  
@@ -6417,10 +6541,13 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +                            states[i] = core::bestHillClimbStateEnhanced(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, 0, 0, enhancements, errorMap);
 +                        }
 +                    } else if(usePyramid) {
-+                        geometrize::Bitmap halfBuffer{*halfCurrent};
++                        // 金字塔内置评估走融合实现(defaultEnergyFunctionFused),不读 scratch buffer:
++                        // 免掉每线程每步的半分辨率整图拷贝(4096 场景实测可见)
++                        geometrize::Bitmap halfBuffer{};
 +                        states[i] = core::bestHillClimbStatePyramid(shapeCreator, alpha, shapeCount, maxShapeMutations, *halfTarget, *halfCurrent, halfBuffer, lastScore, static_cast<std::int32_t>(halfTarget->getWidth()), static_cast<std::int32_t>(halfTarget->getHeight()));
 +                    } else {
-+                        geometrize::Bitmap buffer{m_current};
++                        // 仅自定义能量函数(脚本)保留整图拷贝的 buffer 语义;内置默认函数融合实现不读 buffer
++                        geometrize::Bitmap buffer{energyFunction ? geometrize::Bitmap{m_current} : geometrize::Bitmap{}};
 +                        states[i] = core::bestHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, energyFunction);
 +                    }
 +                });
@@ -6462,7 +6589,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          return states;
      }
  
-@@ -137,9 +520,18 @@
+@@ -137,9 +523,18 @@
              const std::uint32_t maxShapeMutations,
              const std::uint32_t maxThreads,
              const geometrize::core::EnergyFunction& energyFunction,
@@ -6484,7 +6611,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          if(states.empty()) {
              assert(0 && "Failed to get a hill climb state");
              return {};
-@@ -151,22 +543,70 @@
+@@ -151,22 +546,70 @@
  
          // Draw the shape onto the image
          const std::shared_ptr<geometrize::Shape> shape = it->m_shape;
@@ -6565,7 +6692,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          return { result };
      }
  
-@@ -174,16 +614,55 @@
+@@ -174,16 +617,55 @@
              const std::shared_ptr<geometrize::Shape> shape,
              const geometrize::rgba color)
      {
@@ -6622,7 +6749,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      geometrize::Bitmap& getTarget()
      {
          return m_target;
-@@ -210,10 +689,45 @@
+@@ -210,10 +692,45 @@
      }
  
  private:
@@ -6668,7 +6795,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      std::atomic<std::uint32_t> m_baseRandomSeed; ///< The base value used for seeding the random number generator (the one the user has control over).
      std::atomic<std::uint32_t> m_randomSeedOffset; ///< Seed used for random number generation. Note: incremented by each std::async call used for model stepping.
  };
-@@ -249,9 +763,12 @@
+@@ -249,9 +766,12 @@
          const std::uint32_t maxShapeMutations,
          const std::uint32_t maxThreads,
          const geometrize::core::EnergyFunction& energyFunction,
@@ -6683,7 +6810,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  }
  
  geometrize::ShapeResult Model::drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color)
-@@ -259,6 +776,11 @@
+@@ -259,6 +779,11 @@
      return d->drawShape(shape, color);
  }
  
