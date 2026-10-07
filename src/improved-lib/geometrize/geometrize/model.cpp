@@ -457,14 +457,16 @@ public:
 
                     if(useEnhanced) {
                         // 增强轨道:halfWidth==0 全分辨率;>0 半分辨率(金字塔可组合)
+                        // 第十八批:两条分支都走融合能量函数(不读 scratch buffer),故传空位图,
+                        // 免掉每线程每步的整图拷贝(与金字塔/经典融合路径同款处理)
                         const bool half{usePyramid || (halfTarget != nullptr)};
                         const std::int32_t halfWidth{half ? static_cast<std::int32_t>(halfTarget->getWidth()) : 0};
                         const std::int32_t halfHeight{half ? static_cast<std::int32_t>(halfTarget->getHeight()) : 0};
                         if(half) {
-                            geometrize::Bitmap halfBuffer{*halfCurrent};
+                            geometrize::Bitmap halfBuffer{};
                             states[i] = core::bestHillClimbStateEnhanced(shapeCreator, alpha, shapeCount, maxShapeMutations, *halfTarget, *halfCurrent, halfBuffer, lastScore, halfWidth, halfHeight, enhancements, errorMap);
                         } else {
-                            geometrize::Bitmap buffer{m_current};
+                            geometrize::Bitmap buffer{};
                             states[i] = core::bestHillClimbStateEnhanced(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, 0, 0, enhancements, errorMap);
                         }
                     } else if(usePyramid) {

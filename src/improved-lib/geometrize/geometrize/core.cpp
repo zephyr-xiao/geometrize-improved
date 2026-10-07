@@ -14,6 +14,7 @@
 #include "bitmap/bitmap.h"
 #include "bitmap/rgba.h"
 #include "commonutil.h"
+#include "core/energykernelmath.h"
 #include "core/errorweightmap.h"
 #include "rasterizer/rasterizer.h"
 #include "rasterizer/scanline.h"
@@ -605,6 +606,77 @@ double defaultEnergyFunctionSegmented(
     return geometrize::core::differencePartial(target, current, buffer, score, lines);
 }
 
+double defaultEnergyFunctionSegmentedFused(
+        const std::vector<geometrize::Scanline>& lines,
+        const std::uint32_t alpha,
+        const geometrize::Bitmap& target,
+        const geometrize::Bitmap& current,
+        geometrize::Bitmap& /*buffer*/,
+        const double score)
+{
+    // 第 1 遍(只读):行级取色,与逐遍实现共用 computeSegmentColors(含线型空向量语义)
+    const std::vector<geometrize::rgba> colors{geometrize::core::computeSegmentColors(target, current, lines, static_cast<std::uint8_t>(alpha))};
+    const bool perLine{!colors.empty()};
+
+    // 线型形状退回整形状单色:与逐遍实现里 drawLines(computeColor(...)) 的那条分支同源
+    geometrize::rgba singleColor{0, 0, 0, 0};
+    if(!perLine) {
+        singleColor = geometrize::core::computeColor(target, current, lines, alpha);
+    }
+
+    // 与 differencePartial 相同的基数与收尾公式(score 基数的浮点截断行为是输出的一部分,原样保留)
+    const std::uint64_t rgbaCount{static_cast<std::uint64_t>(target.getWidth()) * target.getHeight() * 4U};
+    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * static_cast<double>(rgbaCount))};
+    if(target.getDataRef().empty() || current.getDataRef().empty()) {
+        return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
+    }
+
+    const auto* targetData = target.getDataRef().data();
+    const auto* currentData = current.getDataRef().data();
+    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
+    const std::int32_t width{static_cast<std::int32_t>(target.getWidth())};
+    const std::int32_t height{static_cast<std::int32_t>(target.getHeight())};
+
+    std::uint64_t afterSum{0};
+    std::uint64_t beforeSum{0};
+
+    for(std::size_t i = 0; i < lines.size(); i++) {
+        const geometrize::Scanline& line = lines[i];
+        // 越界行:与标量融合版一致跳过(库内扫描线恒已裁剪)
+        if(line.y < 0 || line.y >= height) {
+            continue;
+        }
+        const std::int32_t xStart{line.x1 < 0 ? 0 : line.x1};
+        const std::int32_t xEnd{line.x2 >= width ? width - 1 : line.x2};
+        if(xStart > xEnd) {
+            continue;
+        }
+
+        // 每行重建预乘常量:drawLinesSegmented 的常量就是按行算的(公式与 drawLines 逐字相同)
+        const geometrize::core::energykernel::PremultipliedColor premul{
+            geometrize::core::energykernel::premultiply(perLine ? colors[i] : singleColor)};
+
+        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
+        const auto* cRow = currentData + rowStride * static_cast<std::size_t>(line.y);
+
+        for(std::int32_t x = xStart; x <= xEnd; x++) {
+            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
+            for(std::size_t channel = 0; channel < 4U; channel++) {
+                const std::uint32_t currentChannel{cRow[offset + channel]};
+                const std::int32_t targetChannel{static_cast<std::int32_t>(tRow[offset + channel])};
+                const std::int32_t blended{geometrize::core::energykernel::blendChannel(currentChannel, premul.aa, premul.k[channel])};
+                const std::int32_t dtb{targetChannel - static_cast<std::int32_t>(currentChannel)};
+                const std::int32_t dta{targetChannel - blended};
+                beforeSum += static_cast<std::uint64_t>(dtb * dtb);
+                afterSum += static_cast<std::uint64_t>(dta * dta);
+            }
+        }
+    }
+
+    total = total - beforeSum + afterSum;
+    return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
+}
+
 geometrize::rgba computeColor(
         const geometrize::Bitmap& target,
         const geometrize::Bitmap& current,
@@ -885,9 +957,11 @@ geometrize::State bestHillClimbStateEnhanced(
 {
     // A2.4 分段取色:开关开启时评估侧换分段能量函数(评估与落画同一颜色模型)。
     // 自定义能量函数在增强轨道本就被忽略(既有文档语义),不新增优先级分支。
+    // 第十八批:两条分支都切到融合实现(位精确)——增强轨道此前仍走逐遍内核 + 整图 scratch 拷贝,
+    // 是"勾选增强就比上游还慢"的直接原因;buffer 参数随之不再被读写(调用侧可传空位图)。
     const EnergyFunction& e = enhancements.segmentColors
-        ? geometrize::core::defaultEnergyFunctionSegmented
-        : geometrize::core::defaultEnergyFunction;
+        ? geometrize::core::defaultEnergyFunctionSegmentedFused
+        : geometrize::core::defaultEnergyFunctionFused;
 
     std::vector<geometrize::Scanline> lines;
     std::vector<geometrize::Scanline> halfLines;

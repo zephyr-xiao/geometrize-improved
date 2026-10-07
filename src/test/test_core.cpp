@@ -395,6 +395,50 @@ TEST_CASE("defaultEnergyFunctionFusedAvx2 宽图尾部像素与多行覆盖")
     }
 }
 
+// 分段颜色版的融合实现(defaultEnergyFunctionSegmentedFused)与逐遍实现
+// (computeSegmentColors + copyLines + drawLinesSegmented + differencePartial)逐位一致,且不写 buffer。
+// 覆盖面状(逐行取色)、线型(computeSegmentColors 返回空 → 退回整形状单色)、含 y<0 行与空扫描线。
+TEST_CASE("defaultEnergyFunctionSegmentedFused 与逐遍分段实现逐位一致且不写 buffer")
+{
+    const auto target = makeGradientBitmap(32, 24);
+
+    std::vector<std::uint8_t> currentData(32U * 24U * 4U);
+    for(std::uint32_t y = 0; y < 24; y++) {
+        for(std::uint32_t x = 0; x < 32; x++) {
+            const std::size_t offset{(static_cast<std::size_t>(32U) * y + x) * 4U};
+            currentData[offset] = static_cast<std::uint8_t>((x * 5U + y * 11U) & 0xFFU);
+            currentData[offset + 1U] = static_cast<std::uint8_t>((x * 23U + y * 7U) & 0xFFU);
+            currentData[offset + 2U] = static_cast<std::uint8_t>((x * y * 3U) & 0xFFU);
+            currentData[offset + 3U] = static_cast<std::uint8_t>(255U - ((x + y) % 40U));
+        }
+    }
+    const geometrize::Bitmap current{32, 24, currentData};
+
+    const std::vector<std::vector<geometrize::Scanline>> cases{
+        {geometrize::Scanline{2, 4, 9}, geometrize::Scanline{3, 0, 31}, geometrize::Scanline{20, 7, 12}}, // 面状:逐行取色
+        {geometrize::Scanline{5, 6, 6}, geometrize::Scanline{6, 7, 7}, geometrize::Scanline{7, 8, 8}},    // 线型:退回单色
+        {geometrize::Scanline{-3, 4, 9}, geometrize::Scanline{4, 3, 5}},                                 // 含 y<0 行
+        {}                                                                                               // 空扫描线
+    };
+    const std::vector<std::uint32_t> alphas{1U, 128U, 255U};
+    const std::vector<double> scores{0.0, 0.37, 0.9};
+
+    for(const auto& lines : cases) {
+        for(const std::uint32_t alpha : alphas) {
+            for(const double score : scores) {
+                geometrize::Bitmap buffer{current};
+                const double classic = geometrize::core::defaultEnergyFunctionSegmented(lines, alpha, target, current, buffer, score);
+
+                geometrize::Bitmap sentinel{current};
+                const double fused = geometrize::core::defaultEnergyFunctionSegmentedFused(lines, alpha, target, current, sentinel, score);
+
+                CHECK(fused == classic); // double 逐位相等(非 Approx)
+                CHECK(sentinel.getDataRef() == current.getDataRef()); // 融合实现不写 buffer
+            }
+        }
+    }
+}
+
 #endif
 
 // ---- A2.4 SVG/JSON 分段导出 ----

@@ -102,6 +102,24 @@ double defaultEnergyFunctionSegmented(
         double score);
 
 /**
+ * @brief defaultEnergyFunctionSegmentedFused 分段颜色版的融合实现(第十八批,位精确):
+ * 与 defaultEnergyFunctionFused 同款思路——把"混色(drawLinesSegmented)→差分"并为一遍只读扫描,
+ * 混合值不写 scratch buffer。分段与单色的差别只在混色常量:**逐行重建**预乘常量
+ * (分段落画 drawLinesSegmented 的常量就是按行算的,公式与 drawLines 逐字相同),
+ * 线型形状(computeSegmentColors 返回空)退回整形状单色 computeColor,与 defaultEnergyFunction
+ * 逐位一致。取色仍走 computeSegmentColors(两遍结构里颜色必须先于混合确定,无法再融合)。
+ * 混合用无除法等价式(见 core/energykernelmath.h),不建 4×256 LUT——分段场景行多而每行像素少,
+ * 建表开销会盖过收益。buffer 仅为复用签名保留,实现不读不写。
+ */
+double defaultEnergyFunctionSegmentedFused(
+        const std::vector<geometrize::Scanline>& lines,
+        const std::uint32_t alpha,
+        const geometrize::Bitmap& target,
+        const geometrize::Bitmap& current,
+        geometrize::Bitmap& buffer,
+        double score);
+
+/**
  * @brief defaultEnergyFunctionFused defaultEnergyFunction 的融合实现(大图性能,位精确):
  * 把"混色(copyLines+drawLines)→差分(differencePartial)"两遍扫描合并为一遍只读扫描——
  * 混合值不再写进 scratch buffer,而是在差分循环内按 drawLines 的同一整数公式(含预乘常量

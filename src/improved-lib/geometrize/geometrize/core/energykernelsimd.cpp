@@ -12,6 +12,7 @@
 #include "../bitmap/rgba.h"
 #include "../commonutil.h"
 #include "../rasterizer/scanline.h"
+#include "energykernelmath.h"
 
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 #define GEOMETRIZE_X86_SIMD 1
@@ -22,16 +23,6 @@
 
 namespace
 {
-
-/// 混合公式的无除法标量复刻(尾部像素与向量式同源,返回 floor(V / (65535*256)))。
-/// 展开:V = hi*65536 + lo 时 floor(V/65535) = hi + [hi + lo >= 65535];记 W = V >> 8,
-/// 由嵌套整除 floor(V/16776960) == floor(W/65535),再代入数字和恒等式得下式。
-inline std::int32_t blendChannel(const std::uint32_t d, const std::uint32_t aa, const std::uint32_t sTimesM)
-{
-    const std::uint32_t v{d * aa + sTimesM};
-    const std::uint32_t w{v >> 8U};
-    return static_cast<std::int32_t>((w + (w >> 16U) + 1U) >> 16U);
-}
 
 /// 256 位向量的 4×64 位车道归约(整数加法精确,分块求和与逐像素求和 mod 2^64 等价)
 inline std::uint64_t sumLanes64(const __m256i v)
@@ -192,29 +183,8 @@ double defaultEnergyFunctionFusedAvx2(
         return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
     }
 
-    // drawLines 的单次预乘常量,与标量融合版逐语句同源(注意 d*aa + s*m 允许 uint32 回绕后再除)
-    std::uint32_t sr{color.r};
-    sr |= sr << 8;
-    sr *= color.a;
-    sr /= UINT8_MAX;
-    std::uint32_t sg{color.g};
-    sg |= sg << 8;
-    sg *= color.a;
-    sg /= UINT8_MAX;
-    std::uint32_t sb{color.b};
-    sb |= sb << 8;
-    sb *= color.a;
-    sb /= UINT8_MAX;
-    std::uint32_t sa{color.a};
-    sa |= sa << 8;
-
-    const std::uint32_t m{UINT16_MAX};
-    const std::uint32_t aa{(m - sa) * 257U};
-    const std::uint32_t kR{sr * m};
-    const std::uint32_t kG{sg * m};
-    const std::uint32_t kB{sb * m};
-    const std::uint32_t kA{sa * m};
-    const std::uint32_t kChannels[4]{kR, kG, kB, kA};
+    // drawLines 的单次预乘常量(与标量融合版共用 core/energykernelmath.h 的同一实现)
+    const geometrize::core::energykernel::PremultipliedColor premul{geometrize::core::energykernel::premultiply(color)};
 
     const auto* targetData = target.getDataRef().data();
     const auto* currentData = current.getDataRef().data();
@@ -224,10 +194,10 @@ double defaultEnergyFunctionFusedAvx2(
 
     // V = d*aa + k 恒小于 2^32(见 core.h),按无符号解释走逻辑移位;k 向量按 RGBA 交错布局,
     // 一次覆盖两个像素的 8 个通道(所有通道共用 aa,只有加性常量不同)
-    const __m256i aaVector{_mm256_set1_epi32(static_cast<int>(aa))};
+    const __m256i aaVector{_mm256_set1_epi32(static_cast<int>(premul.aa))};
     const __m256i kVector{_mm256_setr_epi32(
-        static_cast<int>(kR), static_cast<int>(kG), static_cast<int>(kB), static_cast<int>(kA),
-        static_cast<int>(kR), static_cast<int>(kG), static_cast<int>(kB), static_cast<int>(kA))};
+        static_cast<int>(premul.k[0]), static_cast<int>(premul.k[1]), static_cast<int>(premul.k[2]), static_cast<int>(premul.k[3]),
+        static_cast<int>(premul.k[0]), static_cast<int>(premul.k[1]), static_cast<int>(premul.k[2]), static_cast<int>(premul.k[3]))};
     const __m256i oneVector{_mm256_set1_epi32(1)};
 
     __m256i afterAcc{_mm256_setzero_si256()};
@@ -296,7 +266,7 @@ double defaultEnergyFunctionFusedAvx2(
             for(std::size_t channel = 0; channel < 4U; channel++) {
                 const std::int32_t targetChannel{static_cast<std::int32_t>(tRow[offset + channel])};
                 const std::int32_t currentChannel{static_cast<std::int32_t>(cRow[offset + channel])};
-                const std::int32_t blended{blendChannel(cRow[offset + channel], aa, kChannels[channel])};
+                const std::int32_t blended{geometrize::core::energykernel::blendChannel(cRow[offset + channel], premul.aa, premul.k[channel])};
                 const std::int32_t dtb{targetChannel - currentChannel};
                 const std::int32_t dta{targetChannel - blended};
                 beforeSum += static_cast<std::uint64_t>(dtb * dtb);
