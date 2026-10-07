@@ -1,7 +1,7 @@
 # Geometrize Improved — 迭代路线图
 
-> 版本基准:2026-10-07 第十六次交付(**序列导出告知与确认**:写盘前二次确认(张数+目录)+ 共享帧数公式 + 文案/翻译 + Qt 标准按钮中文化补齐)
-> 下次会话:§4.6 仅剩有意搁置项(见该节第 7 条"仍有意未做");§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(25 条)
+> 版本基准:2026-10-07 第十七次交付(**大图评估内核融合**:内置能量函数"混色→差分"融合为一遍只读扫描 + 混合查找表,4096 单步 1.77x,位精确)
+> 下次会话:§4.6 仅剩有意搁置项(见该节第 7 条"仍有意未做");§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(26 条)
 > 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ **Qt 6.8.3 LTS(msvc2022_64)**
 > 使用约定:**双轨制**——纯性能优化维持 bit-exact 门禁(与上游逐位一致);算法增强做成独立开关(默认关),不破坏验证体系。暂自用,不排开源工程项。
 
@@ -11,7 +11,7 @@
 
 | 项 | 状态 | 备注 |
 |---|---|---|
-| 核心库 | B1-B7 全部落地 + P1.1 金字塔(opt-in) | 内联/memcpy/isqrt 圆/扁平化 polygon/补丁快照/scratch 复用/持久线程池;金字塔=搜索启发式轨道 |
+| 核心库 | B1-B7 全部落地 + P1.1 金字塔(opt-in) + **P1.6 评估内核融合(第十七批,位精确)** | 内联/memcpy/isqrt 圆/扁平化 polygon/补丁快照/scratch 复用/持久线程池;金字塔=搜索启发式轨道;内核融合=融合为一遍只读扫描 + 4×256 混合查找表(4096 单步 1.77x,输出零变化) |
 | 交付物 | `dist\Geometrize-Improved\` | 免安装绿色包(与 release exe 同步);第十四批起为纯 Qt6 包(无 Qt5/ANGLE 残留) |
 | 端到端门禁 | `tools\run_ab.ps1` **26 用例矩阵** | 11 个 bit-exact + 15 个 EXPECTED_DIFF(边界修复/增强/区域/分段哨兵);`-BaselineExe` 支持外部基线;FAIL 自动留痕 .raw,单侧无输出自动重试一次(陷阱 #11) |
 | 单测门禁 | `src\test\` doctest 双变体 | 111 用例 × fast / 39 × base(ctest);Model 级哨兵已全部启用(2026-09-29,原 16 个 `#if 0 // CD`);变体分叉宏分流锁定 |
@@ -75,6 +75,22 @@
 | copyLines | 2.5% | 2.6% | 3.8% |
 | rasterizeIntoVector | 0.8% | 0.6% | 0.2% |
 判定:computeColor+differencePartial = **~30%,未过 >40% 启用门槛**;且另一半大头 drawLines(17%)不在 AVX2 原方案(误差内核)覆盖范围,B1/B2 后整数循环已被自动向量化,理论再收益 <15% 成立。插桩代码已删除,清理后 FINAL_SHA256 与基线逐位一致。
+注(第十七批补充):该否决结论的**范围**是当时的四遍内核;第十七批融合+LUT 后,4096 大图上"混合+差分"合计已占 ~76%,其中逐像素算术仍是主导(见下节),若再议 SIMD 应以融合遍为目标而非旧的误差内核。
+
+### P1.6 大图评估内核融合 + 混合查找表 — ✓ 已落地(2026-10-07,第十七批,位精确)
+- **诊断口径**(4096² 测试图 × 默认预算 × 8 线程 × ellipse):上游原版 163.0 s/步、改进版(改动前)64.4 s/步;
+  插桩定量:**每次候选评估平均扫描 161 万像素**,四遍扫描里"拷贝+混色"40.2%、"差分"35.1%——
+  瓶颈是逐像素整数算术(融合前混合+差分约 50 条指令/像素),不是中间位图的内存往返(此结论推翻了本批的初始假设)。
+- **实现**:`core::defaultEnergyFunctionFused`(core.h/core.cpp)——"混色→差分"两遍并为一遍只读扫描,
+  混合值不写 scratch buffer 而逐像素现算;**逐像素混合改 4×256 项通道查找表**(表值用与 drawLines
+  完全相同的表达式生成,含 uint32 回绕语义,位等价由构造保证);内置评估路径(经典+金字塔)切换,
+  并省掉每线程每步 `Bitmap buffer{m_current}`/`halfBuffer` 的整图拷贝(库内已核实 buffer 无其他消费者)。
+  `defaultEnergyFunction` 原样保留(脚本绑定 bindingscreator / 自定义能量函数 / 单测继续用)。
+- **实测**:4096² 无金字塔 64.4 → 36.4 s/步(**1.77x**);4096² + 金字塔 14.3 → 8.5 s/步(1.69x);
+  2048² 10.6 → 5.5 s/步(1.93x);4096² 相对上游 4.48x。逐像素:融合遍 12.6 → 6.1~7.1 ns/px。
+  三条口径 STEP_FINGERPRINT 与改动前逐位相同;run_ab 26/26;新增单测(72 断言)锁定融合≡逐遍。
+- 复现:`geobench-fast --input <4096.png> --steps 5 --threads 8 --types ellipse`(金字塔口径加 `--pyramid`)。
+- 后续可选:融合遍 SIMD(6~7 ns/px 仍算术主导,预估 1.5~2x);增强轨道(分段颜色/自适应步长)同模式融合。
 
 ---
 
@@ -273,6 +289,9 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 11. ✅ 第十六批真机回归已通过(2026-10-07,用户实测):尺寸护栏补测(4096×4096 图 + 输出倍率 8,
    弹出"导出尺寸超限"拒绝而非崩溃)、序列导出确认框(每步一张/张数/目标目录/默认"否")、
    Qt 标准按钮中文化("是/否"、"确定/取消")及其余交互项——全项无问题。
+12. ⏳ 第十七批大图提速待用户体感确认(2026-10-07):内核融合为**位精确**改动(指纹/门禁证据充分,
+   见 §1 P1.6),用户侧只需体感核对——4096 图同参数下单步应约为原来的 1/1.7;勾选"金字塔搜索(快速)"
+   后合计约为原来的 1/7.6。若体感不符(例如仍明显卡顿),回报具体操作路径与耗时。
 
 ---
 
@@ -387,6 +406,18 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
     零写盘;尺寸护栏弹窗(第十五批 #2 补测)与确认框/中文化按钮等全部项**已由用户复核通过**
     (2026-10-07,见 §4.6 D.11;测试图留在 D:\tmp\geometrize-limit-test\)。
   → 后续可选方向(未变):A2.5 新形状类型;新方向待定(CLI 批处理/HTTP API/更多导出格式)
+
+✅ 已完成(第十七批,2026-10-07:大图评估内核融合,位精确)
+  触发:真机反馈 4096 画布"单步几十秒";诊断(4096²/8 线程/默认预算):上游 163.0 s/步、
+    改进版 64.4 s/步、每次候选评估平均 161 万像素,插桩定量"拷贝+混色 40.2% / 差分 35.1%"——
+    瓶颈是逐像素算术而非内存往返(推翻本批初始假设,见 §1 P1.6)。
+  实现:defaultEnergyFunctionFused(混色→差分融合为一遍只读扫描)+ 4×256 混合查找表(同式生成,
+    含 uint32 回绕)+ 内置路径省掉 scratch 整图拷贝;defaultEnergyFunction 保留给脚本/自定义路径。
+  实测:4096² 64.4→36.4 s/步(1.77x)、+金字塔 14.3→8.5 s/步(1.69x)、2048² 1.93x、
+    相对上游 4.48x;三条口径 STEP_FINGERPRINT 与改动前逐位相同。
+  门禁:ctest 2/2(新增融合一致性单测 72 断言)、run_ab 26/26(golden 全 OK)、verify_patches 重导出 PASS;
+    镜像同步进 improved-app/lib 并重建交付包(dist 已同步 + fix_integrity_label)。
+  → 后续可选项:融合遍 SIMD(预估 1.5~2x);增强轨道同模式融合;大图默认提示金字塔(RUN 面板)
 ```
 
 每批结束:双门禁全绿(ctest + run_ab;改应用层渲染相关代码或升级 Qt 追加 qt_render_ab check)+ 发布包同步 + 补丁重编号导出 + MEMORY 更新。
@@ -404,7 +435,7 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 | 补丁一致性校验 | tools\verify_patches.py + patches\regen\(规范全量补丁;G1 重放复现 / G2 归档新鲜度;历史拆分系列经实测不可顺序重放——行尾混杂/缺 hunk 头/同文件重复导出,详见 patches\regen\README) |
 | 单元测试 | src\test\(doctest 双变体,CMake target 在 src\geobench\CMakeLists.txt,ctest 门禁) |
 | 测试图 | src\testdata\images\(gen_test_images.py 可再生) |
-| 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间) |
+| 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间/0018 评估内核融合) |
 | 应用补丁 | patches\qt\0001-0028(0026 批处理增强/0027 导出性能/0028 Qt6 迁移,累计 diff 含附注) |
 | Qt 渲染侧对拍 | tools\qt_render_ab.py(+ tools\qt_render_ab\cases\ 用例、tools\qt_goldens.csv 严格项哈希、tools\qt_render_ref\ 光栅化参考图;用法见 tools\qt_render_ab\README.md) |
 | 等价性论证 | docs\bitwise-equivalence-notes.md |
@@ -451,3 +482,4 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 24. **工作区内新建/更新的 exe 会继承 Low 完整性标签 → 双击运行时另存为全位置报「没有权限」(2026-10-06 定位,机器环境层面)**:本机工作区根被 dsh(DeepSeek Harness,本机 0.2.0-rc.2)的 Windows 沙箱盖了一条**可继承的 Low 强制完整性标签**(`Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`,其提交 `d5ad3baeb5`;工作区 ACL 里多出的 `S-1-4-…`"未知账户"是 dsh 的能力 SID,非恶意软件——公开记录见其讨论 #7735)。该目录树内**每个新建/更新的文件**都会物化 Low 标签,而由 Low 文件启动的进程按 Windows MIC 规则**以低完整性运行**——低完整性进程写不了任何普通目录,症状即:双击 Geometrize 后另存为时 Windows 原生对话框误报「你没有权限在此位置中保存文件…改为保存到图片文件夹?」(桌面/图片/D:\tmp 全拒,唯独工作区内可写——工作区本身带了配套的 Low 写许可)。**判据**:`icacls <exe>` 看是否含 `Mandatory Label\...Low`;对照实验 = 同会话 python/notepad 写 D:\tmp 正常而该 exe 写不了(应用内探针 `createDirectory`/`writeStringToFile` 全返回 false,注意此类写入**静默失败不抛异常**)。**修法**:`python tools\fix_integrity_label.py` 把交付入口/构建产物显式重置为 Medium(显式标签压过继承标签,**无需管理员**),**每次重建 exe 后都要再跑**;dsh 上游修复(f6698853f3)只豁免授权根**顶层**启动器,深层路径 exe(如本项目 dist)不受益,仍需本脚本兜底。排查已排除:应用代码/启动上下文/ACL/只读位/Defender CFA/火绒(3 个 db 含 4MB WAL 全扫,无 Geometrize 拦截记录)/完美世界 MessageTransfer.sys/AppCompat shim 与 AppInit·AppCertDlls 注入点/IFEO。
     **2026-10-06 追查 dsh 本体后的补充**:① **语义实证**——写操作的强制完整性规则是「进程 IL ≥ 对象标签」,policy 位(NO_WRITE_UP)**不能放开写**:Medium(policy 0) 与 Medium(NW) 同样拒绝低完整性进程写入;因此被重置为 Medium 的文件,**dsh 沙箱子进程无法再覆盖**(沙箱内构建需覆盖这些 exe 时,改在沙箱外跑,或临时 `icacls <文件> /setintegritylevel Low`)。② 已建**工作区级自动修复**:计划任务 `dsh-low-integrity-autofix`(每 15 分钟,脚本 `scripts\dsh-label-autofix\autofix.py`)把继承 Low 的启动文件自动重置为 Medium——新构建/新文件自愈,不必再手工跑本项目的 `tools\fix_integrity_label.py`(保留作单项目手动兜底)。③ 根源 = 本地 dsh **0.2.0-rc.2** 的沙箱后端 `@deepseek-ai/dsh-sandbox-windows-acl`(`restrictTokenIntegrity` 令牌降 Low + `buildLowLabelAcl` 给授权根盖 OI|CI Low 标签 + 对 world 拒绝 FILE_DELETE_CHILD,一次授权全树传播);该版本**不含**上游"顶层启动器豁免",且其 README 明说常驻标签不回收。
 25. **Qt6 标准按钮中文要靠 `qtbase_<lang>.qm`,旧的 `qt_<lang>.qm` 不够(第十六批实测)**:应用按 `qt_`/`qtbase_` 两个前缀 × locale 降级链加载 Qt 翻译(localization.cpp);资源里中文只有 Qt5 时代的 `qt_zh.qm` 整目录,**没有 `QPlatformTheme` 上下文**,而 Qt6 的标准按钮文案(OK/Yes/No/Cancel)恰好查它 → `QMessageBox` 按钮全回退英文(实测确认框显示 "Yes/No")。注意 Qt6 自带的 `qt_zh_CN.qm` 只是 **99 字节伞目录**,真正内容在 `qtbase_zh_CN.qm`。**判据**:`lconvert -i <qm> -o x.ts` 后 grep `<name>QPlatformTheme</name>`,没有即命中此坑。**修法**:把 `D:\Qt\6.8.3\msvc2022_64\translations\qtbase_zh_CN.qm` 存为 `resources\translations\qt\qtbase_zh.qm`(+`qtbase_zh_CN.qm`,对齐其余 20 个语言的 `qtbase_<lang>.qm` 惯例),再重跑 `scripts\generate_geometrize_qrcs.py` —— 该脚本**必须在 `resources\` 目录下运行**(内部用相对路径,在别处跑会 FileNotFoundError:'templates/templates');重建后确认框即显示"是/否"、其余对话框"确定/取消"。残余缺口:`qtbase_zh_TW.qm` 未补(繁体中文的标准按钮仍是英文)。
+26. **`qt_render_ab check` 的用例 06 依赖应用全局偏好(处理分辨率上限)——参考是在阈值 256 下冻结的(第十七批实测)**:case 06 走 `convertImageToBitmapWithDownscaling(loadImage(gradnoise_512.png))`,缩不缩放由持久化的 `global_preferences.json`(`%APPDATA%\Sam Twidale\Geometrize\global_preferences.json`,字段 `imageTaskImageResizeThreshold`)决定:阈值 256(上游默认,参考冻结时的环境)→ 输出 256×256 与参考逐字节一致;阈值 1024(本分支默认)→ 512 源图不再缩放 → check 报 `[DIFF] 06_image_scaling.qtinput.png`(实测 74.68% 字节不同、最大差 253,极易误判成回归)。**判据**:DIFF 只出现在 06、且差异是"整幅不同"而非 1 LSB 级;先看 `%APPDATA%` 里那个 JSON 的阈值。**跑 check 前**把阈值设回 256(或改用 `accept` 在目标环境下重采参考);注意 GUI 会话改过分辨率(如做护栏测试时设 4096)会持久生效,不仅让 check 误报,也让之后每个任务都按该分辨率处理。另:陷阱 #22 的"1 LSB 级"差异与本案是两回事,不要混为一谈。
