@@ -122,6 +122,43 @@ double defaultEnergyFunctionFused(
         double score);
 
 /**
+ * @brief avx2EnergyKernelAvailable 融合内核的 AVX2 运行时探测(CPUID + OS XSAVE + XGETBV,结果缓存)。
+ * 非 x86 平台恒 false(库只有标量实现);探测代码本身不使用 AVX2 指令,可在任意机器执行。
+ */
+bool avx2EnergyKernelAvailable();
+
+/**
+ * @brief defaultEnergyFunctionFusedScalar 融合实现的标量版(第十七批原实现,含 4×256 通道 LUT)。
+ * defaultEnergyFunctionFused 在机器不支持 AVX2 时派发到这里;单测用它与 AVX2 版本逐位对照。
+ */
+double defaultEnergyFunctionFusedScalar(
+        const std::vector<geometrize::Scanline>& lines,
+        const std::uint32_t alpha,
+        const geometrize::Bitmap& target,
+        const geometrize::Bitmap& current,
+        geometrize::Bitmap& buffer,
+        double score);
+
+/**
+ * @brief defaultEnergyFunctionFusedAvx2 融合实现的 AVX2 版本(第十八批,位精确等价)。
+ * 与标量融合版的差异只在实现手段,三条等价依据全部是整数恒等,不引入任何近似:
+ * ① 混合用无除法式复刻 LUT 表项:floor(V/65535) == (W + (W>>16) + 1) >> 16,W = V >> 8;
+ *    其中 V = d*aa + s*m 的取值上界为 65535²(已证不回绕),全输入域 256³ 组合已穷举比对;
+ * ② 取色重排:Σ[(t-c)*a + c*257] == a*Σt + (257-a)*Σc,故只需按通道求字节和(vpsadbw);
+ * ③ 差分累加按 2 像素一组向量化,32 位车道周期性并入 64 位基数——uint64 加减满足结合律,
+ *    分块求和与逐像素交错求和 mod 2^64 等价(收尾浮点公式逐语句照搬)。
+ * 越界行列统一裁剪(库内扫描线恒已裁剪,契约内为恒等);标量融合版越界列在取色侧是
+ * 未定义读取,契约外不保证两侧一致。仅在 avx2EnergyKernelAvailable() 为真时调用。
+ */
+double defaultEnergyFunctionFusedAvx2(
+        const std::vector<geometrize::Scanline>& lines,
+        const std::uint32_t alpha,
+        const geometrize::Bitmap& target,
+        const geometrize::Bitmap& current,
+        geometrize::Bitmap& buffer,
+        double score);
+
+/**
  * @brief computeSegmentColors A2.4:每条扫描线独立按混合公式求最优色。
  * 返回向量与 lines 一一对应;线型形状(全部扫描线均为单像素宽)返回空向量,
  * 调用方(评估侧/落画侧)据此统一退回单色路径——判定共享保证两侧颜色模型一致。

@@ -7,6 +7,10 @@
 #include <memory>
 #include <vector>
 
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <immintrin.h> // __cpuid/__cpuidex/_xgetbv:仅用于 AVX2 运行时探测,本 TU 不生成 AVX2 指令
+#endif
+
 #include "bitmap/bitmap.h"
 #include "bitmap/rgba.h"
 #include "commonutil.h"
@@ -431,7 +435,57 @@ double defaultEnergyFunction(
     return geometrize::core::differencePartial(target, current, buffer, score, lines); // Get error measure between areas of current and modified buffers covered by scanlines
 }
 
+bool avx2EnergyKernelAvailable()
+{
+    // 探测逻辑刻意放在不带 /arch:AVX2 的本 TU:若让它跟着 SIMD 单元编译,不支持的机器
+    // 可能在"检查 AVX2"这条语句上就吃到 AVX2 指令。结果缓存(CPUID/XGETBV 只跑一次)。
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+    static const bool available = []() -> bool {
+        int registers[4]{};
+        __cpuid(registers, 0);
+        if(registers[0] < 7) {
+            return false;
+        }
+        __cpuid(registers, 1);
+        const bool osxsave{(registers[2] & (1 << 27)) != 0};
+        const bool avx{(registers[2] & (1 << 28)) != 0};
+        if(!osxsave || !avx) {
+            return false;
+        }
+        if((_xgetbv(0) & 0x6ULL) != 0x6ULL) { // XMM/YMM 状态由 OS 保存,缺一不可
+            return false;
+        }
+        __cpuidex(registers, 7, 0);
+        return (registers[1] & (1 << 5)) != 0; // EBX bit5 = AVX2
+    }();
+    return available;
+#elif defined(__x86_64__) || defined(__i386__)
+    static const bool available = []() -> bool {
+        __builtin_cpu_init();
+        return __builtin_cpu_supports("avx2");
+    }();
+    return available;
+#else
+    return false;
+#endif
+}
+
 double defaultEnergyFunctionFused(
+        const std::vector<geometrize::Scanline>& lines,
+        const std::uint32_t alpha,
+        const geometrize::Bitmap& target,
+        const geometrize::Bitmap& current,
+        geometrize::Bitmap& buffer,
+        const double score)
+{
+    // 单次评估里这里只判一个缓存布尔,派发开销可忽略;两实现位精确等价(见 core.h)
+    if(avx2EnergyKernelAvailable()) {
+        return defaultEnergyFunctionFusedAvx2(lines, alpha, target, current, buffer, score);
+    }
+    return defaultEnergyFunctionFusedScalar(lines, alpha, target, current, buffer, score);
+}
+
+double defaultEnergyFunctionFusedScalar(
         const std::vector<geometrize::Scanline>& lines,
         const std::uint32_t alpha,
         const geometrize::Bitmap& target,

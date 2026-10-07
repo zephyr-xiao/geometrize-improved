@@ -293,11 +293,13 @@ TEST_CASE("defaultEnergyFunctionSegmented:线型退化与 defaultEnergyFunction 
 
 #if defined(GEOTEST_FAST)
 
-// 融合实现(defaultEnergyFunctionFused)与逐遍实现(computeColor+copyLines+drawLines+differencePartial)
-// 在位精确口径下等价,且完全不写 scratch buffer(库内热路径据此传空位图)。
+// 融合实现(defaultEnergyFunctionFused 及其标量/AVX2 两个版本)与逐遍实现
+// (computeColor+copyLines+drawLines+differencePartial)在位精确口径下等价,且完全不写 scratch buffer
+// (库内热路径据此传空位图)。第十八批起 AVX2 版本单独对照:三实现必须逐位相等
+// (avx2EnergyKernelAvailable 为假时只比标量路径)。
 // 契约:扫描线落在图像范围内——库内光栅化保证(第十五批已实证 clipScanlinesToBitmap 对内置形状是恒等);
 // 越界行/列在逐遍实现里是未定义读取,不属对照范围。
-TEST_CASE("defaultEnergyFunctionFused 与逐遍实现逐位一致且不写 buffer")
+TEST_CASE("defaultEnergyFunctionFused/Scalar/Avx2 与逐遍实现逐位一致且不写 buffer")
 {
     const auto target = makeGradientBitmap(32, 24);
 
@@ -331,10 +333,64 @@ TEST_CASE("defaultEnergyFunctionFused 与逐遍实现逐位一致且不写 buffe
 
                 geometrize::Bitmap sentinel{current};
                 const double fused = geometrize::core::defaultEnergyFunctionFused(lines, alpha, target, current, sentinel, score);
-
                 CHECK(fused == classic); // double 逐位相等(非 Approx)
                 CHECK(sentinel.getDataRef() == current.getDataRef()); // 融合实现不写 buffer
+
+                geometrize::Bitmap sentinelScalar{current};
+                const double scalar = geometrize::core::defaultEnergyFunctionFusedScalar(lines, alpha, target, current, sentinelScalar, score);
+                CHECK(scalar == classic);
+                CHECK(sentinelScalar.getDataRef() == current.getDataRef());
+
+                if(geometrize::core::avx2EnergyKernelAvailable()) {
+                    geometrize::Bitmap sentinelAvx2{current};
+                    const double avx2 = geometrize::core::defaultEnergyFunctionFusedAvx2(lines, alpha, target, current, sentinelAvx2, score);
+                    CHECK(avx2 == classic);
+                    CHECK(sentinelAvx2.getDataRef() == current.getDataRef());
+                    CHECK(fused == avx2); // 派发在 AVX2 机器上必须落到 AVX2 版本
+                } else {
+                    CHECK(fused == scalar);
+                }
             }
+        }
+    }
+}
+
+// AVX2 向量路径的覆盖用例:37 宽(4 个整向量 + 5 像素标量尾部)× 多行,
+// 含整行/错位起止/单像素行——逐行对照逐遍实现与标量融合版,专测尾部与跨向量边界。
+TEST_CASE("defaultEnergyFunctionFusedAvx2 宽图尾部像素与多行覆盖")
+{
+    if(!geometrize::core::avx2EnergyKernelAvailable()) {
+        return; // 非 AVX2 机器:无对照对象(标量与派发路径已由上一条用例覆盖)
+    }
+
+    const auto target = makeGradientBitmap(37, 9);
+    std::vector<std::uint8_t> currentData(37U * 9U * 4U);
+    for(std::uint32_t y = 0; y < 9; y++) {
+        for(std::uint32_t x = 0; x < 37; x++) {
+            const std::size_t offset{(static_cast<std::size_t>(37U) * y + x) * 4U};
+            currentData[offset] = static_cast<std::uint8_t>((x * 11U + y * 23U) & 0xFFU);
+            currentData[offset + 1U] = static_cast<std::uint8_t>((x * 3U + y * 41U) & 0xFFU);
+            currentData[offset + 2U] = static_cast<std::uint8_t>(((x ^ y) * 17U) & 0xFFU);
+            currentData[offset + 3U] = static_cast<std::uint8_t>((x * 5U + y) & 0xFFU);
+        }
+    }
+    const geometrize::Bitmap current{37, 9, currentData};
+
+    const std::vector<std::vector<geometrize::Scanline>> cases{
+        {geometrize::Scanline{0, 0, 36}},                                                             // 整行(4 向量 + 5 尾部)
+        {geometrize::Scanline{3, 3, 30}, geometrize::Scanline{7, 1, 19}},                             // 错位起止 + 跨行
+        {geometrize::Scanline{2, 17, 17}},                                                            // 单像素(纯标量尾部)
+        {geometrize::Scanline{1, 8, 8}, geometrize::Scanline{5, 29, 35}, geometrize::Scanline{8, 0, 7}} // 首尾片段
+    };
+
+    for(const auto& lines : cases) {
+        for(const std::uint32_t alpha : {17U, 200U, 255U}) {
+            geometrize::Bitmap buffer{current};
+            const double classic = geometrize::core::defaultEnergyFunction(lines, alpha, target, current, buffer, 0.5);
+            const double scalar = geometrize::core::defaultEnergyFunctionFusedScalar(lines, alpha, target, current, buffer, 0.5);
+            const double avx2 = geometrize::core::defaultEnergyFunctionFusedAvx2(lines, alpha, target, current, buffer, 0.5);
+            CHECK(scalar == classic);
+            CHECK(avx2 == classic);
         }
     }
 }

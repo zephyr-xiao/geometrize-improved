@@ -31,6 +31,17 @@ file(GLOB_RECURSE LIB_GEOMETRIZE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/geometrize/geometrize/geometrize/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/geometrize/geometrize/geometrize/*.h")
 
+# AVX2 融合内核 TU(库镜像):单独按 AVX2 指令集编译,其余源码保持基线指令集;
+# 运行时由 avx2EnergyKernelAvailable() 派发,不支持 AVX2 的机器不会执行该 TU 的任何指令
+set(GEOMETRIZE_SIMD_SRC "${CMAKE_CURRENT_SOURCE_DIR}/lib/geometrize/geometrize/geometrize/core/energykernelsimd.cpp")
+if(EXISTS "${GEOMETRIZE_SIMD_SRC}" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64|X86|i.86|x86)$")
+    if(MSVC)
+        set_source_files_properties("${GEOMETRIZE_SIMD_SRC}" PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+    else()
+        set_source_files_properties("${GEOMETRIZE_SIMD_SRC}" PROPERTIES COMPILE_OPTIONS "-mavx2")
+    endif()
+endif()
+
 # BurstLinker GIF 编码(lib/burstlinker/burstlinker.pri)
 file(GLOB_RECURSE LIB_BURSTLINKER_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/burstlinker/burstlinker/src/*.cpp"

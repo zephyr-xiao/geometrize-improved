@@ -19,13 +19,27 @@ endif()
 function(add_geometrize_variant VARIANT_NAME LIB_SRC_DIR OUT_SUFFIX DEFINE_NAME)
     # 库源码:递归收集 baseline/improved 树下全部 cpp,不含测试与工具
     # CONFIGURE_DEPENDS 保证补丁增删文件后重新 cmake 时自动刷新列表
-    file(GLOB_RECURSE LIB_SOURCES CONFIGURE_DEPENDS "${LIB_SRC_DIR}/*.cpp")
+    # 先规范化为绝对路径:下面的按文件编译选项依赖路径字符串与 SOURCES 完全一致
+    get_filename_component(GEOMETRIZE_LIB_ROOT "${LIB_SRC_DIR}" ABSOLUTE)
+    file(GLOB_RECURSE LIB_SOURCES CONFIGURE_DEPENDS "${GEOMETRIZE_LIB_ROOT}/*.cpp")
     list(LENGTH LIB_SOURCES LIB_SOURCE_COUNT)
     if(LIB_SOURCE_COUNT EQUAL 0)
         message(FATAL_ERROR "未在 ${LIB_SRC_DIR} 找到任何 .cpp 源文件")
     endif()
     add_library(geometrize-${VARIANT_NAME} STATIC ${LIB_SOURCES})
     target_include_directories(geometrize-${VARIANT_NAME} PUBLIC "${LIB_SRC_DIR}/geometrize")
+
+    # AVX2 融合内核 TU:只有这一个文件按 AVX2 指令集编译,库其余部分保持基线指令集;
+    # 运行时由 avx2EnergyKernelAvailable() 派发,不支持 AVX2 的机器不会执行该 TU 的任何指令。
+    # baseline 树没有此文件(EXISTS 判空),非 x86 平台也不加指令集开关。
+    set(GEOMETRIZE_SIMD_SRC "${GEOMETRIZE_LIB_ROOT}/geometrize/geometrize/core/energykernelsimd.cpp")
+    if(EXISTS "${GEOMETRIZE_SIMD_SRC}" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64|X86|i.86|x86)$")
+        if(MSVC)
+            set_source_files_properties("${GEOMETRIZE_SIMD_SRC}" PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+        else()
+            set_source_files_properties("${GEOMETRIZE_SIMD_SRC}" PROPERTIES COMPILE_OPTIONS "-mavx2")
+        endif()
+    endif()
 
     if(MSVC)
         # /utf-8:源码与执行字符集均为 UTF-8,否则中文注释在 GBK 代码页下被切分出假语法错误
