@@ -112,6 +112,21 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
   `gen_test_images.py` 补上游资产复制(`tree_under_clouds.png`)。
 - 验证:四道门禁全绿(ctest 2/2、run_ab 26/26、verify_patches、qt_render_ab check 含 GIF 字节级一致)。
 
+**序列导出告知与确认(第十六批,2026-10-07)**——真机回归反馈驱动:
+- **根因**:中文界面 `Save Image` / `Save Images` 同译"保存图像",第二个按钮会把渲染过程每步各存一张
+  PNG(`exported_image_<i>.png`,最多 1000 张、超过均匀抽稀)直接铺进所选目录,目录选择框标题也只有
+  "保存图像",全程无提示无确认(用户实测把整批序列图存到了桌面)。
+- **二次确认**:选目录后、写盘前弹确认框,明确写出"每步一张"、实际张数与目标目录;默认按钮与 Esc
+  都落在"否";张数与写盘循环共用同一公式(新增 `exporter::exportedFrameCount`,消除两处漂移);
+  0 形状不弹"将写入 0 张"的空确认。
+- **文案**:按钮中文改"保存序列图像"、目录选择标题改"选择序列图像导出目录"、按钮加 tooltip、
+  进度框带张数;英文 source 字符串未动(其他 28 个语言的翻译不失效)。
+- **Qt 标准按钮中文化**:资源里中文只有 Qt5 时代目录(无 `QPlatformTheme` 上下文),Qt6 下标准按钮
+  OK/Yes/No 全回退英文;补入 Qt 6.8.3 的 `qtbase_zh_CN.qm`(存为 `qtbase_zh.qm` + `qtbase_zh_CN.qm`,
+  对齐其余 20 个语言的 `qtbase_<lang>.qm` 惯例),确认框按钮显示"是/否"、其余对话框"确定/取消"同步转中文。
+- 验证:ctest 2/2、run_ab 26/26、verify_patches 重导出 PASS;真机(Computer Use 冒烟 + 用户复核):
+  28 形状 → 弹窗报 28 张 → 目录落盘 28 个 PNG 一一对应;Esc/"否"路径零写盘。
+
 ## 目录结构
 
 ```

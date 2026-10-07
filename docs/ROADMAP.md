@@ -1,7 +1,7 @@
 # Geometrize Improved — 迭代路线图
 
-> 版本基准:2026-10-06 第十五次交付(**应用层审查遗留清理**:GIF 导出尺寸护栏 + 批处理导出命名防覆盖 + 队列移除回调安全化,§4.6 C 组大头清账)
-> 下次会话:§4.6 仅剩有意搁置项(见该节第 7 条"仍有意未做");§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(23 条)
+> 版本基准:2026-10-07 第十六次交付(**序列导出告知与确认**:写盘前二次确认(张数+目录)+ 共享帧数公式 + 文案/翻译 + Qt 标准按钮中文化补齐)
+> 下次会话:§4.6 仅剩有意搁置项(见该节第 7 条"仍有意未做");§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(25 条)
 > 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ **Qt 6.8.3 LTS(msvc2022_64)**
 > 使用约定:**双轨制**——纯性能优化维持 bit-exact 门禁(与上游逐位一致);算法增强做成独立开关(默认关),不破坏验证体系。暂自用,不排开源工程项。
 
@@ -16,9 +16,9 @@
 | 端到端门禁 | `tools\run_ab.ps1` **26 用例矩阵** | 11 个 bit-exact + 15 个 EXPECTED_DIFF(边界修复/增强/区域/分段哨兵);`-BaselineExe` 支持外部基线;FAIL 自动留痕 .raw,单侧无输出自动重试一次(陷阱 #11) |
 | 单测门禁 | `src\test\` doctest 双变体 | 111 用例 × fast / 39 × base(ctest);Model 级哨兵已全部启用(2026-09-29,原 16 个 `#if 0 // CD`);变体分叉宏分流锁定 |
 | Qt 渲染侧门禁 | `tools\qt_render_ab.py` + `tools\qt_goldens.csv` + `tools\qt_render_ref\` | 第十四批新增:headless 脚本对拍(6 用例,覆盖位图/透明/多线程/边界/GIF/SVG 光栅化);升级 Qt 或改应用层渲染后 `check` 对冻结参考校验 |
-| 应用层 | 撤销重做 + 区域优先框选 + 增强五勾选框 + 分段颜色 + GIF/PNG 导出参数化 + F3.5 分辨率下拉 + 全量中文化 + 启动优化(网格铺满 0.5s)+ 动态线程 + 批处理增强(F3.3)+ 导出 O(N) 化(F3.7)+ Qt6 迁移(第十四批)+ **审查遗留清理(第十五批)** | patches\qt 0001-0029 已归档 |
+| 应用层 | 撤销重做 + 区域优先框选 + 增强五勾选框 + 分段颜色 + GIF/PNG 导出参数化 + F3.5 分辨率下拉 + 全量中文化 + 启动优化(网格铺满 0.5s)+ 动态线程 + 批处理增强(F3.3)+ 导出 O(N) 化(F3.7)+ Qt6 迁移(第十四批)+ 审查遗留清理(第十五批)+ **序列导出告知与确认(第十六批)** | patches\qt 0001-0030 已归档 |
 | 构建链 | **CMake 唯一维护链**(build_cmake.bat 一键含 windeployqt) | Qt6 迁移后 qmake/geometrize.pro **保留但冻结**(陷阱 #20);换 Qt 版本只改 bat 顶部 QT_DIR |
-| 翻译 | 300/300 全中文 | zh.ts 双 context(短名供 uic / 全名供嵌套类 tr) |
+| 翻译 | 全中文(zh.ts 320 条,9 条技术串与技术原文一致被 -removeidentical 剔除)+ **Qt 标准按钮 qtbase_zh**(第十六批) | zh.ts 双 context(短名供 uic / 全名供嵌套类 tr);Qt 侧需 `qtbase_<lang>.qm` 才有 OK/Yes/No 中文(陷阱 #25) |
 | 已知残留 | 偏好文件旧值持久化 | 全局偏好 JSON 里旧字段会被沿用,改默认值时注意用户机已有文件 |
 
 **改动铁律**(每次迭代都适用):
@@ -265,10 +265,11 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 9. ✅ Qt6 迁移真机回归已通过(2026-10-03,用户实测):启动/模板网格、运行(默认+增强勾选)、撤销重做、
    区域框选、脚本控制台、导出 PNG/序列/SVG/GIF、批处理队列、偏好/语言、任务栏进度、关闭全项无异常。
    对应验收证据见 docs/qt6-migration-report.md(脚本对拍 + 三道门禁 + 交付包 check)。
-10. ⏳ 第十五批真机回归待用户(2026-10-06):重点项 = ①"另存为"到工作区外(桌面/D:\tmp,原阻断缺陷,
-   见陷阱 #24);②导出超限预检弹窗(小图 ×8 倍率或大图高倍率应弹出拒绝而非崩溃);③批处理队列
-   连续两轮同名导出不互相覆盖、队列项执行中移除不崩;④脚本下拉选择、16 区域上限状态栏提示。
-   **回归通过后**执行本地提交推送与仓库转 public(已获用户确认)。
+10. ✅ 第十五批真机回归已通过(2026-10-07,用户实测):①"另存为"到工作区外、③批处理两轮导出不互相
+   覆盖/队列项移除不崩、④脚本下拉与 16 区域上限提示——全过;②因测试图仅 1280×1706(×8=559MB,
+   未达 2GB 上限)**未真正触发护栏**,第十六批改用 4096×4096 测试图补测(见 §5 第十六批)。
+   回归同期发现并修复:序列导出无提示直写目录(用户桌面被铺满)——见 §5 第十六批与陷阱 #25。
+   本地 24 提交已推送、仓库已转 public(2026-10-07,用户确认)。
 
 ---
 
@@ -364,6 +365,24 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
     dist 已同步(exe SHA-256 e0b930f4…与 build 产物一致);代码审查无 P0/P1
   → 后续可选方向(未变):A2.5 新形状类型;新方向待定(CLI 批处理/HTTP API/更多导出格式);
     §4.6 仅剩有意搁置项
+
+✅ 已完成(第十六批,2026-10-07:序列导出告知与确认,真机回归反馈驱动)
+  根因:中文界面 Save Image/Save Images 同译"保存图像",序列按钮会把渲染过程每步各存一张 PNG
+    (最多 1000 张,超过均匀抽稀)直接铺进所选目录,目录选择框标题也只有"保存图像",全程无提示
+    无确认——用户真机回归时把整批序列图存到了桌面。
+  二次确认(imagetaskexportwidget):选目录后、写盘前弹确认框(标题"导出序列图像"),写明"每步一张"
+    + 实际张数 + 目标目录;默认按钮与 Esc 都落在"否";0 形状不弹"将写入 0 张"空确认(导出器本就
+    静默失败,保持既有行为);进度框文案带张数。
+  张数单一真源(imageexporter):新增 exportedFrameCount(shapeCount) 与共享常量 maxSequenceFrames,
+    写盘循环与确认框共用(stride=ceil(N/1000),取帧数=N/stride+(N%stride!=0))。
+  文案:.ui 加按钮 tooltip;zh.ts 按钮→"保存序列图像"、目录框标题→"选择序列图像导出目录"、确认框
+    标题/正文(两变体)/进度文案共 5 条新增;英文 source 字符串未动(其他 28 个语言不失效)。
+  Qt 标准按钮中文化:补入 Qt 6.8.3 的 qtbase_zh.qm/qtbase_zh_CN.qm(resources + qrc),确认框显示
+    "是/否"、其余对话框"确定/取消"同步转中文——根因与判据见陷阱 #25。
+  门禁:ctest 2/2、run_ab 26/26、verify_patches 重导出 PASS;qt_render_ab 未跑(纯对话框/资源改动)。
+  真机:Computer Use 冒烟——28 形状 → 弹窗报"28 张" → 目录落盘 28 个 PNG 一一对应;Esc/"否"
+    零写盘;尺寸护栏弹窗(第十五批 #2 补测)由用户以 4096×4096 测试图复核(D:\tmp\geometrize-limit-test\)。
+  → 后续可选方向(未变):A2.5 新形状类型;新方向待定(CLI 批处理/HTTP API/更多导出格式)
 ```
 
 每批结束:双门禁全绿(ctest + run_ab;改应用层渲染相关代码或升级 Qt 追加 qt_render_ab check)+ 发布包同步 + 补丁重编号导出 + MEMORY 更新。
@@ -427,3 +446,4 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 23. **Qt6/64 位 QImage 无固定单边尺寸上限(第十五批复现实证,"32767 上限"是 Qt5 时代假设)**:32768 宽构造成功、`scaled(32768,32768)`(4.29GB)在本机也能成功——不能指望 Qt 替你拒绝超限导出。后果链:内存压力下 `scaled` 返回**空图** → `makeImageData` 按 0×0 分配 → BurstLinker 量化器按 `init` 时的尺寸读缓冲 → **堆越界读**(守护页实测 0xC0000005);GIF 头部宽高是 uint16,>65535 静默截断(mod 65536,70000→4464)。凡按用户倍率放大输出的路径,先用 `宽*高*4 ≤ 2GB`(uint64 乘法)与 GIF 每边 ≤65535 做确定性预检(第十五批已在导出面板三入口 + gifexporter 落防线),消费 scaled 结果前必须补空图检查。
 24. **工作区内新建/更新的 exe 会继承 Low 完整性标签 → 双击运行时另存为全位置报「没有权限」(2026-10-06 定位,机器环境层面)**:本机工作区根被 dsh(DeepSeek Harness,本机 0.2.0-rc.2)的 Windows 沙箱盖了一条**可继承的 Low 强制完整性标签**(`Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`,其提交 `d5ad3baeb5`;工作区 ACL 里多出的 `S-1-4-…`"未知账户"是 dsh 的能力 SID,非恶意软件——公开记录见其讨论 #7735)。该目录树内**每个新建/更新的文件**都会物化 Low 标签,而由 Low 文件启动的进程按 Windows MIC 规则**以低完整性运行**——低完整性进程写不了任何普通目录,症状即:双击 Geometrize 后另存为时 Windows 原生对话框误报「你没有权限在此位置中保存文件…改为保存到图片文件夹?」(桌面/图片/D:\tmp 全拒,唯独工作区内可写——工作区本身带了配套的 Low 写许可)。**判据**:`icacls <exe>` 看是否含 `Mandatory Label\...Low`;对照实验 = 同会话 python/notepad 写 D:\tmp 正常而该 exe 写不了(应用内探针 `createDirectory`/`writeStringToFile` 全返回 false,注意此类写入**静默失败不抛异常**)。**修法**:`python tools\fix_integrity_label.py` 把交付入口/构建产物显式重置为 Medium(显式标签压过继承标签,**无需管理员**),**每次重建 exe 后都要再跑**;dsh 上游修复(f6698853f3)只豁免授权根**顶层**启动器,深层路径 exe(如本项目 dist)不受益,仍需本脚本兜底。排查已排除:应用代码/启动上下文/ACL/只读位/Defender CFA/火绒(3 个 db 含 4MB WAL 全扫,无 Geometrize 拦截记录)/完美世界 MessageTransfer.sys/AppCompat shim 与 AppInit·AppCertDlls 注入点/IFEO。
     **2026-10-06 追查 dsh 本体后的补充**:① **语义实证**——写操作的强制完整性规则是「进程 IL ≥ 对象标签」,policy 位(NO_WRITE_UP)**不能放开写**:Medium(policy 0) 与 Medium(NW) 同样拒绝低完整性进程写入;因此被重置为 Medium 的文件,**dsh 沙箱子进程无法再覆盖**(沙箱内构建需覆盖这些 exe 时,改在沙箱外跑,或临时 `icacls <文件> /setintegritylevel Low`)。② 已建**工作区级自动修复**:计划任务 `dsh-low-integrity-autofix`(每 15 分钟,脚本 `scripts\dsh-label-autofix\autofix.py`)把继承 Low 的启动文件自动重置为 Medium——新构建/新文件自愈,不必再手工跑本项目的 `tools\fix_integrity_label.py`(保留作单项目手动兜底)。③ 根源 = 本地 dsh **0.2.0-rc.2** 的沙箱后端 `@deepseek-ai/dsh-sandbox-windows-acl`(`restrictTokenIntegrity` 令牌降 Low + `buildLowLabelAcl` 给授权根盖 OI|CI Low 标签 + 对 world 拒绝 FILE_DELETE_CHILD,一次授权全树传播);该版本**不含**上游"顶层启动器豁免",且其 README 明说常驻标签不回收。
+25. **Qt6 标准按钮中文要靠 `qtbase_<lang>.qm`,旧的 `qt_<lang>.qm` 不够(第十六批实测)**:应用按 `qt_`/`qtbase_` 两个前缀 × locale 降级链加载 Qt 翻译(localization.cpp);资源里中文只有 Qt5 时代的 `qt_zh.qm` 整目录,**没有 `QPlatformTheme` 上下文**,而 Qt6 的标准按钮文案(OK/Yes/No/Cancel)恰好查它 → `QMessageBox` 按钮全回退英文(实测确认框显示 "Yes/No")。注意 Qt6 自带的 `qt_zh_CN.qm` 只是 **99 字节伞目录**,真正内容在 `qtbase_zh_CN.qm`。**判据**:`lconvert -i <qm> -o x.ts` 后 grep `<name>QPlatformTheme</name>`,没有即命中此坑。**修法**:把 `D:\Qt\6.8.3\msvc2022_64\translations\qtbase_zh_CN.qm` 存为 `resources\translations\qt\qtbase_zh.qm`(+`qtbase_zh_CN.qm`,对齐其余 20 个语言的 `qtbase_<lang>.qm` 惯例),再重跑 `scripts\generate_geometrize_qrcs.py` —— 该脚本**必须在 `resources\` 目录下运行**(内部用相对路径,在别处跑会 FileNotFoundError:'templates/templates');重建后确认框即显示"是/否"、其余对话框"确定/取消"。残余缺口:`qtbase_zh_TW.qm` 未补(繁体中文的标准按钮仍是英文)。
