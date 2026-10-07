@@ -241,3 +241,40 @@ ctest 2/2(融合一致性单测扩为三实现互等 + 宽图尾部覆盖,276 �
 复现:命令同第十七批(`geobench-fast --input <4096.png> --steps 5 --threads 8 --types ellipse`,
 金字塔口径加 `--pyramid`);测试图为临时资产,可用 `tools\gen_test_images.py` 确定性再生成。
 后续可选项:增强轨道(分段颜色)同模式融合——见 ROADMAP §5.1 第 2 条。
+
+---
+
+## 增强轨道同模式融合 + 大图提示(第十八批续,2026-10-07,位精确)
+
+增强轨道的评估此前仍走旧四遍内核 + 每线程每步整图 scratch 拷贝,是"勾了增强反而比上游慢"的直接原因。
+本批把两条分支都切到融合实现,并去掉增强路径的整图拷贝:
+
+- **非分段增强开关**(自适应步长 / alpha 搜索 / 误差图引导 / 框选优先区域)→ 既有的 `defaultEnergyFunctionFused`
+  (位精确,直接可换)。
+- **分段颜色** → 新增 `defaultEnergyFunctionSegmentedFused`:取色仍走 `computeSegmentColors`
+  (颜色必须先于混合确定,无法再融合),混合+差分并为一遍只读扫描,**逐行重建预乘常量**
+  (`drawLinesSegmented` 的常量本就按行算);线型形状退回整形状单色。刻意不建 4×256 LUT——
+  分段场景行多而每行像素少,每行 1024 次建表会盖过收益。
+- **共享算术头** `core/energykernelmath.h`:无除法混合式与预乘常量由标量/AVX2 两侧共用,防止公式漂移。
+
+| 用例(geobench,同参数) | 融合前(快侧) | 融合后(快侧) | 提速 | 相对上游 |
+|---|---|---|---|---|
+| adaptive_step_fork | 17067 ms | **4145 ms** | 4.12x | 0.93x → **3.83x** |
+| adaptive_step_threads1 | 7503 ms | **1651 ms** | 4.54x | 0.579x → **2.63x** |
+| alpha_search_fork | 16374 ms | **3156 ms** | 5.19x | 1.05x → **5.47x** |
+| enhanced_combo_fork | 16745 ms | **3506 ms** | 4.78x | 0.99x → **4.72x** |
+| priority_region_fork | 19335 ms | **2974 ms** | 6.50x | 0.94x → **6.14x** |
+| segment_color_fork | 41325 ms | **22888 ms** | 1.81x | 0.457x → 0.83x(本轮 run_ab 0.90x) |
+| segment_color_threads1 | 19844 ms | **10207 ms** | 1.94x | 0.284x → 0.55x(本轮 run_ab 0.44x) |
+
+位精确证据:新增单测"分段融合 ≡ 逐遍分段实现"(面状/线型/含 y<0 行/空扫描线 × 3 alpha × 3 score);
+`qt_render_ab check` 6/6 全 SAME;run_ab 26/26(golden 全 OK,增强哨兵保持 DIFF-OK)。
+
+**残余缺口**:分段档提速 1.8~1.9x 但仍低于上游——瓶颈已转移到 `computeSegmentColors`(整形状的又一次
+标量取色扫描)与分段内核未 SIMD。下一步见 ROADMAP §5.1 第 2 条:取色按 computeColor 同款字节和 SIMD 化
+(逐行累加)+ 分段融合内核复用 AVX2 向量循环(每行重建常量)。
+
+**大图提示**:处理分辨率(已按上限缩放后的目标位图)任一边 ≥2048 且"金字塔搜索(快速)"未勾选时,
+状态栏提示一次(每张图一次,换图复位);用状态栏而非模态框——脚本控制台/批处理也会程序化触发
+stepModel,模态框会把它们挂住(陷阱 #21)。GUI 冒烟未完成(原生"打开图像"对话框在本机不接受
+UI Automation),已核对 qm 内含新译文、exe 内含新 source 串,实际显示待用户真机确认。
