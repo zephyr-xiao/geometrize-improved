@@ -86,6 +86,26 @@ bool exportRasterizedSvg(
     return geometrize::exporter::exportImage(image, filePath);
 }
 
+namespace
+{
+
+/// 序列导出每批最多写盘的图片数(百万形状会产生百万张 PNG,超出时均匀抽稀到上限)。
+/// 唯一真源:写盘循环与 exportedFrameCount 共用,防止"告知用户的张数"与"实际写盘张数"漂移。
+constexpr std::size_t maxSequenceFrames{1000};
+
+}
+
+std::size_t exportedFrameCount(const std::size_t shapeCount)
+{
+    if(shapeCount == 0) {
+        return 0;
+    }
+
+    // 与 exportRasterizedSvgs 的取帧规则一致:每 frameStride 个形状取一帧,且末帧必写
+    const std::size_t frameStride{(shapeCount + maxSequenceFrames - 1) / maxSequenceFrames};
+    return (shapeCount / frameStride) + ((shapeCount % frameStride != 0) ? 1 : 0);
+}
+
 bool exportRasterizedSvgs(
         const std::vector<geometrize::ShapeResult>& shapes,
         std::uint32_t inputWidth,
@@ -102,9 +122,7 @@ bool exportRasterizedSvgs(
 
     // 增量帧:画布逐帧累积新形状,每帧存一张 PNG。老路线"每帧序列化 SVG 前缀整帧重放"
     // 是 O(N²)(百万形状 = 10^11 级绘制指令,不可完成),增量路线总成本 O(N)。
-    // 帧数上限:百万形状会产生百万张 PNG,超出时均匀抽稀到上限。
-    constexpr std::size_t maxFrames{1000};
-    const std::size_t frameStride{(shapes.size() + maxFrames - 1) / maxFrames};
+    const std::size_t frameStride{(shapes.size() + maxSequenceFrames - 1) / maxSequenceFrames};
 
     geometrize::Bitmap canvas{inputWidth, inputHeight, geometrize::rgba{0, 0, 0, 0}};
     for(std::size_t i = 0; i < shapes.size(); i++) {

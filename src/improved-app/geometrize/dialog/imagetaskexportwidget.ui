@@ -71,6 +71,9 @@
         <property name="text">
          <string extracomment="Text on a button that opens a dialog that allows a user to save multiple image files">Save Images</string>
         </property>
+        <property name="toolTip">
+         <string extracomment="Tooltip for the button that exports one image per rendering step into a folder">Saves one PNG image per step of the rendering process into the chosen folder (up to 1000 images).</string>
+        </property>
        </widget>
       </item>
      </layout>

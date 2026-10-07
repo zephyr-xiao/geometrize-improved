@@ -112,7 +112,18 @@ public:
             return;
         }
 
-        runExportInBackground(tr("Exporting image sequence..."),
+        // 0 形状时导出器本就静默失败(既有行为),别弹"将写入 0 张"的空确认框
+        if(m_shapes->empty()) {
+            return;
+        }
+
+        // 会向目录批量写盘(每步一张,最多 1000 张),写盘前明确告知张数与目标目录
+        if(!confirmImageSequenceExport(m_shapes->size(), path)) {
+            return;
+        }
+
+        const std::size_t imageCount{geometrize::exporter::exportedFrameCount(m_shapes->size())};
+        runExportInBackground(tr("Exporting %1 images...", "Progress dialog text shown while exporting one image per step; %1 = number of files").arg(imageCount),
             [shapes = *m_shapes, width, height, scaleFactor, targetDir = path.toStdString()]() {
                 geometrize::exporter::exportRasterizedSvgs(shapes, width, height,
                     width * scaleFactor, height * scaleFactor,
@@ -249,6 +260,32 @@ private:
             tr("The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.",
                "Error message text shown when the scaled output resolution exceeds export limits").arg(outputWidth).arg(outputHeight));
         return false;
+    }
+
+    /// 序列导出确认:这是唯一会向所选目录批量写盘的入口(每步一张 PNG),不弹确认就会在用户
+    /// 毫无预期的情况下把目录(常见如桌面)铺满文件。张数取自导出器的 exportedFrameCount,
+    /// 与写盘循环同一公式,避免告知数与实际写盘数漂移。
+    bool confirmImageSequenceExport(const std::size_t shapeCount, const QString& targetDir) const
+    {
+        const std::size_t imageCount{geometrize::exporter::exportedFrameCount(shapeCount)};
+        const QString text{(shapeCount > imageCount)
+            ? tr("This will write %1 PNG images into the chosen folder, one image for each step of the rendering process, evenly sampled from %2 steps (at most 1000 images):\n\n%3\n\nContinue?",
+                 "Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = number of steps, %3 = target folder")
+                  .arg(imageCount).arg(shapeCount).arg(targetDir)
+            : tr("This will write %1 PNG images into the chosen folder, one image for each step of the rendering process (at most 1000 images):\n\n%2\n\nContinue?",
+                 "Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = target folder")
+                  .arg(imageCount).arg(targetDir)};
+        QMessageBox confirm{QMessageBox::Icon::Question,
+                            tr("Export image sequence", "Title of the confirmation dialog shown before exporting one image per step"),
+                            text,
+                            QMessageBox::StandardButton::Yes | QMessageBox::StandardButton::No,
+                            q};
+        // 破坏面在"目录被铺满"一侧,默认与 Esc 都落在"否"上
+        confirm.setDefaultButton(QMessageBox::StandardButton::No);
+        confirm.setEscapeButton(QMessageBox::StandardButton::No);
+        confirm.setWindowModality(Qt::WindowModality::WindowModal);
+        confirm.setWindowFlags(confirm.windowFlags() & ~Qt::WindowContextHelpButtonHint);
+        return confirm.exec() == QMessageBox::StandardButton::Yes;
     }
 
     /// 把耗时导出挂到 QtConcurrent 线程:期间弹不可取消的进度框并禁用导出按钮,

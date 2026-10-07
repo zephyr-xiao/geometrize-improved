@@ -267,7 +267,12 @@ Title for the app settings section that contains options that affect the area of
     <message>
         <source>Save Images</source>
         <extracomment>Text on a button that opens a dialog that allows a user to save multiple image files</extracomment>
-        <translation>保存图像</translation>
+        <translation>保存序列图像</translation>
+    </message>
+    <message>
+        <source>Saves one PNG image per step of the rendering process into the chosen folder (up to 1000 images).</source>
+        <extracomment>Tooltip for the button that exports one image per rendering step into a folder</extracomment>
+        <translation>将渲染过程的每一步各存为一张 PNG,写入所选目录(最多 1000 张)。</translation>
     </message>
     <message>
         <source>Export SVG</source>
@@ -933,7 +938,7 @@ Title for the app settings section that contains options that affect the area of
     <message>
         <source>Save Images</source>
         <comment>Title on a dialog that allows the user to save image files</comment>
-        <translation>保存图像</translation>
+        <translation>选择序列图像导出目录</translation>
     </message>
     <message>
         <source>Save Geometry Data</source>
@@ -1254,6 +1259,42 @@ Title for the app settings section that contains options that affect the area of
         <source>The output resolution %1x%2 is too large to export: the output must stay within 2 GB of RGBA pixels (for GIF, additionally within 65535 px per side). Lower the output scale or the processing resolution.</source>
         <comment>Error message text shown when the scaled output resolution exceeds export limits</comment>
         <translation>输出分辨率 %1x%2 超出导出上限：输出需保持在 2 GB RGBA 像素以内（GIF 另需每边不超过 65535 像素）。请调低输出倍率或处理分辨率。</translation>
+    </message>
+    <message>
+        <source>Export image sequence</source>
+        <comment>Title of the confirmation dialog shown before exporting one image per step</comment>
+        <translation>导出序列图像</translation>
+    </message>
+    <message>
+        <source>This will write %1 PNG images into the chosen folder, one image for each step of the rendering process, evenly sampled from %2 steps (at most 1000 images):
+
+%3
+
+Continue?</source>
+        <comment>Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = number of steps, %3 = target folder</comment>
+        <translation>将向所选目录写入 %1 张 PNG 图片,从 %2 步中均匀抽稀(最多 1000 张):
+
+%3
+
+继续导出?</translation>
+    </message>
+    <message>
+        <source>This will write %1 PNG images into the chosen folder, one image for each step of the rendering process (at most 1000 images):
+
+%2
+
+Continue?</source>
+        <comment>Confirmation dialog text shown before exporting one image per step; %1 = number of files, %2 = target folder</comment>
+        <translation>将向所选目录写入 %1 张 PNG 图片,对应渲染过程的每一步(最多 1000 张):
+
+%2
+
+继续导出?</translation>
+    </message>
+    <message>
+        <source>Exporting %1 images...</source>
+        <comment>Progress dialog text shown while exporting one image per step; %1 = number of files</comment>
+        <translation>正在导出 %1 张序列图像…</translation>
     </message>
 </context>
 <context>

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -79,6 +80,16 @@ bool exportRasterizedSvg(
         std::uint32_t outputWidth,
         std::uint32_t outputHeight,
         const std::string& filePath);
+
+/**
+ * @brief exportedFrameCount The number of image files exportRasterizedSvgs will write for the given shape count.
+ * Frames are taken every stride shapes and thinned evenly when the shape count exceeds the frame cap, so the
+ * count is not simply the shape count. Callers that need to tell users how many files an export will create
+ * (e.g. a confirmation dialog) should use this instead of re-deriving the rule.
+ * @param shapeCount The number of shapes to be exported.
+ * @return The number of images that will be written to disk.
+ */
+std::size_t exportedFrameCount(std::size_t shapeCount);
 
 /**
  * @brief exportRasterizedSvgs Exports the shape data to images by rasterizing SVGs rendered from the shape data.
