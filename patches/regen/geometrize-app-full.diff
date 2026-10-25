@@ -1,7 +1,7 @@
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/CMakeLists.txt b/CMakeLists.txt
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,119 @@
 +# Geometrize Qt 应用 CMake 构建(Q4.2;Qt6 迁移后为唯一在维护的构建链路)
 +# geometrize.pro(qmake)保留但不再维护:Qt6 下 qmake 已被 CMake 取代,本文件失败可回退 Qt5 链路重建。
 +# 生成物全部落在 build/(out-of-source),不触碰 qmake 在源树的 obj/qt_gen/debug/release。
@@ -101,12 +101,20 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +# geocli:headless 批处理命令行工具(控制台子系统,与 app 共享库源码与 Qt 部署;
 +# build\Release 同目录,windeployqt 部署的 dll 天然共享;交付时拷进 dist 包即可)
++# GIF 导出复用 app 侧 exporter::exportGIF(自包含:内部增量帧渲染 + BurstLinker + 护栏);
++# 其唯一外部符号 createImage 由 image/imageconvert.cpp 提供(纯转换,第二十三批从 imageloader
++# 拆出——imageloader 的缩放入口依赖 GlobalPreferences,整编会把偏好/GUI 工具链拖进 CLI 链接)
 +add_executable(geocli
 +    geocli/main.cpp
-+    ${LIB_GEOMETRIZE_SOURCES})
++    geometrize/exporter/gifexporter.cpp
++    geometrize/image/imageconvert.cpp
++    ${LIB_GEOMETRIZE_SOURCES}
++    ${LIB_BURSTLINKER_SOURCES})
 +target_include_directories(geocli PRIVATE
++    "${CMAKE_CURRENT_SOURCE_DIR}/geometrize"
 +    "${CMAKE_CURRENT_SOURCE_DIR}/lib/cereal/include"
-+    "${CMAKE_CURRENT_SOURCE_DIR}/lib/geometrize/geometrize")
++    "${CMAKE_CURRENT_SOURCE_DIR}/lib/geometrize/geometrize"
++    "${CMAKE_CURRENT_SOURCE_DIR}/lib/burstlinker/burstlinker/src")
 +target_link_libraries(geocli PRIVATE Qt6::Core Qt6::Gui)
 +if(MSVC)
 +    target_compile_options(geocli PRIVATE
@@ -144,7 +152,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geocli/main.cpp b/geocli/main.cpp
 --- a/geocli/main.cpp
 +++ b/geocli/main.cpp
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,451 @@
 +// geocli:headless 几何化批处理命令行工具(与 GUI 共享同一套库源码与 Qt 部署)。
 +// 设计口径:图像加载/缩放/落盘与 GUI 完全同源(QImage + RGBA8888 + KeepAspectRatio 平滑缩放),
 +// 算法管线走 lib 的 ImageRunner(含全部 opt-in 增强开关);输出 SVG/PNG/JSON 用 lib 纯 C++ 导出器。
@@ -177,6 +185,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +#include "geometrize/runner/imagerunneroptions.h"
 +#include "geometrize/shaperesult.h"
 +#include "geometrize/shape/shapetypes.h"
++// GIF 导出器在 app 源树(非 lib 镜像),以 app 源根为 include base
++#include "exporter/gifexporter.h"
 +
 +namespace {
 +
@@ -186,6 +196,12 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    bool formatSvg = true;
 +    bool formatPng = true;
 +    bool formatJson = false;
++    bool formatGif = false;
++    // GIF 参数(默认对齐 GUI 口径:每帧 20 形状、20FPS、原尺寸、无限循环)
++    std::uint32_t gifFrameShapes = 20;
++    std::uint32_t gifDelayMs = 50;
++    std::uint32_t gifScale = 1;
++    std::uint32_t gifLoop = 0;
 +    std::uint32_t steps = 300;
 +    std::uint32_t shapeCount = 50;
 +    std::uint32_t maxMutations = 100;
@@ -209,7 +225,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    std::printf(
 +        "geocli --input <图片|目录> [选项]\n"
 +        "  --output DIR        输出目录(默认 <输入旁>/geometrize_out)\n"
-+        "  --format LIST       逗号分隔输出格式 svg,png,json(默认 svg,png)\n"
++        "  --format LIST       逗号分隔输出格式 svg,png,json,gif(默认 svg,png)\n"
 +        "  --steps N           每图步数(默认 300)\n"
 +        "  --shape-count N     每步候选形状数(默认 50)\n"
 +        "  --max-mutations N   每候选最大变异次数(默认 100)\n"
@@ -226,6 +242,11 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        "  --alpha-search      逐形状透明度搜索(同步数质量更好,更慢)\n"
 +        "  --error-guide       误差图引导形状放置(低预算收益最大)\n"
 +        "  --segment-colors    分段颜色(行级取色,跨明暗边界不发灰)\n"
++        "GIF 参数(--format 含 gif 时生效;帧画面与 GUI 导出同源,帧数自动封顶 1000):\n"
++        "  --gif-frame-shapes N 每帧形状数(默认 20)\n"
++        "  --gif-delay-ms N     帧延迟毫秒,下限 20(默认 50 = 20FPS)\n"
++        "  --gif-scale N        输出尺寸倍率(默认 1;护栏:每边 ≤65535 且宽×高×4 ≤2GB)\n"
++        "  --gif-loop N         循环次数(默认 0 = 无限循环)\n"
 +        "  -h / --help         本帮助\n");
 +}
 +
@@ -318,8 +339,9 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +                if(token == "svg") opts.formatSvg = true;
 +                else if(token == "png") opts.formatPng = true;
 +                else if(token == "json") opts.formatJson = true;
++                else if(token == "gif") opts.formatGif = true;
 +                else {
-+                    std::fprintf(stderr, "未知输出格式: '%s'(可用: svg,png,json)\n", token.c_str());
++                    std::fprintf(stderr, "未知输出格式: '%s'(可用: svg,png,json,gif)\n", token.c_str());
 +                    std::exit(2);
 +                }
 +                any = true;
@@ -340,6 +362,10 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        else if(arg == "--threads") opts.threads = parseU32Arg("--threads", next(), 1024U);
 +        else if(arg == "--max-size") opts.maxSize = parseU32Arg("--max-size", next(), 65535U);
 +        else if(arg == "--overwrite") opts.overwrite = true;
++        else if(arg == "--gif-frame-shapes") opts.gifFrameShapes = parseU32Arg("--gif-frame-shapes", next(), 1000000U);
++        else if(arg == "--gif-delay-ms") opts.gifDelayMs = parseU32Arg("--gif-delay-ms", next(), 60000U);
++        else if(arg == "--gif-scale") opts.gifScale = parseU32Arg("--gif-scale", next(), 100U);
++        else if(arg == "--gif-loop") opts.gifLoop = parseU32Arg("--gif-loop", next(), 65535U);
 +        else if(arg == "--pyramid") opts.pyramid = true;
 +        else if(arg == "--budget-by-area") opts.budgetByArea = true;
 +        else if(arg == "--adaptive-step") opts.adaptiveStep = true;
@@ -356,6 +382,10 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    if(opts.inputPath.empty()) {
 +        std::fprintf(stderr, "缺少 --input\n");
 +        printUsage();
++        std::exit(2);
++    }
++    if(opts.formatGif && opts.gifFrameShapes == 0) {
++        std::fprintf(stderr, "--gif-frame-shapes 至少为 1\n");
 +        std::exit(2);
 +    }
 +    return opts;
@@ -428,6 +458,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    if(opts.formatSvg) targets.push_back(outputDir + "/" + baseName + ".svg");
 +    if(opts.formatPng) targets.push_back(outputDir + "/" + baseName + ".png");
 +    if(opts.formatJson) targets.push_back(outputDir + "/" + baseName + ".json");
++    if(opts.formatGif) targets.push_back(outputDir + "/" + baseName + ".gif");
 +    if(!opts.overwrite) {
 +        bool allExist = !targets.isEmpty();
 +        for(const QString& target : targets) {
@@ -480,13 +511,33 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +
 +    bool ok = true;
 +    if(opts.formatSvg) {
-+        ok = writeFile(targets.front(), geometrize::exporter::exportSVG(shapes, target.getWidth(), target.getHeight())) && ok;
++        ok = writeFile(outputDir + "/" + baseName + ".svg", geometrize::exporter::exportSVG(shapes, target.getWidth(), target.getHeight())) && ok;
 +    }
 +    if(opts.formatPng) {
 +        ok = saveBitmapPng(runner.getCurrent(), outputDir + "/" + baseName + ".png") && ok;
 +    }
 +    if(opts.formatJson) {
 +        ok = writeFile(outputDir + "/" + baseName + ".json", geometrize::exporter::exportShapeJson(shapes)) && ok;
++    }
++    if(opts.formatGif) {
++        // 0 形状(如纯色图)时 exportGIF 必然 false:GIF 没有可编码的帧。
++        // 严格口径:请求的产物必须齐全才算成功,缺失即记失败(批处理退出码可见)
++        if(shapes.empty()) {
++            std::fprintf(stderr, "  GIF 未生成(0 形状无可编码帧)\n");
++            ok = false;
++        } else {
++            // 帧口径照 GUI:每第 N 个形状处取帧(0 起位,含首帧),末帧必取与封顶抽稀由导出器兜底
++            const std::uint32_t frameStep{opts.gifFrameShapes};
++            const auto frameSkipPredicate = [frameStep](const std::size_t frameIdx) {
++                return frameIdx % frameStep != 0;
++            };
++            ok = geometrize::exporter::exportGIF(
++                     shapes, target.getWidth(), target.getHeight(),
++                     target.getWidth() * opts.gifScale, target.getHeight() * opts.gifScale,
++                     frameSkipPredicate,
++                     (outputDir + "/" + baseName + ".gif").toStdString(),
++                     opts.gifDelayMs, opts.gifLoop, 2000) && ok;
++        }
 +    }
 +    return {false, ok, static_cast<std::uint32_t>(shapes.size())};
 +}
@@ -3336,20 +3387,133 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * @brief exportRasterizedSvgs Exports the shape data to images by rasterizing SVGs rendered from the shape data.
   * Exports one image for each shape i.e. an image with one shape, two shapes, three shapes.
   * @param shapes The shape data to export.
-diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/image/imageloader.cpp b/geometrize/image/imageloader.cpp
---- a/geometrize/image/imageloader.cpp
-+++ b/geometrize/image/imageloader.cpp
-@@ -25,25 +25,28 @@
-     assert((image.width() != 0 && image.height() != 0) && "Image has zero width or height");
-     assert((image.format() == QImage::Format_RGBA8888) && "Cannot create bitmap data from a non-RGBA8888 image");
- 
--    const std::vector<uchar> data(image.bits(), image.bits() + image.sizeInBytes());
--    return Bitmap(image.width(), image.height(), data);
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/image/imageconvert.cpp b/geometrize/image/imageconvert.cpp
+--- a/geometrize/image/imageconvert.cpp
++++ b/geometrize/image/imageconvert.cpp
+@@ -0,0 +1,46 @@
++#include "image/imageconvert.h"
++
++#include <cassert>
++#include <vector>
++
++#include <QImage>
++#include <QPixmap>
++
++#include "geometrize/bitmap/bitmap.h"
++
++namespace geometrize
++{
++
++namespace image
++{
++
++Bitmap createBitmap(const QImage& image)
++{
++    assert(!image.isNull() && "Image is null, will fail to create bitmap data");
++    assert((image.width() != 0 && image.height() != 0) && "Image has zero width or height");
++    assert((image.format() == QImage::Format_RGBA8888) && "Cannot create bitmap data from a non-RGBA8888 image");
++
 +    std::vector<uchar> data(image.bits(), image.bits() + image.sizeInBytes());
 +    // move 语义直接把数据搬进 Bitmap,消掉上游按 const 引用传入后的二次深拷
 +    return Bitmap(image.width(), image.height(), std::move(data));
- }
++}
++
++QImage createImage(const Bitmap& data)
++{
++    if(data.getWidth() == 0 || data.getHeight() == 0) {
++        assert(0 && "Bad bitmap data");
++        return QImage();
++    }
++
++    // Note! This takes a shallow copy of the data, and so depends on the bitmap itself continuing to live on
++    return QImage(data.getDataRef().data(), static_cast<qsizetype>(data.getWidth()), static_cast<qsizetype>(data.getHeight()), QImage::Format_RGBA8888);
++}
++
++QPixmap createPixmap(const Bitmap& data)
++{
++    return QPixmap::fromImage(createImage(data));
++}
++
++}
++
++}
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/image/imageconvert.h b/geometrize/image/imageconvert.h
+--- a/geometrize/image/imageconvert.h
++++ b/geometrize/image/imageconvert.h
+@@ -0,0 +1,44 @@
++#pragma once
++
++// QImage ↔ Bitmap 的纯转换函数(无偏好/无 IO 依赖,headless 工具与 GUI 共用)。
++// 从 imageloader 拆出(第二十三批):gifexporter 等 headless 消费者只需要这几个转换,
++// 而 imageloader.cpp 的缩放入口依赖 GlobalPreferences,整编会把偏好/工具链拖进 CLI 链接。
++
++class QImage;
++class QPixmap;
++
++namespace geometrize
++{
++class Bitmap;
++}
++
++namespace geometrize
++{
++
++namespace image
++{
++
++/**
++ * @brief createBitmap Creates a bitmap data object from the given image.
++ * @param image The image to create the bitmap data from (must be RGBA8888).
++ * @return The new bitmap data.
++ */
++Bitmap createBitmap(const QImage& image);
++
++/**
++ * @brief createImage Creates an image from the bitmap data object. Assumes RGBA8888 format.
++ * @param data The bitmap data, RGBA8888 bytes (must be a multiple of 4).
++ * @return The image created from the bytes data (shallow copy - the bitmap must outlive it).
++ */
++QImage createImage(const Bitmap& data);
++
++/**
++ * @brief createPixmap Creates a pixmap from the bitmap data object. Assumes RGBA8888 format.
++ * @param data The bitmap data, RGBA8888 bytes (must be a multiple of 4).
++ * @return The pixmap created from the bytes data.
++ */
++QPixmap createPixmap(const Bitmap& data);
++
++}
++
++}
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/image/imageloader.cpp b/geometrize/image/imageloader.cpp
+--- a/geometrize/image/imageloader.cpp
++++ b/geometrize/image/imageloader.cpp
+@@ -1,10 +1,10 @@
+ #include "image/imageloader.h"
++#include "image/imageconvert.h"
  
+ #include <cassert>
+ 
+ #include <QFile>
+ #include <QImage>
+-#include <QPixmap>
+ #include <QString>
+ #include <QUrl>
+ 
+@@ -19,46 +19,23 @@
+ namespace image
+ {
+ 
+-Bitmap createBitmap(const QImage& image)
+-{
+-    assert(!image.isNull() && "Image is null, will fail to create bitmap data");
+-    assert((image.width() != 0 && image.height() != 0) && "Image has zero width or height");
+-    assert((image.format() == QImage::Format_RGBA8888) && "Cannot create bitmap data from a non-RGBA8888 image");
+-
+-    const std::vector<uchar> data(image.bits(), image.bits() + image.sizeInBytes());
+-    return Bitmap(image.width(), image.height(), data);
+-}
+-
  geometrize::Bitmap convertImageToBitmapWithDownscaling(const QImage& image)
  {
 -    QImage im{image.copy()};
@@ -3370,13 +3534,79 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          }
      }
 -    return geometrize::image::createBitmap(im.convertToFormat(QImage::Format_RGBA8888));
+-}
+-QImage createImage(const Bitmap& data)
+-{
+-    if(data.getWidth() == 0 || data.getHeight() == 0) {
+-        assert(0 && "Bad bitmap data");
+-        return QImage();
+-    }
+-
+-    // Note! This takes a shallow copy of the data, and so depends on the bitmap itself continuing to live on
+-    return QImage(data.getDataRef().data(), data.getWidth(), data.getHeight(), QImage::Format_RGBA8888);
+-}
+-
+-QPixmap createPixmap(const Bitmap& data)
+-{
+-    return QPixmap::fromImage(createImage(data));
 +    // 原尺寸路径同样强制 RGBA8888:convertToFormat 对已是目标格式的输入只做浅共享拷贝,
 +    // 近零成本;不做转换时 createBitmap 的格式断言在 Release 失效,非 RGBA8888 输入
 +    // (如脚本绑定直接传入)会按原始字节 memcpy,通道错乱/预乘损坏
 +    return geometrize::image::createBitmap(image.convertToFormat(QImage::Format_RGBA8888));
  }
- QImage createImage(const Bitmap& data)
+ 
+ QImage loadImage(const std::string& filePath)
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/image/imageloader.h b/geometrize/image/imageloader.h
+--- a/geometrize/image/imageloader.h
++++ b/geometrize/image/imageloader.h
+@@ -2,8 +2,11 @@
+ 
+ #include <string>
+ 
++// 纯转换函数(createBitmap/createImage/createPixmap)已拆至 image/imageconvert.h
++// (headless 工具只需要转换而不拖偏好依赖);此处转发 include 保旧调用方兼容
++#include "image/imageconvert.h"
++
+ class QImage;
+-class QPixmap;
+ 
+ namespace geometrize
  {
+@@ -17,13 +20,6 @@
+ {
+ 
+ /**
+- * @brief createBitmap Creates a bitmap data object from the given image.
+- * @param image The image to create the bitmap data from.
+- * @return The new bitmap data.
+- */
+-Bitmap createBitmap(const QImage& image);
+-
+-/**
+  * @brief imageToBitmapWithDownscaling Creates a bitmap data object from the given image, downscaling in the process based on global preferences for image resizing
+  * @param image The image to create the bitmap data from.
+  * @return The new bitmap data.
+@@ -31,20 +27,6 @@
+ geometrize::Bitmap convertImageToBitmapWithDownscaling(const QImage& image);
+ 
+ /**
+- * @brief createImage Creates an image from the bitmap data object. Assumes RGBA8888 format.
+- * @param data The bitmap data, RGBA8888 bytes (must be a multiple of 4).
+- * @return The pixmap created from the bytes data.
+- */
+-QImage createImage(const Bitmap& data);
+-
+-/**
+- * @brief createPixmap Creates a pixmap from the bitmap data object. Assumes RGBA8888 format.
+- * @param data The bitmap data, RGBA8888 bytes (must be a multiple of 4).
+- * @return The pixmap created from the bytes data.
+- */
+-QPixmap createPixmap(const Bitmap& data);
+-
+-/**
+  * @brief loadImage Loads an image from the image at the file path. Converts to RGBA8888 format.
+  * @param filePath The file path to the image.
+  * @return The image loaded from the image file.
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/localization/localization.cpp b/geometrize/localization/localization.cpp
 --- a/geometrize/localization/localization.cpp
 +++ b/geometrize/localization/localization.cpp
