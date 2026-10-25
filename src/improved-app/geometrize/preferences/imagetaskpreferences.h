@@ -64,6 +64,13 @@ public:
     void setMaxThreads(std::uint32_t maxThreads);
     // 算法增强轨道开关(透传 ImageRunnerOptions,默认关)
     void setPyramidSearch(bool enabled);
+
+    /**
+     * @brief setBudgetByArea Sets whether the per-step candidate budget is downscaled on large images
+     * in proportion to image area (algorithm enhancement, opt-in; small images unaffected).
+     * @param enabled True to enable area-based budget downscaling.
+     */
+    void setBudgetByArea(bool enabled);
     void setAdaptiveStep(bool enabled);
     void setAlphaSearch(bool enabled);
 

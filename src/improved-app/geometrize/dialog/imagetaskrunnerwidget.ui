@@ -428,6 +428,16 @@
       </widget>
      </item>
      <item>
+      <widget class="QCheckBox" name="budgetByAreaCheckbox">
+       <property name="toolTip">
+        <string>Scale down the per-step candidate budget (candidate count and mutation count) on large images in proportion to image area. Small images are unaffected. Measured ~2x faster on 2048+ images with quality loss within noise; output differs from the full-budget search.</string>
+       </property>
+       <property name="text">
+        <string>Budget Downscale by Image Area</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QCheckBox" name="adaptiveStepCheckbox">
        <property name="toolTip">
         <string>Shrink the mutation step when candidates keep failing, grow it back on successes (1/5 success rule). Better quality per step, slower.</string>

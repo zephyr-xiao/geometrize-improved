@@ -460,6 +460,11 @@ Title for the app settings section that contains options that affect the area of
         <translation>金字塔搜索(快速)</translation>
     </message>
     <message>
+        <source>Budget Downscale by Image Area</source>
+        <extracomment>Algorithm enhancement toggle: scale down the per-step candidate budget on large images</extracomment>
+        <translation>候选预算按面积降档(大图加速)</translation>
+    </message>
+    <message>
         <source>Adaptive Mutation Step</source>
         <extracomment>Algorithm enhancement toggle: 1/5 success rule step size adaptation</extracomment>
         <translation>自适应变异步长</translation>
@@ -473,6 +478,11 @@ Title for the app settings section that contains options that affect the area of
         <source>Evaluate hill-climbing candidates on a half-resolution image. Much faster on large images, output differs from the standard search.</source>
         <extracomment>Tooltip for the pyramid search toggle</extracomment>
         <translation>在半分辨率图上评估爬山候选。大图上大幅提速,输出与标准搜索不同。</translation>
+    </message>
+    <message>
+        <source>Scale down the per-step candidate budget (candidate count and mutation count) on large images in proportion to image area. Small images are unaffected. Measured ~2x faster on 2048+ images with quality loss within noise; output differs from the full-budget search.</source>
+        <extracomment>Tooltip for the budget downscale toggle</extracomment>
+        <translation>大图时按面积比例削减每步候选预算(候选数与变异次数),小图不受影响。实测 2048+ 图约 2 倍提速,质量损失在噪声范围内;输出与全预算搜索不同属预期。</translation>
     </message>
     <message>
         <source>Shrink the mutation step when candidates keep failing, grow it back on successes (1/5 success rule). Better quality per step, slower.</source>

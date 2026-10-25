@@ -50,6 +50,7 @@ public:
         ar(cereal::make_nvp(randomSeedKey, options.seed));
         ar(cereal::make_nvp(maxThreadsKey, options.maxThreads));
         ar(cereal::make_nvp(pyramidSearchKey, options.pyramidSearch));
+        ar(cereal::make_nvp(budgetByAreaKey, options.budget.byArea));
         ar(cereal::make_nvp(adaptiveStepKey, options.enhancements.adaptiveStep));
         ar(cereal::make_nvp(alphaSearchKey, options.enhancements.alphaSearch));
         ar(cereal::make_nvp(errorGuideKey, options.enhancements.errorGuide));
@@ -84,6 +85,7 @@ private:
     const std::string randomSeedKey{"randomSeed"};
     const std::string maxThreadsKey{"maxThreads"};
     const std::string pyramidSearchKey{"pyramidSearch"};
+    const std::string budgetByAreaKey{"budgetByArea"};
     const std::string adaptiveStepKey{"adaptiveStep"};
     const std::string alphaSearchKey{"alphaSearch"};
     const std::string errorGuideKey{"errorGuide"};

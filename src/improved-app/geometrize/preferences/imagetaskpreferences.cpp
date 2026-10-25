@@ -156,6 +156,11 @@ public:
         m_options.pyramidSearch = enabled;
     }
 
+    void setBudgetByArea(const bool enabled)
+    {
+        m_options.budget.byArea = enabled;
+    }
+
     void setAdaptiveStep(const bool enabled)
     {
         m_options.enhancements.adaptiveStep = enabled;
@@ -332,6 +337,11 @@ void ImageTaskPreferences::setMaxThreads(const std::uint32_t maxThreads)
 void ImageTaskPreferences::setPyramidSearch(const bool enabled)
 {
     d->setPyramidSearch(enabled);
+}
+
+void ImageTaskPreferences::setBudgetByArea(const bool enabled)
+{
+    d->setBudgetByArea(enabled);
 }
 
 void ImageTaskPreferences::setAdaptiveStep(const bool enabled)

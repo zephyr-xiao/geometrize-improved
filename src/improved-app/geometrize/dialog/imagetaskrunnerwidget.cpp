@@ -56,6 +56,9 @@ public:
         connect(ui->pyramidSearchCheckbox, &QCheckBox::toggled, [this](const bool checked) {
             m_task->getPreferences().setPyramidSearch(checked);
         });
+        connect(ui->budgetByAreaCheckbox, &QCheckBox::toggled, [this](const bool checked) {
+            m_task->getPreferences().setBudgetByArea(checked);
+        });
         connect(ui->adaptiveStepCheckbox, &QCheckBox::toggled, [this](const bool checked) {
             m_task->getPreferences().setAdaptiveStep(checked);
         });
@@ -169,16 +172,19 @@ public:
 
         // 增强开关回填:先阻塞信号再 setChecked,避免回填动作反写偏好(与 load 时序无关,纯防御)
         ui->pyramidSearchCheckbox->blockSignals(true);
+        ui->budgetByAreaCheckbox->blockSignals(true);
         ui->adaptiveStepCheckbox->blockSignals(true);
         ui->alphaSearchCheckbox->blockSignals(true);
         ui->errorGuideCheckbox->blockSignals(true);
         ui->segmentColorsCheckbox->blockSignals(true);
         ui->pyramidSearchCheckbox->setChecked(opts.pyramidSearch);
+        ui->budgetByAreaCheckbox->setChecked(opts.budget.byArea);
         ui->adaptiveStepCheckbox->setChecked(opts.enhancements.adaptiveStep);
         ui->alphaSearchCheckbox->setChecked(opts.enhancements.alphaSearch);
         ui->errorGuideCheckbox->setChecked(opts.enhancements.errorGuide);
         ui->segmentColorsCheckbox->setChecked(opts.enhancements.segmentColors);
         ui->pyramidSearchCheckbox->blockSignals(false);
+        ui->budgetByAreaCheckbox->blockSignals(false);
         ui->adaptiveStepCheckbox->blockSignals(false);
         ui->alphaSearchCheckbox->blockSignals(false);
         ui->errorGuideCheckbox->blockSignals(false);
