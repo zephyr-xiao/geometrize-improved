@@ -2320,7 +2320,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  #include "rasterizer/scanline.h"
  #include "state.h"
  
-@@ -21,6 +22,31 @@
+@@ -21,6 +22,45 @@
  {
  
  /**
@@ -2349,10 +2349,24 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +};
 +
 +/**
++ * @brief BudgetScaleOptions 候选预算降档策略(算法增强轨道,opt-in,§5.1 第 4 条)。
++ * 每步候选预算 = shapeCount(随机候选数) × maxShapeMutations(爬山变异次数),单步墙钟时间随
++ * 目标面积线性膨胀;开启后等比例缩放两者(保持探索/求精比),用同步数质量换大图速度。
++ * 输出与关闭时不同属预期(RNG 消费序列改变);maxThreads 不参与缩放,与金字塔/增强开关正交。
++ * 两种模式互斥:byArea 优先;全默认(不开启)时 step 行为与上游逐位一致。
++ */
++struct BudgetScaleOptions
++{
++    bool byArea{false}; ///< 自动档:scale = min(1, anchorPixels / 目标像素数),小图不动、大图按面积比例降档(GUI 勾选框对应此模式)。
++    float manualScale{1.0f}; ///< 手动缩放系数(有效域 0.05~1.0,超出按最近端钳制),byArea 开启时被忽略;1.0 = 不缩放(CLI 扫实测曲线用)。
++    std::uint32_t anchorPixels{768U * 504U}; ///< byArea 锚点像素数(基准管线口径):目标不大于它时 scale 恒为 1。
++};
++
++/**
   * The core functions for Geometrize.
   * @author Sam Twidale (https://samcodes.co.uk/)
   */
-@@ -62,6 +88,145 @@
+@@ -62,6 +102,145 @@
          double score);
  
  /**
@@ -2498,7 +2512,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * @brief computeColor Calculates the color of the scanlines.
   * @param target The target image.
   * @param current The current image.
-@@ -124,6 +289,59 @@
+@@ -124,6 +303,59 @@
          double lastScore,
          const EnergyFunction& customEnergyFunction = nullptr);
  
@@ -2824,10 +2838,11 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/model.cpp b/geometrize/model.cpp
 --- a/geometrize/model.cpp
 +++ b/geometrize/model.cpp
-@@ -3,18 +3,25 @@
+@@ -3,18 +3,26 @@
  #include <algorithm>
  #include <atomic>
  #include <cassert>
++#include <cmath>
 +#include <condition_variable>
  #include <cstdint>
  #include <exception>
@@ -2850,7 +2865,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  #include "shape/shape.h"
  #include "shaperesult.h"
  #include "shape/shapetypes.h"
-@@ -35,6 +42,304 @@
+@@ -35,6 +43,304 @@
      return newScore < lastScore; // Adds the shape if the score improved (that is: the difference decreased)
  }
  
@@ -3155,7 +3170,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  }
  
  namespace geometrize
-@@ -47,6 +352,7 @@
+@@ -47,6 +353,7 @@
          m_target{target},
          m_current{target.getWidth(), target.getHeight(), geometrize::commonutil::getAverageImageColor(m_target)},
          m_lastScore{geometrize::core::differenceFull(m_target, m_current)},
@@ -3163,7 +3178,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          m_baseRandomSeed{0U},
          m_randomSeedOffset{0U}
      {}
-@@ -55,6 +361,7 @@
+@@ -55,6 +362,7 @@
          m_target{target},
          m_current{initial},
          m_lastScore{geometrize::core::differenceFull(m_target, m_current)},
@@ -3171,7 +3186,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          m_baseRandomSeed{0U},
          m_randomSeedOffset{0U}
      {
-@@ -62,7 +369,11 @@
+@@ -62,7 +370,11 @@
          assert(m_target.getHeight() == m_current.getHeight());
      }
  
@@ -3184,7 +3199,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      ModelImpl& operator=(const ModelImpl&) = delete;
      ModelImpl(const ModelImpl&) = delete;
  
-@@ -70,6 +381,8 @@
+@@ -70,6 +382,8 @@
      {
          m_current.fill(backgroundColor);
          m_lastScore = geometrize::core::differenceFull(m_target, m_current);
@@ -3193,7 +3208,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      }
  
      std::int32_t getWidth() const
-@@ -88,7 +401,10 @@
+@@ -88,7 +402,10 @@
              const std::uint32_t shapeCount,
              const std::uint32_t maxShapeMutations,
              std::uint32_t maxThreads,
@@ -3205,7 +3220,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      {
          // Ensure that the maximum number of threads is a sane value
          if(maxThreads == 0) {
-@@ -99,34 +415,106 @@
+@@ -99,47 +416,147 @@
              }
          }
  
@@ -3337,7 +3352,11 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          return states;
      }
  
-@@ -137,9 +525,18 @@
+     std::vector<geometrize::ShapeResult> step(
+-            const std::function<std::shared_ptr<geometrize::Shape>(void)> shapeCreator,
++            const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
+             const std::uint8_t alpha,
+             const std::uint32_t shapeCount,
              const std::uint32_t maxShapeMutations,
              const std::uint32_t maxThreads,
              const geometrize::core::EnergyFunction& energyFunction,
@@ -3347,7 +3366,8 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition,
 +            const bool pyramidSearch,
 +            const geometrize::core::HillClimbEnhancements& enhancements,
-+            const std::vector<geometrize::core::RegionRect>& priorityRegions)
++            const std::vector<geometrize::core::RegionRect>& priorityRegions,
++            const geometrize::core::BudgetScaleOptions& budget)
 +    {
 +        // 0 像素位图没有可落画的像素:下游 differenceFull 会 0/0 得 NaN、光栅化裁剪区间为空。
 +        // 直接返回空,避免整步空转与 NaN 分数污染。
@@ -3355,11 +3375,29 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            return {};
 +        }
 +
-+        std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, pyramidSearch, enhancements, priorityRegions)};
++        // 候选预算降档(§5.1 第 4 条,算法增强轨道,opt-in):大图按策略等比例砍候选数与变异次数换单步速度。
++        // 只缩放本次调用的局部预算,getHillClimbState 及其下各轨道(经典/金字塔/增强)零改动;
++        // RNG 消费序列随预算变化,输出与关闭时不同属预期。下限防御钳制只降不升:
++        // 缩放结果不低于最小搜索量、也不超过原始预算(用户本就低于下限的预算不被抬高)。
++        std::uint32_t effectiveShapeCount{shapeCount};
++        std::uint32_t effectiveMaxShapeMutations{maxShapeMutations};
++        if(budget.byArea || budget.manualScale < 1.0f) {
++            double scale{1.0};
++            if(budget.byArea) {
++                const double area{static_cast<double>(m_target.getWidth()) * static_cast<double>(m_target.getHeight())};
++                scale = std::min(1.0, static_cast<double>(budget.anchorPixels) / std::max(area, 1.0));
++            } else {
++                scale = std::clamp(static_cast<double>(budget.manualScale), 0.05, 1.0);
++            }
++            effectiveShapeCount = std::min(shapeCount, std::max(minScaledShapeCount, static_cast<std::uint32_t>(std::lround(shapeCount * scale))));
++            effectiveMaxShapeMutations = std::min(maxShapeMutations, std::max(minScaledShapeMutations, static_cast<std::uint32_t>(std::lround(maxShapeMutations * scale))));
++        }
++
++        std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, effectiveShapeCount, effectiveMaxShapeMutations, maxThreads, energyFunction, pyramidSearch, enhancements, priorityRegions)};
          if(states.empty()) {
              assert(0 && "Failed to get a hill climb state");
              return {};
-@@ -151,22 +548,70 @@
+@@ -151,22 +568,70 @@
  
          // Draw the shape onto the image
          const std::shared_ptr<geometrize::Shape> shape = it->m_shape;
@@ -3440,7 +3478,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          return { result };
      }
  
-@@ -174,16 +619,55 @@
+@@ -174,16 +639,55 @@
              const std::shared_ptr<geometrize::Shape> shape,
              const geometrize::rgba color)
      {
@@ -3497,7 +3535,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      geometrize::Bitmap& getTarget()
      {
          return m_target;
-@@ -210,10 +694,45 @@
+@@ -210,10 +714,49 @@
      }
  
  private:
@@ -3539,11 +3577,15 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    bool m_errorDirty{true}; ///< m_current 是否已领先于 m_errorMap 的重建基线。
 +    std::vector<core::RegionRect> m_lastRegions; ///< 上次重建误差图所用的优先区域(变化检测,防 dirty 短路吞掉区域更新)。
      const static std::uint32_t defaultMaxThreads{4};
++    // 候选预算降档的下限:预算再小也保留最小搜索量,防止极端 scale 把候选数/变异次数钳成
++    // 0 或个位数后整步退化(单候选零变异 = 纯随机放置,质量崩塌且无防御意义)
++    const static std::uint32_t minScaledShapeCount{8};
++    const static std::uint32_t minScaledShapeMutations{16};
 +    std::unique_ptr<AsyncTaskPool> m_threadPool{std::make_unique<AsyncTaskPool>(std::max(1U, std::thread::hardware_concurrency()))}; ///< 持久线程池:容量取硬件并发数,过订阅场景由调用侧 futures 数量决定
      std::atomic<std::uint32_t> m_baseRandomSeed; ///< The base value used for seeding the random number generator (the one the user has control over).
      std::atomic<std::uint32_t> m_randomSeedOffset; ///< Seed used for random number generation. Note: incremented by each std::async call used for model stepping.
  };
-@@ -249,9 +768,12 @@
+@@ -249,9 +792,13 @@
          const std::uint32_t maxShapeMutations,
          const std::uint32_t maxThreads,
          const geometrize::core::EnergyFunction& energyFunction,
@@ -3551,14 +3593,15 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +        const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition,
 +        const bool pyramidSearch,
 +        const geometrize::core::HillClimbEnhancements& enhancements,
-+        const std::vector<geometrize::core::RegionRect>& priorityRegions)
++        const std::vector<geometrize::core::RegionRect>& priorityRegions,
++        const geometrize::core::BudgetScaleOptions& budget)
  {
 -    return d->step(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, addShapePrecondition);
-+    return d->step(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, addShapePrecondition, pyramidSearch, enhancements, priorityRegions);
++    return d->step(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, addShapePrecondition, pyramidSearch, enhancements, priorityRegions, budget);
  }
  
  geometrize::ShapeResult Model::drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color)
-@@ -259,6 +781,11 @@
+@@ -259,6 +806,11 @@
      return d->drawShape(shape, color);
  }
  
@@ -3573,7 +3616,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/model.h b/geometrize/model.h
 --- a/geometrize/model.h
 +++ b/geometrize/model.h
-@@ -91,6 +91,12 @@
+@@ -91,6 +91,14 @@
       * @param maxThreads The maximum number of threads to use during this step.
       * @param energyFunction An optional function to calculate the energy (if unspecified a default implementation is used).
       * @param addShapePrecondition An optional function to determine whether to accept a shape (if unspecified a default implementation is used).
@@ -3583,10 +3626,12 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +     * 误差图引导开启时 Model 自动维护权重表(提交前重建、任务期只读),自定义 energyFunction 与其并存时同样被忽略(增强轨道既有语义)。
 +     * @param priorityRegions 优先区域列表(全分辨率像素坐标,闭区间),区域内误差块加权(F3.2 区域优先)。
 +     * 仅 errorGuide 开启时生效;区域变化即使无形状被接受也会触发误差图重建;空列表与不传逐位一致。
++     * @param budget 候选预算降档策略(算法增强轨道,默认关):开启后按策略缩放 shapeCount/maxShapeMutations
++     * (等比例,下限防御钳制),输出与关闭时不同属预期;与金字塔/增强开关正交可组合。
       * @return A vector containing data about the shapes added to the model in this step. This may be empty if no shape that improved the image could be found.
       */
      std::vector<geometrize::ShapeResult> step(
-@@ -100,7 +106,10 @@
+@@ -100,7 +108,11 @@
              std::uint32_t maxShapeMutations,
              std::uint32_t maxThreads,
              const geometrize::core::EnergyFunction& energyFunction = nullptr,
@@ -3594,11 +3639,12 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition = nullptr,
 +            bool pyramidSearch = false,
 +            const geometrize::core::HillClimbEnhancements& enhancements = {},
-+            const std::vector<geometrize::core::RegionRect>& priorityRegions = {});
++            const std::vector<geometrize::core::RegionRect>& priorityRegions = {},
++            const geometrize::core::BudgetScaleOptions& budget = {});
  
      /**
       * @brief drawShape Draws a shape on the model. Typically used when to manually add a shape to the image (e.g. when setting an initial background).
-@@ -112,6 +121,17 @@
+@@ -112,6 +124,17 @@
      geometrize::ShapeResult drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color);
  
      /**
@@ -4016,7 +4062,7 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
          m_model.setSeed(options.seed);
 -        return m_model.step(shapeCreator, options.alpha, options.shapeCount, options.maxShapeMutations, options.maxThreads, energyFunction, addShapePrecondition);
 +        const std::vector<geometrize::core::RegionRect> pixelRegions{geometrize::commonutil::mapPriorityRegionsToImage(options.priorityRegions, m_model.getTarget())};
-+        return m_model.step(shapeCreator, options.alpha, options.shapeCount, options.maxShapeMutations, options.maxThreads, energyFunction, addShapePrecondition, options.pyramidSearch, options.enhancements, pixelRegions);
++        return m_model.step(shapeCreator, options.alpha, options.shapeCount, options.maxShapeMutations, options.maxThreads, energyFunction, addShapePrecondition, options.pyramidSearch, options.enhancements, pixelRegions, options.budget);
      }
  
      geometrize::Bitmap& getCurrent()
@@ -4052,13 +4098,14 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
   * @brief The ImageRunnerOptions class encapsulates preferences/options that the image runner uses.
   * @author Sam Twidale (https://samcodes.co.uk/)
   */
-@@ -33,7 +47,11 @@
+@@ -33,7 +47,12 @@
      std::uint32_t maxShapeMutations = 100U; ///< The maximum number of times each candidate shape will be modified to attempt to find a better fit.
      std::uint32_t seed = 9001U; ///< The seed for the random number generators used by the image runner.
      std::uint32_t maxThreads = 0; ///< The maximum number of separate threads for the implementation to use. 0 lets the implementation choose a reasonable number.
 +    bool pyramidSearch = false; ///< 金字塔搜索:hill-climb 评估在半分辨率图上进行(算法增强轨道,输出与全分辨率搜索不同属预期)。自定义 energyFunction 存在时被忽略。
 +    bool fixShapeBoundsOffByOne = false; ///< 形状边界 off-by-one 修复(C.1.4,默认关=上游语义)。上游 mapShapeBoundsToImage 返回闭区间上界(size-1),而 setup/mutate/rasterize 全程按排他上界消费该元组(内部一律用 max-1 / clamp 到 max-1),两者错配导致画布最右列与最下行永不落画。开启后按本结构体上方文档契约返回排他上界(整图 = (0,0,width,height)),形状位置采样范围与光栅化裁剪范围同时恢复完整。改变输出,故为显式开关而非默认行为。
 +    core::HillClimbEnhancements enhancements{}; ///< 增强爬山开关集(自适应步长/alpha 档位搜索,算法增强轨道,默认全关)。
++    core::BudgetScaleOptions budget{}; ///< 候选预算降档策略(§5.1 第 4 条,算法增强轨道,默认关):大图按面积或手动系数砍每步候选预算换速度。
      ImageRunnerShapeBoundsOptions shapeBounds{}; ///< If zero or do not form a rectangle, the entire target image is used i.e. (0, 0, imageWidth, imageHeight)
 +    std::vector<ImageRunnerPriorityRegionOptions> priorityRegions; ///< 区域优先绘制(F3.2):区域内误差块加权;空 = 无区域。仅 errorGuide 开启时生效
  };
