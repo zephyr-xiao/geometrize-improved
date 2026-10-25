@@ -2,8 +2,11 @@
 
 #include <string>
 
+// 纯转换函数(createBitmap/createImage/createPixmap)已拆至 image/imageconvert.h
+// (headless 工具只需要转换而不拖偏好依赖);此处转发 include 保旧调用方兼容
+#include "image/imageconvert.h"
+
 class QImage;
-class QPixmap;
 
 namespace geometrize
 {
@@ -17,32 +20,11 @@ namespace image
 {
 
 /**
- * @brief createBitmap Creates a bitmap data object from the given image.
- * @param image The image to create the bitmap data from.
- * @return The new bitmap data.
- */
-Bitmap createBitmap(const QImage& image);
-
-/**
  * @brief imageToBitmapWithDownscaling Creates a bitmap data object from the given image, downscaling in the process based on global preferences for image resizing
  * @param image The image to create the bitmap data from.
  * @return The new bitmap data.
  */
 geometrize::Bitmap convertImageToBitmapWithDownscaling(const QImage& image);
-
-/**
- * @brief createImage Creates an image from the bitmap data object. Assumes RGBA8888 format.
- * @param data The bitmap data, RGBA8888 bytes (must be a multiple of 4).
- * @return The pixmap created from the bytes data.
- */
-QImage createImage(const Bitmap& data);
-
-/**
- * @brief createPixmap Creates a pixmap from the bitmap data object. Assumes RGBA8888 format.
- * @param data The bitmap data, RGBA8888 bytes (must be a multiple of 4).
- * @return The pixmap created from the bytes data.
- */
-QPixmap createPixmap(const Bitmap& data);
 
 /**
  * @brief loadImage Loads an image from the image at the file path. Converts to RGBA8888 format.

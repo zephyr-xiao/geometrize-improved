@@ -30,6 +30,8 @@
 #include "geometrize/runner/imagerunneroptions.h"
 #include "geometrize/shaperesult.h"
 #include "geometrize/shape/shapetypes.h"
+// GIF 导出器在 app 源树(非 lib 镜像),以 app 源根为 include base
+#include "exporter/gifexporter.h"
 
 namespace {
 
@@ -39,6 +41,12 @@ struct Options {
     bool formatSvg = true;
     bool formatPng = true;
     bool formatJson = false;
+    bool formatGif = false;
+    // GIF 参数(默认对齐 GUI 口径:每帧 20 形状、20FPS、原尺寸、无限循环)
+    std::uint32_t gifFrameShapes = 20;
+    std::uint32_t gifDelayMs = 50;
+    std::uint32_t gifScale = 1;
+    std::uint32_t gifLoop = 0;
     std::uint32_t steps = 300;
     std::uint32_t shapeCount = 50;
     std::uint32_t maxMutations = 100;
@@ -62,7 +70,7 @@ void printUsage()
     std::printf(
         "geocli --input <图片|目录> [选项]\n"
         "  --output DIR        输出目录(默认 <输入旁>/geometrize_out)\n"
-        "  --format LIST       逗号分隔输出格式 svg,png,json(默认 svg,png)\n"
+        "  --format LIST       逗号分隔输出格式 svg,png,json,gif(默认 svg,png)\n"
         "  --steps N           每图步数(默认 300)\n"
         "  --shape-count N     每步候选形状数(默认 50)\n"
         "  --max-mutations N   每候选最大变异次数(默认 100)\n"
@@ -79,6 +87,11 @@ void printUsage()
         "  --alpha-search      逐形状透明度搜索(同步数质量更好,更慢)\n"
         "  --error-guide       误差图引导形状放置(低预算收益最大)\n"
         "  --segment-colors    分段颜色(行级取色,跨明暗边界不发灰)\n"
+        "GIF 参数(--format 含 gif 时生效;帧画面与 GUI 导出同源,帧数自动封顶 1000):\n"
+        "  --gif-frame-shapes N 每帧形状数(默认 20)\n"
+        "  --gif-delay-ms N     帧延迟毫秒,下限 20(默认 50 = 20FPS)\n"
+        "  --gif-scale N        输出尺寸倍率(默认 1;护栏:每边 ≤65535 且宽×高×4 ≤2GB)\n"
+        "  --gif-loop N         循环次数(默认 0 = 无限循环)\n"
         "  -h / --help         本帮助\n");
 }
 
@@ -171,8 +184,9 @@ Options parseArgs(int argc, char** argv)
                 if(token == "svg") opts.formatSvg = true;
                 else if(token == "png") opts.formatPng = true;
                 else if(token == "json") opts.formatJson = true;
+                else if(token == "gif") opts.formatGif = true;
                 else {
-                    std::fprintf(stderr, "未知输出格式: '%s'(可用: svg,png,json)\n", token.c_str());
+                    std::fprintf(stderr, "未知输出格式: '%s'(可用: svg,png,json,gif)\n", token.c_str());
                     std::exit(2);
                 }
                 any = true;
@@ -193,6 +207,10 @@ Options parseArgs(int argc, char** argv)
         else if(arg == "--threads") opts.threads = parseU32Arg("--threads", next(), 1024U);
         else if(arg == "--max-size") opts.maxSize = parseU32Arg("--max-size", next(), 65535U);
         else if(arg == "--overwrite") opts.overwrite = true;
+        else if(arg == "--gif-frame-shapes") opts.gifFrameShapes = parseU32Arg("--gif-frame-shapes", next(), 1000000U);
+        else if(arg == "--gif-delay-ms") opts.gifDelayMs = parseU32Arg("--gif-delay-ms", next(), 60000U);
+        else if(arg == "--gif-scale") opts.gifScale = parseU32Arg("--gif-scale", next(), 100U);
+        else if(arg == "--gif-loop") opts.gifLoop = parseU32Arg("--gif-loop", next(), 65535U);
         else if(arg == "--pyramid") opts.pyramid = true;
         else if(arg == "--budget-by-area") opts.budgetByArea = true;
         else if(arg == "--adaptive-step") opts.adaptiveStep = true;
@@ -209,6 +227,10 @@ Options parseArgs(int argc, char** argv)
     if(opts.inputPath.empty()) {
         std::fprintf(stderr, "缺少 --input\n");
         printUsage();
+        std::exit(2);
+    }
+    if(opts.formatGif && opts.gifFrameShapes == 0) {
+        std::fprintf(stderr, "--gif-frame-shapes 至少为 1\n");
         std::exit(2);
     }
     return opts;
@@ -281,6 +303,7 @@ ProcessResult processOne(const Options& opts, const QString& inputPath, const QS
     if(opts.formatSvg) targets.push_back(outputDir + "/" + baseName + ".svg");
     if(opts.formatPng) targets.push_back(outputDir + "/" + baseName + ".png");
     if(opts.formatJson) targets.push_back(outputDir + "/" + baseName + ".json");
+    if(opts.formatGif) targets.push_back(outputDir + "/" + baseName + ".gif");
     if(!opts.overwrite) {
         bool allExist = !targets.isEmpty();
         for(const QString& target : targets) {
@@ -333,13 +356,33 @@ ProcessResult processOne(const Options& opts, const QString& inputPath, const QS
 
     bool ok = true;
     if(opts.formatSvg) {
-        ok = writeFile(targets.front(), geometrize::exporter::exportSVG(shapes, target.getWidth(), target.getHeight())) && ok;
+        ok = writeFile(outputDir + "/" + baseName + ".svg", geometrize::exporter::exportSVG(shapes, target.getWidth(), target.getHeight())) && ok;
     }
     if(opts.formatPng) {
         ok = saveBitmapPng(runner.getCurrent(), outputDir + "/" + baseName + ".png") && ok;
     }
     if(opts.formatJson) {
         ok = writeFile(outputDir + "/" + baseName + ".json", geometrize::exporter::exportShapeJson(shapes)) && ok;
+    }
+    if(opts.formatGif) {
+        // 0 形状(如纯色图)时 exportGIF 必然 false:GIF 没有可编码的帧。
+        // 严格口径:请求的产物必须齐全才算成功,缺失即记失败(批处理退出码可见)
+        if(shapes.empty()) {
+            std::fprintf(stderr, "  GIF 未生成(0 形状无可编码帧)\n");
+            ok = false;
+        } else {
+            // 帧口径照 GUI:每第 N 个形状处取帧(0 起位,含首帧),末帧必取与封顶抽稀由导出器兜底
+            const std::uint32_t frameStep{opts.gifFrameShapes};
+            const auto frameSkipPredicate = [frameStep](const std::size_t frameIdx) {
+                return frameIdx % frameStep != 0;
+            };
+            ok = geometrize::exporter::exportGIF(
+                     shapes, target.getWidth(), target.getHeight(),
+                     target.getWidth() * opts.gifScale, target.getHeight() * opts.gifScale,
+                     frameSkipPredicate,
+                     (outputDir + "/" + baseName + ".gif").toStdString(),
+                     opts.gifDelayMs, opts.gifLoop, 2000) && ok;
+        }
     }
     return {false, ok, static_cast<std::uint32_t>(shapes.size())};
 }
