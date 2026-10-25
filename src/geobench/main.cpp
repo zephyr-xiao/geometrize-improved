@@ -64,6 +64,10 @@ struct Options {
     // --fix-shape-bounds:形状边界 off-by-one 修复(C.1.4,fast 侧专属)。
     // 库侧默认保持上游语义(闭区间上界)以维持 bit-exact 门禁,本开关是分叉锁定哨兵。
     bool fixShapeBounds = false;
+    // --budget-by-area / --budget-scale:候选预算降档(§5.1 第 4 条,fast 侧专属)。
+    // byArea=按面积自动档(锚点 768×504);scale=手动系数(0.05-1.0,扫实测曲线用)。两者互斥,byArea 优先。
+    bool budgetByArea = false;
+    float budgetScale = 1.0f;
 };
 
 void printUsage()
@@ -90,6 +94,9 @@ void printUsage()
         "  --fix-shape-bounds 形状边界 off-by-one 修复(C.1.4:画布最右列/最下行可落画;\n"
         "                     默认关=上游闭区间语义,开启后输出与上游不同属预期)\n"
         "  --quality-report N 每 N 步打印一次全分辨率相似度分数,质量曲线验收用(0=关,默认)\n"
+        "  --budget-by-area  候选预算按面积降档(小图不动,大图按 768x504 锚点比例砍;算法增强,\n"
+        "                     输出与关闭时不同属预期)\n"
+        "  --budget-scale F   手动预算系数 0.05-1.0(与 --budget-by-area 互斥,后者优先;实测扫曲线用)\n"
         "  -v                 逐步打印分数\n");
 }
 
@@ -234,6 +241,22 @@ Options parseArgs(int argc, char** argv)
             }
         }
         else if(arg == "--quality-report") opts.qualityReportInterval = parseU32Arg("--quality-report", next(), 100000U);
+        else if(arg == "--budget-by-area") opts.budgetByArea = true;
+        else if(arg == "--budget-scale") {
+            // 浮点系数严格校验:非数字/未消费完整/超 0.05-1.0 一律 exit 1(照 shape-bounds 的 stod 校验模式)
+            const std::string token = next();
+            try {
+                std::size_t consumed = 0;
+                const double value = std::stod(token, &consumed);
+                if(consumed != token.size() || value < 0.05 || value > 1.0) {
+                    throw std::invalid_argument("range");
+                }
+                opts.budgetScale = static_cast<float>(value);
+            } catch(const std::exception&) {
+                std::fprintf(stderr, "--budget-scale 应为 0.05-1.0 的小数: '%s'\n", token.c_str());
+                std::exit(1);
+            }
+        }
         else if(arg == "--error-guide") opts.errorGuide = true;
         else if(arg == "--segment-colors") opts.segmentColors = true;
         else if(arg == "--fix-shape-bounds") opts.fixShapeBounds = true;
@@ -341,6 +364,8 @@ int main(int argc, char** argv)
         }
     }
     options.fixShapeBoundsOffByOne = opts.fixShapeBounds;
+    options.budget.byArea = opts.budgetByArea;
+    options.budget.manualScale = opts.budgetScale;
 #endif
     if(opts.hasBounds) {
         options.shapeBounds.enabled = true;

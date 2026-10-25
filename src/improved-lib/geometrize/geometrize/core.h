@@ -47,6 +47,20 @@ struct HillClimbEnhancements
 };
 
 /**
+ * @brief BudgetScaleOptions 候选预算降档策略(算法增强轨道,opt-in,§5.1 第 4 条)。
+ * 每步候选预算 = shapeCount(随机候选数) × maxShapeMutations(爬山变异次数),单步墙钟时间随
+ * 目标面积线性膨胀;开启后等比例缩放两者(保持探索/求精比),用同步数质量换大图速度。
+ * 输出与关闭时不同属预期(RNG 消费序列改变);maxThreads 不参与缩放,与金字塔/增强开关正交。
+ * 两种模式互斥:byArea 优先;全默认(不开启)时 step 行为与上游逐位一致。
+ */
+struct BudgetScaleOptions
+{
+    bool byArea{false}; ///< 自动档:scale = min(1, anchorPixels / 目标像素数),小图不动、大图按面积比例降档(GUI 勾选框对应此模式)。
+    float manualScale{1.0f}; ///< 手动缩放系数(有效域 0.05~1.0,超出按最近端钳制),byArea 开启时被忽略;1.0 = 不缩放(CLI 扫实测曲线用)。
+    std::uint32_t anchorPixels{768U * 504U}; ///< byArea 锚点像素数(基准管线口径):目标不大于它时 scale 恒为 1。
+};
+
+/**
  * The core functions for Geometrize.
  * @author Sam Twidale (https://samcodes.co.uk/)
  */

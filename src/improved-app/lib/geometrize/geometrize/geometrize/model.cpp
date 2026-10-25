@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
@@ -519,7 +520,7 @@ public:
     }
 
     std::vector<geometrize::ShapeResult> step(
-            const std::function<std::shared_ptr<geometrize::Shape>(void)> shapeCreator,
+            const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
             const std::uint8_t alpha,
             const std::uint32_t shapeCount,
             const std::uint32_t maxShapeMutations,
@@ -528,7 +529,8 @@ public:
             const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition,
             const bool pyramidSearch,
             const geometrize::core::HillClimbEnhancements& enhancements,
-            const std::vector<geometrize::core::RegionRect>& priorityRegions)
+            const std::vector<geometrize::core::RegionRect>& priorityRegions,
+            const geometrize::core::BudgetScaleOptions& budget)
     {
         // 0 像素位图没有可落画的像素:下游 differenceFull 会 0/0 得 NaN、光栅化裁剪区间为空。
         // 直接返回空,避免整步空转与 NaN 分数污染。
@@ -536,7 +538,25 @@ public:
             return {};
         }
 
-        std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, pyramidSearch, enhancements, priorityRegions)};
+        // 候选预算降档(§5.1 第 4 条,算法增强轨道,opt-in):大图按策略等比例砍候选数与变异次数换单步速度。
+        // 只缩放本次调用的局部预算,getHillClimbState 及其下各轨道(经典/金字塔/增强)零改动;
+        // RNG 消费序列随预算变化,输出与关闭时不同属预期。下限防御钳制只降不升:
+        // 缩放结果不低于最小搜索量、也不超过原始预算(用户本就低于下限的预算不被抬高)。
+        std::uint32_t effectiveShapeCount{shapeCount};
+        std::uint32_t effectiveMaxShapeMutations{maxShapeMutations};
+        if(budget.byArea || budget.manualScale < 1.0f) {
+            double scale{1.0};
+            if(budget.byArea) {
+                const double area{static_cast<double>(m_target.getWidth()) * static_cast<double>(m_target.getHeight())};
+                scale = std::min(1.0, static_cast<double>(budget.anchorPixels) / std::max(area, 1.0));
+            } else {
+                scale = std::clamp(static_cast<double>(budget.manualScale), 0.05, 1.0);
+            }
+            effectiveShapeCount = std::min(shapeCount, std::max(minScaledShapeCount, static_cast<std::uint32_t>(std::lround(shapeCount * scale))));
+            effectiveMaxShapeMutations = std::min(maxShapeMutations, std::max(minScaledShapeMutations, static_cast<std::uint32_t>(std::lround(maxShapeMutations * scale))));
+        }
+
+        std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, effectiveShapeCount, effectiveMaxShapeMutations, maxThreads, energyFunction, pyramidSearch, enhancements, priorityRegions)};
         if(states.empty()) {
             assert(0 && "Failed to get a hill climb state");
             return {};
@@ -732,6 +752,10 @@ private:
     bool m_errorDirty{true}; ///< m_current 是否已领先于 m_errorMap 的重建基线。
     std::vector<core::RegionRect> m_lastRegions; ///< 上次重建误差图所用的优先区域(变化检测,防 dirty 短路吞掉区域更新)。
     const static std::uint32_t defaultMaxThreads{4};
+    // 候选预算降档的下限:预算再小也保留最小搜索量,防止极端 scale 把候选数/变异次数钳成
+    // 0 或个位数后整步退化(单候选零变异 = 纯随机放置,质量崩塌且无防御意义)
+    const static std::uint32_t minScaledShapeCount{8};
+    const static std::uint32_t minScaledShapeMutations{16};
     std::unique_ptr<AsyncTaskPool> m_threadPool{std::make_unique<AsyncTaskPool>(std::max(1U, std::thread::hardware_concurrency()))}; ///< 持久线程池:容量取硬件并发数,过订阅场景由调用侧 futures 数量决定
     std::atomic<std::uint32_t> m_baseRandomSeed; ///< The base value used for seeding the random number generator (the one the user has control over).
     std::atomic<std::uint32_t> m_randomSeedOffset; ///< Seed used for random number generation. Note: incremented by each std::async call used for model stepping.
@@ -771,9 +795,10 @@ std::vector<geometrize::ShapeResult> Model::step(
         const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition,
         const bool pyramidSearch,
         const geometrize::core::HillClimbEnhancements& enhancements,
-        const std::vector<geometrize::core::RegionRect>& priorityRegions)
+        const std::vector<geometrize::core::RegionRect>& priorityRegions,
+        const geometrize::core::BudgetScaleOptions& budget)
 {
-    return d->step(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, addShapePrecondition, pyramidSearch, enhancements, priorityRegions);
+    return d->step(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, addShapePrecondition, pyramidSearch, enhancements, priorityRegions, budget);
 }
 
 geometrize::ShapeResult Model::drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color)

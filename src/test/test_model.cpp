@@ -516,6 +516,119 @@ TEST_CASE("增强全组合(errorGuide+adaptive+alpha+pyramid)step 确定性:两�
     CHECK(first == second);
 }
 
+TEST_CASE("候选预算降档 step 确定性:同配置两跑位图一致(单线程+过订阅)")
+{
+    // §5.1 第 4 条:降档只改本次调用的有效预算(n/age),调度/种子链路不变,
+    // 线程数无关与确定性不变量都必须保持
+    const auto runOnce = [](std::uint32_t maxThreads, const geometrize::core::BudgetScaleOptions& budget) {
+        geometrize::Model model{makeGradientBitmap(32, 32)};
+        DeterministicShapeCreator creator{32};
+        for(int i = 0; i < 8; i++) {
+            model.step(creator, 128, 4, 20, maxThreads, nullptr, nullptr, false, {}, {}, budget);
+        }
+        return model.getCurrent().copyData();
+    };
+
+    geometrize::core::BudgetScaleOptions budget;
+    budget.manualScale = 0.5f;
+
+    const auto first1 = runOnce(1, budget);
+    const auto first2 = runOnce(1, budget);
+    CHECK(first1 == first2);
+
+    const auto many1 = runOnce(64, budget);
+    const auto many2 = runOnce(64, budget);
+    CHECK(many1 == many2);
+    CHECK(first1 == many1); // 种子按 submit 序预分配:预算降档同样线程数无关
+}
+
+TEST_CASE("候选预算降档分叉哨兵:budgetScale 0.5 与 1.0 输出必须不同")
+{
+    // 抓"降档开关被静默忽略"(透传链断裂):预算变化 → RNG 消费序列变化 → 输出必不同。
+    // 真 creator 保证 mutate 链完整(确定性 creator 的 mutate 恒等链不放大差异);
+    // 若未来偶现全同,改写用例而非恢复默认假设。
+    const auto runScaled = [](float scale) {
+        geometrize::commonutil::seedRandomGenerator(9001);
+        geometrize::core::BudgetScaleOptions budget;
+        budget.manualScale = scale;
+        geometrize::Model model{makeGradientBitmap(64, 64)};
+        const auto creator = geometrize::createDefaultShapeCreator(
+            geometrize::ShapeTypes::ELLIPSE, 0, 0, 63, 63);
+        model.setSeed(9001);
+        for(int i = 0; i < 10; i++) {
+            model.step(creator, 128, 4, 30, 4, nullptr, nullptr, false, {}, {}, budget);
+        }
+        return model.getCurrent().copyData();
+    };
+
+    CHECK(runScaled(1.0f) != runScaled(0.5f));
+}
+
+TEST_CASE("候选预算降档下限钳制:低于下限的 scale 与域下限 scale 输出一致(同有效预算)")
+{
+    // 库内钳制:scale 先 clamp 到 0.05,n/age 再钳到下限(8/16)。
+    // 100×0.05=5→8、200×0.05=10→16:0.01 与 0.05 的有效预算同为 (8,16),
+    // 且与直接传 (8,16) 不开降档的输出一致 —— 降档路径只改预算数值,不改其他任何行为。
+    const auto runScaled = [](float scale, std::uint32_t shapeCount, std::uint32_t maxMutations) {
+        geometrize::Model model{makeGradientBitmap(48, 48)};
+        DeterministicShapeCreator creator{48};
+        geometrize::core::BudgetScaleOptions budget;
+        budget.manualScale = scale;
+        for(int i = 0; i < 6; i++) {
+            model.step(creator, 128, shapeCount, maxMutations, 4, nullptr, nullptr, false, {}, {}, budget);
+        }
+        return model.getCurrent().copyData();
+    };
+
+    const auto directFloor = [] {
+        geometrize::Model model{makeGradientBitmap(48, 48)};
+        DeterministicShapeCreator creator{48};
+        for(int i = 0; i < 6; i++) {
+            model.step(creator, 128, 8, 16, 4);
+        }
+        return model.getCurrent().copyData();
+    };
+
+    CHECK(runScaled(0.01f, 100, 200) == runScaled(0.05f, 100, 200));
+    CHECK(runScaled(0.05f, 100, 200) == directFloor());
+}
+
+TEST_CASE("候选预算 byArea 自动档:小图不动(scale=1 与关闭逐位一致),超锚点降档(输出必不同)")
+{
+    // 真 creator:bestRandomState 按预算 n 消费 RNG,预算变化 → RNG 序列变化 → 分叉可观测
+    //(确定性 creator 的 mutate 恒等链在小预算差异下不敏感,不适合本哨兵)
+    const auto runBaseline = [] {
+        geometrize::commonutil::seedRandomGenerator(9001);
+        geometrize::Model model{makeGradientBitmap(48, 48)};
+        const auto creator = geometrize::createDefaultShapeCreator(
+            geometrize::ShapeTypes::ELLIPSE, 0, 0, 47, 47);
+        model.setSeed(9001);
+        for(int i = 0; i < 6; i++) {
+            model.step(creator, 128, 32, 60, 4);
+        }
+        return model.getCurrent().copyData();
+    };
+
+    const auto runWithAnchor = [](std::uint32_t anchorPixels) {
+        geometrize::commonutil::seedRandomGenerator(9001);
+        geometrize::core::BudgetScaleOptions budget;
+        budget.byArea = true;
+        budget.anchorPixels = anchorPixels;
+        geometrize::Model model{makeGradientBitmap(48, 48)};
+        const auto creator = geometrize::createDefaultShapeCreator(
+            geometrize::ShapeTypes::ELLIPSE, 0, 0, 47, 47);
+        model.setSeed(9001);
+        for(int i = 0; i < 6; i++) {
+            model.step(creator, 128, 32, 60, 4, nullptr, nullptr, false, {}, {}, budget);
+        }
+        return model.getCurrent().copyData();
+    };
+
+    // 48×48=2304 px:锚点 100000 ≥ 面积 → scale=1,预算原样(只降不升),输出与关闭逐位一致
+    CHECK(runWithAnchor(100000) == runBaseline());
+    // 锚点 1024 < 面积 → scale≈0.44 → 预算 32/60 → 14/27,输出必变
+    CHECK(runWithAnchor(1024) != runBaseline());
+}
 
 TEST_CASE("T7 不变量:经典 step 后 ShapeResult.color.a == 传入 alpha(双变体)")
 {

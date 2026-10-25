@@ -97,6 +97,8 @@ public:
      * 误差图引导开启时 Model 自动维护权重表(提交前重建、任务期只读),自定义 energyFunction 与其并存时同样被忽略(增强轨道既有语义)。
      * @param priorityRegions 优先区域列表(全分辨率像素坐标,闭区间),区域内误差块加权(F3.2 区域优先)。
      * 仅 errorGuide 开启时生效;区域变化即使无形状被接受也会触发误差图重建;空列表与不传逐位一致。
+     * @param budget 候选预算降档策略(算法增强轨道,默认关):开启后按策略缩放 shapeCount/maxShapeMutations
+     * (等比例,下限防御钳制),输出与关闭时不同属预期;与金字塔/增强开关正交可组合。
      * @return A vector containing data about the shapes added to the model in this step. This may be empty if no shape that improved the image could be found.
      */
     std::vector<geometrize::ShapeResult> step(
@@ -109,7 +111,8 @@ public:
             const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition = nullptr,
             bool pyramidSearch = false,
             const geometrize::core::HillClimbEnhancements& enhancements = {},
-            const std::vector<geometrize::core::RegionRect>& priorityRegions = {});
+            const std::vector<geometrize::core::RegionRect>& priorityRegions = {},
+            const geometrize::core::BudgetScaleOptions& budget = {});
 
     /**
      * @brief drawShape Draws a shape on the model. Typically used when to manually add a shape to the image (e.g. when setting an initial background).

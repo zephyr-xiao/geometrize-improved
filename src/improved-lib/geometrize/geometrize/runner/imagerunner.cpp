@@ -39,7 +39,7 @@ public:
 
         m_model.setSeed(options.seed);
         const std::vector<geometrize::core::RegionRect> pixelRegions{geometrize::commonutil::mapPriorityRegionsToImage(options.priorityRegions, m_model.getTarget())};
-        return m_model.step(shapeCreator, options.alpha, options.shapeCount, options.maxShapeMutations, options.maxThreads, energyFunction, addShapePrecondition, options.pyramidSearch, options.enhancements, pixelRegions);
+        return m_model.step(shapeCreator, options.alpha, options.shapeCount, options.maxShapeMutations, options.maxThreads, energyFunction, addShapePrecondition, options.pyramidSearch, options.enhancements, pixelRegions, options.budget);
     }
 
     geometrize::Bitmap& getCurrent()
