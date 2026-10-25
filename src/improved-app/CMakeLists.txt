@@ -98,11 +98,13 @@ endif()
 # geocli:headless 批处理命令行工具(控制台子系统,与 app 共享库源码与 Qt 部署;
 # build\Release 同目录,windeployqt 部署的 dll 天然共享;交付时拷进 dist 包即可)
 # GIF 导出复用 app 侧 exporter::exportGIF(自包含:内部增量帧渲染 + BurstLinker + 护栏);
-# 其唯一外部符号 createImage 由 image/imageconvert.cpp 提供(纯转换,第二十三批从 imageloader
+# 序列帧 PNG 复用 exporter::exportRasterizedSvgs(增量位图渲染 + exportedFrameCount 封顶单一真源);
+# 两者的 createImage 引用由 image/imageconvert.cpp 提供(纯转换,第二十三批从 imageloader
 # 拆出——imageloader 的缩放入口依赖 GlobalPreferences,整编会把偏好/GUI 工具链拖进 CLI 链接)
 add_executable(geocli
     geocli/main.cpp
     geometrize/exporter/gifexporter.cpp
+    geometrize/exporter/imageexporter.cpp
     geometrize/image/imageconvert.cpp
     ${LIB_GEOMETRIZE_SOURCES}
     ${LIB_BURSTLINKER_SOURCES})
@@ -111,7 +113,9 @@ target_include_directories(geocli PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/cereal/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/geometrize/geometrize"
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/burstlinker/burstlinker/src")
-target_link_libraries(geocli PRIVATE Qt6::Core Qt6::Gui)
+# Qt6::Svg:imageexporter.cpp 的 SVG 光栅化助手引用 QSvgRenderer(headless 路径不调用,
+# 链模块最省事,dist 包内本就有 Qt6Svg.dll)
+target_link_libraries(geocli PRIVATE Qt6::Core Qt6::Gui Qt6::Svg)
 if(MSVC)
     target_compile_options(geocli PRIVATE
         /EHsc /W3 /permissive- /utf-8 /Zi /FS /Zc:__cplusplus
