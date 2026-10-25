@@ -1,6 +1,6 @@
 # Geometrize Improved — 迭代路线图
 
-> 版本基准:2026-10-26 第二十三次交付(**geocli GIF 导出**:`--format gif` 四参数,GIF导出器全自包含复用;imageconvert 拆分解 CLI 链接依赖)
+> 版本基准:2026-10-26 第二十四次交付(**geocli 序列帧 PNG 导出**:`--format frames` + `--frames-scale`,帧目录独立,增量渲染 O(N) 封顶 1000)
 > 下次会话:§5.1 已清账;§4.6 仅剩有意搁置项;后续可选方向:A2.5 新形状类型 / HTTP API / 更多导出格式(geocli 加 GIF/序列帧),动手前查 §7 陷阱速查(28 条)
 > 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ **Qt 6.8.3 LTS(msvc2022_64)**
 > 使用约定:**双轨制**——纯性能优化维持 bit-exact 门禁(与上游逐位一致);算法增强做成独立开关(默认关),不破坏验证体系。暂自用,不排开源工程项。
@@ -637,6 +637,17 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
     dist 双 exe 同步(geocli + Geometrize 均重建)。
   → 后续可选方向:A2.5 新形状类型;HTTP API;geocli 序列帧 PNG 导出(增量帧渲染已就位)
 
+✅ 已完成(第二十四批,2026-10-26:geocli 序列帧 PNG 导出)
+  功能:--format frames + --frames-scale(默认 1);帧写 <图名>_frames/ 独立子目录(不铺满输出目录,
+    第十六批"桌面被铺满"教训延续);复用 exporter::exportRasterizedSvgs(增量位图渲染 O(N) +
+    exportedFrameCount 封顶单一真源 + 分段颜色帧画面);链接 += Qt6::Svg(imageexporter 的 QSvgRenderer
+    符号,headless 不调用,dist 有 dll)。
+  修复:幂等初始条件坑——frames-only 场景 targets 为空,"!targets.isEmpty() &&" 起手使跳过永不触发;
+    改为"全部请求产物就绪才跳过"(单文件存在且非空 + 帧目录含至少一张 PNG)。
+  冒烟:40 形状 → 40 帧精确、frames-only/混合格式幂等、scale=2 → 128²、flat 0 形状 exit 1、
+    1100 形状封顶抽稀 550 帧;verify_patches 重导出 PASS(补丁 0036);dist 同步(哈希一致)。
+  → 后续可选方向:A2.5 新形状类型;HTTP API
+
 ✅ 收尾(2026-10-26:第十九/二十批提交前四道门禁全量复跑)
   改动自 10-07 完成后搁置至今,提交前按改动铁律全量复跑(ctest 2/2、run_ab 26/26 golden 全 OK、
     verify_patches 双门禁 PASS、qt_render_ab check 6/6 全 SAME——偏好阈值按陷阱 #26 临时设回 256 后
@@ -692,7 +703,7 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 | 单元测试 | src\test\(doctest 双变体,CMake target 在 src\geobench\CMakeLists.txt,ctest 门禁) |
 | 测试图 | src\testdata\images\(gen_test_images.py 可再生) |
 | 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间/0018 评估内核融合/0019 内核 AVX2/0020 分段内核 AVX2/0021 候选预算降档) |
-| 应用补丁 | patches\qt\0001-0032(0026 批处理增强/0027 导出性能/0028 Qt6 迁移/0029 审查遗留/0030 序列导出确认/0031 大图金字塔提示/0032 矢量视图交互流畅度/0033 预算降档勾选框/0034 geocli 批处理工具/0035 geocli GIF 导出,累计 diff 含附注) |
+| 应用补丁 | patches\qt\0001-0032(0026 批处理增强/0027 导出性能/0028 Qt6 迁移/0029 审查遗留/0030 序列导出确认/0031 大图金字塔提示/0032 矢量视图交互流畅度/0033 预算降档勾选框/0034 geocli 批处理工具/0035 geocli GIF 导出/0036 geocli 序列帧导出,累计 diff 含附注) |
 | Qt 渲染侧对拍 | tools\qt_render_ab.py(+ tools\qt_render_ab\cases\ 用例、tools\qt_goldens.csv 严格项哈希、tools\qt_render_ref\ 光栅化参考图;用法见 tools\qt_render_ab\README.md) |
 | 等价性论证 | docs\bitwise-equivalence-notes.md |
 | bug 分级 | docs\bugfix-triage.md |
