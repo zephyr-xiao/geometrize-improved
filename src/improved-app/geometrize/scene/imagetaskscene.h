@@ -59,6 +59,14 @@ public:
       */
      void setOverlayShapeVisibility(bool visible);
 
+     /**
+      * @brief setInteractiveRendering 通知场景"用户正在连续缩放/拖动",渲染缓存可以临时降级换流畅度。
+      * 默认空实现;矢量场景据此在交互期改用 item 坐标缓存(视口变换不再使缓存失效),
+      * 停手后由调用方切回清晰渲染。
+      * @param interactive True 表示进入交互期,false 表示交互结束、恢复清晰渲染。
+      */
+     virtual void setInteractiveRendering(bool interactive);
+
 protected:
      bool event(QEvent* event) override;
      void mousePressEvent(QGraphicsSceneMouseEvent* event) override;

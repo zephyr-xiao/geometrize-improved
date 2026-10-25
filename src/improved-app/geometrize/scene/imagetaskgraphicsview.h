@@ -6,6 +6,7 @@
 #include <QObject>
 
 class QEvent;
+class QHideEvent;
 class QKeyEvent;
 class QWheelEvent;
 
@@ -39,6 +40,7 @@ private:
     void mouseMoveEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
     class ImageTaskGraphicsViewImpl;
     std::unique_ptr<ImageTaskGraphicsViewImpl> d;

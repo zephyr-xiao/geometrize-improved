@@ -114,6 +114,11 @@ void ImageTaskScene::setOverlayShapeVisibility(const bool visible)
     d->setOverlayShapeVisibility(visible);
 }
 
+void ImageTaskScene::setInteractiveRendering(const bool /*interactive*/)
+{
+    // 默认无操作:只有矢量场景有可降级的 SVG 渲染缓存(位图场景就一个 pixmap item,无需处理)
+}
+
 bool ImageTaskScene::event(QEvent* event)
 {
     // Handle custom tablet events forwarded from the ImageTaskGraphicsView

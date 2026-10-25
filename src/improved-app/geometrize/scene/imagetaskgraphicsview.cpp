@@ -4,13 +4,16 @@
 #include <QDebug>
 #include <QEvent>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QString>
 #include <QTabletEvent>
+#include <QTimer>
 #include <QTouchEvent>
 #include <QWheelEvent>
 
 #include "customtabletevent.h"
 #include "scene/imagetaskscene.h"
+#include "scene/imagetasksvgscene.h"
 
 namespace
 {
@@ -98,17 +101,51 @@ namespace scene
 class ImageTaskGraphicsView::ImageTaskGraphicsViewImpl
 {
 public:
-    ImageTaskGraphicsViewImpl(ImageTaskGraphicsView* pQ) : q{pQ}, m_totalScaleFactor(1.0f)
+    ImageTaskGraphicsViewImpl(ImageTaskGraphicsView* pQ) : q{pQ}, m_totalScaleFactor(1.0f), m_interactionActive{false}
     {
     }
     ImageTaskGraphicsViewImpl operator=(const ImageTaskGraphicsViewImpl&) = delete;
     ImageTaskGraphicsViewImpl(const ImageTaskGraphicsViewImpl&) = delete;
     ~ImageTaskGraphicsViewImpl() = default;
 
+    // 进入交互期:通知场景把渲染缓存降级(矢量场景 → item 坐标缓存),并重启空闲计时。
+    // 连续缩放/拖动期间每个 tick 都调,重复调用只重启计时。
+    void beginInteraction()
+    {
+        if(!m_interactionActive) {
+            m_interactionActive = true;
+            if(auto* svgScene = qobject_cast<geometrize::scene::ImageTaskSvgScene*>(q->scene())) {
+                svgScene->setInteractiveRendering(true);
+            }
+        }
+        if(m_idleTimer != nullptr) {
+            m_idleTimer->start();
+        }
+    }
+
+    // 空闲到期:恢复清晰渲染。用延迟恢复而不是鼠标释放即恢复,是为了让连续滚轮/连续拖动
+    // 之间不来回切换缓存模式(每次切换都会触发一次整块重光栅化)。
+    void endInteraction()
+    {
+        if(!m_interactionActive) {
+            return;
+        }
+        m_interactionActive = false;
+        if(auto* svgScene = qobject_cast<geometrize::scene::ImageTaskSvgScene*>(q->scene())) {
+            svgScene->setInteractiveRendering(false);
+        }
+    }
+
     ImageTaskGraphicsView* q;
 
     float m_totalScaleFactor;
+
+    bool m_interactionActive;
+    QTimer* m_idleTimer{nullptr}; ///> 交互空闲计时(到期恢复清晰渲染)
 };
+
+// 停手多久算交互结束。取值要大于一次连续滚轮/拖动的间隔、又小于人眼觉得"画面一直糊"的时长。
+constexpr int INTERACTION_IDLE_MS{200};
 
 ImageTaskGraphicsView::ImageTaskGraphicsView(QWidget* parent) : QGraphicsView(parent), d{std::make_unique<ImageTaskGraphicsViewImpl>(this)}
 {
@@ -120,6 +157,14 @@ ImageTaskGraphicsView::ImageTaskGraphicsView(QWidget* parent) : QGraphicsView(pa
     setViewportUpdateMode(QGraphicsView::FullViewportUpdate);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    // 交互空闲计时:连续缩放/拖动期间保持降级渲染,停手后恢复清晰(见 Impl::beginInteraction)
+    d->m_idleTimer = new QTimer(this);
+    d->m_idleTimer->setSingleShot(true);
+    d->m_idleTimer->setInterval(INTERACTION_IDLE_MS);
+    connect(d->m_idleTimer, &QTimer::timeout, this, [this]() {
+        d->endInteraction();
+    });
 
     populateUi();
 }
@@ -221,23 +266,49 @@ void ImageTaskGraphicsView::wheelEvent(QWheelEvent* e)
         ensureVisible(lf, tf, wf, hf, 0, 0);
         ensureVisible(QRectF(QPointF(lf, tf) - newPos + posf, QSizeF(wf, hf)), 0, 0);
 
+        // 缩放期间切降级渲染:否则每个滚轮 tick 都会让全部块设备坐标缓存失效、
+        // 按新倍率重光栅化"整幅形状"(块数 = 形状数/256 ⇒ 每 tick O(形状数))
+        d->beginInteraction();
+
         e->accept();
     }
 }
 
 void ImageTaskGraphicsView::mousePressEvent(QMouseEvent* event)
 {
+    // 拖动(ScrollHandDrag)/框选期间同样按交互处理:平移虽只走缓存 blit,
+    // 但一旦有 item 被旁路缓存就会退化成每帧全量重光栅化
+    d->beginInteraction();
     QGraphicsView::mousePressEvent(event);
 }
 
 void ImageTaskGraphicsView::mouseReleaseEvent(QMouseEvent* event)
 {
     QGraphicsView::mouseReleaseEvent(event);
+    if(d->m_idleTimer != nullptr) {
+        d->m_idleTimer->start(); // 松手后仍在交互期,等空闲计时到期再恢复清晰
+    }
 }
 
 void ImageTaskGraphicsView::mouseMoveEvent(QMouseEvent* event)
 {
     QGraphicsView::mouseMoveEvent(event);
+    // 只有"按着键拖"才算交互在继续。视图开着 setMouseTracking,不加这个判断的话
+    // 单纯移动鼠标就会不断续期,降级渲染会一直挂着(画面长期发糊)。
+    if(d->m_interactionActive && event->buttons() != Qt::NoButton && d->m_idleTimer != nullptr) {
+        d->m_idleTimer->start();
+    }
+}
+
+void ImageTaskGraphicsView::hideEvent(QHideEvent* event)
+{
+    // 视图被隐藏(切到另一个视图)时立刻结束交互期:否则降级缓存会留在场景里,
+    // 下次显示出来的是位图放大的糊图,要等下一次交互才恢复清晰。
+    if(d->m_idleTimer != nullptr) {
+        d->m_idleTimer->stop();
+    }
+    d->endInteraction();
+    QGraphicsView::hideEvent(event);
 }
 
 void ImageTaskGraphicsView::keyPressEvent(QKeyEvent* event)
