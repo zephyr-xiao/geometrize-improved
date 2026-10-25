@@ -60,6 +60,8 @@ $cases = @(
     @{ name="segment_color_fork";       img="gradnoise_512.png";     steps=40;  threads=8; types="ellipse,rect"; alpha=128; bounds=""; fastExtra="--segment-colors"; expectDiff=$true; note="EXPECTED_DIFF:A2.4 分段颜色分叉锁定,开关失效(输出变同)即红" },
     @{ name="segment_color_threads1";   img="tree_under_clouds.png"; steps=30;  threads=1; types="ellipse";      alpha=128; bounds=""; fastExtra="--segment-colors"; expectDiff=$true; note="EXPECTED_DIFF:单线程下分段颜色分叉锁定" },
     @{ name="segment_color_lines_bypass"; img="hatch_512.png";       steps=40;  threads=8; types="line";         alpha=128; bounds=""; fastExtra="--segment-colors"; expectDiff=$true; note="EXPECTED_DIFF:line-only 时分段取色不参与(单测锁定)但开关仍路由增强轨道(A2.3 档位穷举恒开),与 base 分叉属增强轨道既有语义" },
+    @{ name="budget_scale_fork";         img="gradnoise_512.png";    steps=40;  threads=8; types="ellipse,rect"; alpha=128; bounds=""; fastExtra="--budget-scale 0.5"; expectDiff=$true; note="EXPECTED_DIFF:§5.1-4 候选预算降档分叉锁定,降档失效(输出变同)即红" },
+    @{ name="budget_scale_threads1";     img="tree_under_clouds.png"; steps=30; threads=1; types="ellipse";      alpha=128; bounds=""; fastExtra="--budget-scale 0.5"; expectDiff=$true; note="EXPECTED_DIFF:单线程下候选预算降档分叉锁定" },
     @{ name="fix_bounds_fork";          img="tiny_64.png";           steps=40;  threads=4; types="ellipse,rect,line"; alpha=128; bounds=""; fastExtra="--fix-shape-bounds"; expectDiff=$true; note="EXPECTED_DIFF:C.1.4 形状边界 off-by-one 修复分叉锁定(整图排他上界,最右列/最下行可落画),修复失效(输出变同)即红" },
     @{ name="fix_bounds_explicit_fork"; img="tiny_64.png";           steps=30;  threads=4; types="rect";        alpha=128; bounds="0,0,100,100"; fastExtra="--fix-shape-bounds"; expectDiff=$true; note="EXPECTED_DIFF:C.1.4 显式 bounds 路径(百分比按整幅像素跨度换算)分叉锁定" }
 )

@@ -13,8 +13,11 @@
 单边超限的图按比例缩小到限内;全局偏好的 Image Resizing 保留自定义宽高入口(512 图约 0.6s/步,
 1024 图约 2.4s/步,2048² 约 6.2s/步,见 benchmarks/report.md)。
 
-图片任务的**运行设置面板**底部另有四个算法增强勾选框(默认全关):
+图片任务的**运行设置面板**底部另有算法增强勾选框(默认全关):
 - **金字塔搜索(快速)**:半分辨率评估,大图大幅提速(1024 图 ~4x,质量代价 ~1-2%);
+- **候选预算按面积降档(大图加速)**:大图按面积比例等量削减每步候选预算(候选数与变异次数,
+  下限 8/16,只降不升),小图不受影响。实测 2048 图 2.3x、4096 图 2.0x,质量代价在噪声内
+  (2048: +2.4%,4096 上反而更优);与金字塔叠加 5.6~8.5x;
 - **自适应变异步长 / 逐形状透明度搜索**:同步数质量更好但每步明显变慢,适合步数受限的精修;
 - **误差图引导形状放置**:新形状优先落在误差最高处而非均匀随机,低预算(少候选/少变异)
   时收益最大(极端低预算 -6.7%,标准预算 -2~3%,时间成本≈0),适合快速草图模式;
@@ -56,6 +59,10 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 算法增强轨道(opt-in,输出与上游不同属预期):
 - P1.1 金字塔搜索:hill-climb 半分辨率评估 + 全分辨率接受安全网,1024 图 3.95x / 2048 图 3.71x
   (P1.2 线程池负载均衡经核验否决:爬山链串行 RNG 依赖,位精确前提下无可分并行,结论存档 ROADMAP)
+- P1.10 候选预算降档(`--budget-by-area`):大图按面积锚点(768×504)等比例缩放每步候选数与变异次数
+  (下限 8/16,只降不升;CLI 另有 `--budget-scale 0.05~1.0` 手动系数扫曲线),2048 图 2.30x / 4096 图
+  1.98x,质量代价 ≤2.4% 且 4096 上反而更优(少预算少杂候选,大图同步数少时 diff 差异主要来自形状选择
+  波动);与金字塔正交叠加 5.6~8.5x
 - A2.2 自适应步长(`--adaptive-step`):1/5 成功法则收缩/回升变异步长,同步数质量 +7.5%
 - A2.3 alpha 档位搜索(`--alpha-search`):逐形状 {64,128,192} 穷举最优 alpha,同步数质量 +9.1%
   (两项均同步数口径;等时间口径反劣,适用场景与组合注意见 benchmarks/report.md)
@@ -198,6 +205,20 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 - 备注:AVX2 取色对越界列裁剪、裁剪后无像素时填 `{0,0,0,alpha}` 占位;标量实现在同样输入下是未定义读取。
   库内扫描线由 `clipScanlinesToBitmap` 保证在界内,契约内两侧恒等(与第十七批起"越界列两侧不保证一致"的既有口径相同)。
 
+**候选预算按面积降档(第二十一批,2026-10-26)**——§5.1 大图性能二阶段收尾项,opt-in 质量换速度:
+- **机制**:每步候选预算(候选数 × 变异次数)随图面积等比例缩放——byArea 自动档锚点 768×504,下限 8/16
+  且**只降不升**(小图不动,用户本就低于下限的预算不被抬高);缩放只发生在 model.step 入口,三条评估轨道
+  零改动,与金字塔/增强开关正交;geobench 另有 `--budget-scale 0.05~1.0` 手动系数(扫曲线用)。
+- **实测**(gradnoise,8 线程):2048² 20 步 37.1→16.2 s(**2.30x**,diff +2.44%);4096² 10 步
+  228.9→115.7 s(**1.98x**,diff **-2.11% 反而更优**——大图同步数少时 diff 差异主要来自形状选择波动,
+  系统性损失被波动淹没);与金字塔叠加 5.6~8.5x。提速不成预算比例:低预算下形状保持大尺寸、
+  单次评估扫描像素更多(预算砍到 10.7% 只快 2x)。
+- **接线**:GUI 运行面板勾选框(金字塔旁,"候选预算按面积降档(大图加速)")+ 偏好持久化 + 中文翻译;
+  run_ab 增 2 条 EXPECTED_DIFF 哨兵(budget_scale_fork/threads1,golden 已锁定)。
+- 门禁:ctest 2/2(新增 4 用例,11261 断言)、run_ab **28/28**(其余 26 条 golden 值零漂移)、
+  qt_render_ab check 6/6 全 SAME、verify_patches 重导出 PASS;dist 已同步。
+- 曲线全表见 docs/ROADMAP.md §1 P1.10(实测脚本 tmp/budget_curve.csv,会话产物)。
+
 ## 目录结构
 
 ```
@@ -241,7 +262,8 @@ powershell -ExecutionPolicy Bypass -File tools\run_ab.ps1   # 26/26 PASS(含 15 
 # 预检:基线快照必须与 upstream\geometrize-lib 逐字节一致、被测 exe 必须比源码新(漏编译即拒绝跑)
 # 报告含两个 exe 的 SHA-256/mtime、重试次数、SHAPES_TOTAL;发生重试即按 FAIL 计(偶发故障不静默放过)
 # geobench 参数:--shape-bounds x1,y1,x2,y2(百分比视口)、--dump-final PATH(位图留痕);
-#   算法增强轨道 --pyramid / --adaptive-step / --alpha-search / --error-guide / --segment-colors;
+#   算法增强轨道 --pyramid / --budget-by-area / --budget-scale F / --adaptive-step / --alpha-search /
+#   --error-guide / --segment-colors;
 #   修复开关 --fix-shape-bounds(C.1.4;默认关 = 上游语义,应用侧已固定开启)
 #   参数拼错会直接报错 exit 1(未知形状名/未知 flag/非数字值/超范围值),不再静默空转成"哈希相同"
 
@@ -290,7 +312,7 @@ python tools\qt_render_ab.py accept  --exe src\improved-app\build\Release\Geomet
 - `dialog/launchwindow.ui/.cpp`(处理分辨率上限下拉,见 patches/qt/0016)
 - `dialog/taskqueuewindow.*`(批处理增强:完成感知/队列持久化/自动导出/任务栏进度,见 patches/qt/0026)
 - `dialog/imagetaskwindow.h/.cpp`(完成信号 signal_didStopConditionMet + getShapes 访问器,见 patches/qt/0026)
-- `dialog/imagetaskrunnerwidget.ui/.cpp`(算法增强四勾选框,见 patches/qt/0017/0020)
+- `dialog/imagetaskrunnerwidget.ui/.cpp`(算法增强勾选框含预算降档,见 patches/qt/0017/0020/0033)
 - `task/shapecollection.*` + `task/imagetaskworker.*` + `task/imagetask.*` + `dialog/imagetaskwindow.cpp`
   (撤销/重做:worker 批量重放 + 经典双栈语义,见 patches/qt/0021)
 - `scene/imagetaskscenemanager.*` + `serialization/imagetaskpreferencesdata.h`(区域优先框选与
