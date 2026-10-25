@@ -1,7 +1,7 @@
 # Geometrize Improved — 迭代路线图
 
-> 版本基准:2026-10-07 第十八次交付(**融合内核 AVX2 化 + 增强轨道同模式融合 + 大图提示**:4096 单步再 2.41x/相对上游 10.8x,增强开关从"比上游慢"翻到 3.8~6.1x,位精确)
-> 下次会话:§5.1 仅剩两项(分段档取色/内核 SIMD 化、候选预算降档);§4.6 仅剩有意搁置项(见该节第 7 条"仍有意未做");§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(27 条)
+> 版本基准:2026-10-07 第二十次交付(**矢量视图交互流畅度**:交互期切 item 坐标缓存 + 空闲恢复,5000 形状缩放 tick 405→9.5 ms、拖动 729→7.3 ms;画面 1x 下逐字节不变)
+> 下次会话:§5.1 仅剩第 4 条(候选预算按面积降档,opt-in,需先定验收口径);§4.6 仅剩有意搁置项(见该节第 7 条"仍有意未做");§5 尾部"后续可选方向"仍无优先级承诺,动手前查 §7 陷阱速查(28 条)
 > 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ **Qt 6.8.3 LTS(msvc2022_64)**
 > 使用约定:**双轨制**——纯性能优化维持 bit-exact 门禁(与上游逐位一致);算法增强做成独立开关(默认关),不破坏验证体系。暂自用,不排开源工程项。
 
@@ -11,12 +11,12 @@
 
 | 项 | 状态 | 备注 |
 |---|---|---|
-| 核心库 | B1-B7 全部落地 + P1.1 金字塔(opt-in) + **P1.6 评估内核融合 + P1.7 内核 AVX2(第十七/十八批,位精确)** | 内联/memcpy/isqrt 圆/扁平化 polygon/补丁快照/scratch 复用/持久线程池;金字塔=搜索启发式轨道;融合=一遍只读扫描 + 4×256 混合查找表;AVX2=无除法混合 + 取色字节和 + 差分向量化(运行时派发,非 AVX2 机器走标量;4096 单步累计 4.48x→10.8x,输出零变化) |
+| 核心库 | B1-B7 全部落地 + P1.1 金字塔(opt-in) + **P1.6 评估内核融合 + P1.7 内核 AVX2 + P1.8 增强轨道融合 + P1.9 分段内核 AVX2(第十七~十九批,位精确)** | 内联/memcpy/isqrt 圆/扁平化 polygon/补丁快照/scratch 复用/持久线程池;金字塔=搜索启发式轨道;融合=一遍只读扫描 + 4×256 混合查找表;AVX2=无除法混合 + 取色字节和 + 差分向量化(运行时派发,非 AVX2 机器走标量;4096 单步累计 4.48x→10.8x,输出零变化);分段档逐行取色 + 逐行重建预乘常量同样 AVX2(取色字节和 + 复用向量循环) |
 | 交付物 | `dist\Geometrize-Improved\` | 免安装绿色包(与 release exe 同步);第十四批起为纯 Qt6 包(无 Qt5/ANGLE 残留) |
 | 端到端门禁 | `tools\run_ab.ps1` **26 用例矩阵** | 11 个 bit-exact + 15 个 EXPECTED_DIFF(边界修复/增强/区域/分段哨兵);`-BaselineExe` 支持外部基线;FAIL 自动留痕 .raw,单侧无输出自动重试一次(陷阱 #11) |
-| 单测门禁 | `src\test\` doctest 双变体 | 111 用例 × fast / 39 × base(ctest);Model 级哨兵已全部启用(2026-09-29,原 16 个 `#if 0 // CD`);变体分叉宏分流锁定 |
+| 单测门禁 | `src\test\` doctest 双变体 | 116 用例 × fast / 39 × base(ctest,11253 / 2074 断言);Model 级哨兵已全部启用(2026-09-29,原 16 个 `#if 0 // CD`);变体分叉宏分流锁定 |
 | Qt 渲染侧门禁 | `tools\qt_render_ab.py` + `tools\qt_goldens.csv` + `tools\qt_render_ref\` | 第十四批新增:headless 脚本对拍(6 用例,覆盖位图/透明/多线程/边界/GIF/SVG 光栅化);升级 Qt 或改应用层渲染后 `check` 对冻结参考校验 |
-| 应用层 | 撤销重做 + 区域优先框选 + 增强五勾选框 + 分段颜色 + GIF/PNG 导出参数化 + F3.5 分辨率下拉 + 全量中文化 + 启动优化(网格铺满 0.5s)+ 动态线程 + 批处理增强(F3.3)+ 导出 O(N) 化(F3.7)+ Qt6 迁移(第十四批)+ 审查遗留清理(第十五批)+ **序列导出告知与确认(第十六批)** | patches\qt 0001-0030 已归档 |
+| 应用层 | 撤销重做 + 区域优先框选 + 增强五勾选框 + 分段颜色 + GIF/PNG 导出参数化 + F3.5 分辨率下拉 + 全量中文化 + 启动优化(网格铺满 0.5s)+ 动态线程 + 批处理增强(F3.3)+ 导出 O(N) 化(F3.7)+ Qt6 迁移(第十四批)+ 审查遗留清理(第十五批)+ 序列导出告知与确认(第十六批)+ **矢量视图交互流畅度(第二十批)** | patches\qt 0001-0032 已归档 |
 | 构建链 | **CMake 唯一维护链**(build_cmake.bat 一键含 windeployqt) | Qt6 迁移后 qmake/geometrize.pro **保留但冻结**(陷阱 #20);换 Qt 版本只改 bat 顶部 QT_DIR |
 | 翻译 | 全中文(zh.ts 320 条,9 条技术串与技术原文一致被 -removeidentical 剔除)+ **Qt 标准按钮 qtbase_zh**(第十六批) | zh.ts 双 context(短名供 uic / 全名供嵌套类 tr);Qt 侧需 `qtbase_<lang>.qm` 才有 OK/Yes/No 中文(陷阱 #25) |
 | 已知残留 | 偏好文件旧值持久化 | 全局偏好 JSON 里旧字段会被沿用,改默认值时注意用户机已有文件 |
@@ -137,6 +137,39 @@
   标量取色扫描)与分段内核尚未 SIMD。下一步 = 取色按 computeColor 同款字节和 SIMD 化(逐行累加)+
   分段融合内核复用 AVX2 向量循环(每行重建常量)。
 
+### P1.9 分段颜色评估内核 AVX2 化(取色字节和 + 逐行重建常量的向量循环) — ✓ 已落地(2026-10-07,第十九批,位精确)
+- **背景**:§5.1 挂账第 2 条残余。第十八批把分段轨道切到融合实现后,分段档仍是"两次标量逐像素扫描"
+  (computeSegmentColors 取色 + 分段融合混色/差分),因此**仍低于上游**(run_ab 上一轮 0.90x / 0.44x)。
+- **改动**(`core/energykernelsimd.cpp` 内新增,仍在同一个 `/arch:AVX2` TU 里):
+  ① `sumRowChannelsAvx2`(文件内)——单行按通道求字节和 Σtarget/Σcurrent/计数(vpsadbw 掩码取通道),
+    是取色重排 `Σ[(t-c)*a + c*257] == a*Σt + (257-a)*Σc` 的输入;
+  ② `computeSegmentColorsAvx2`(文件内)——逐行套用重排式求平均色,与标量 `computeSegmentColors` **逐位一致**
+    (同样的线型/空输入早退返回空向量;y<0 行同样填 `{0,0,0,alpha}` 占位保持下标一一对应);
+  ③ `defaultEnergyFunctionSegmentedFusedAvx2`——复用单色融合版那套向量循环(无除法混合式 + 2 像素一组
+    平方累加 + 32 位车道周期性并入 64 位基数),差别只是**逐行重建** aa/k 向量;线型形状退回
+    `computeColorAvx2` 的整形状单色。
+- **core.h/core.cpp**:`defaultEnergyFunctionSegmentedFused` 拆成运行时派发入口 +
+  `...Scalar`(第十八批原实现)+ `...Avx2`,与单色融合内核同一套派发形状。
+- **实测**:受控 A/B(同会话、同机,临时把派发强制回 Scalar 重建一次再跑同样三个用例——**跨轮比 base 比值不可靠,
+  见陷阱 #28**):
+
+  | 用例 | 强制标量(第十八批行为) | 本批 AVX2 | 内核提速 |
+  |---|---|---|---|
+  | segment_color_fork | 33639 ms | **8685 ms** | **3.87x** |
+  | segment_color_threads1 | 12018 ms | **2920 ms** | **4.12x** |
+
+  同会话 run_ab 比值(相对上游,最终轮 `report_20261007_174711.csv`,其 `fast_exe_sha256` 与最终树重建出的
+  exe 逐字节一致):segment_color_fork 0.646x → **2.232x**、segment_color_threads1 0.529x → **1.611x**
+  (base 侧同机跨轮波动 30%+,见陷阱 #28,故只引用同一轮内比值)。`segment_color_lines_bypass`
+  (线型走单色路径,本批未触及)在噪声内不变。
+- **位精确证据**:`run_ab` 26/26(golden 全 OK,增强哨兵保持 DIFF-OK,base/fast 双口径 sha/fp 与上一轮**逐字节相同**);
+  ctest 2/2(分段融合一致性单测扩为**三实现互等** + 宽图尾部覆盖 + 负行占位,116 用例 / 11253 断言)。
+- **契约边界(有意)**:AVX2 取色对越界列做裁剪、裁剪后无像素可统计时填 `{0,0,0,alpha}` 占位;标量实现
+  在同样输入下是**未定义读取**。库内扫描线由 `clipScanlinesToBitmap` 保证在界内,契约内两侧恒等;
+  与第十七批起对"越界列两侧不保证一致"的既有口径相同。
+- **复现**:`powershell -File tools/run_ab.ps1 -Case segment_color`;受控 A/B 的做法是临时在派发处
+  `return ...Scalar(...)`、重建 `geobench-fast`、跑同一 `-Case`,再还原重建。
+
 ---
 
 ## 2. 画质 / 收敛速度(算法轨道,opt-in 开关,不进 bit-exact 门禁)
@@ -245,6 +278,28 @@ SvgItem,而每份文档 viewBox 都是整幅画布,于是每个 item 都持有�
   若要彻底 O(1),下一步是"等大小块二分合并"(log-structured merge,块数 O(log N)、摊还解析 O(N log N)),
   当前规模(万级形状)无必要。
 - 基准可复现:`tools/svgscene-bench`(离屏,四方案对比 + 画面等价性 + QPixmapCache 上限对照)
+
+### F3.10 矢量视图交互流畅度(缩放/拖动每 tick 全量重光栅化)— ✓ 已落地(2026-10-07)
+用户实测驱动:"数量到达几千后缩放和拖动都有明显卡顿感"。F3.9 只把**固定变换下的帧耗时**压下去了,
+交互路径没管:缩放/拖动的每个 tick 都会让设备坐标缓存失效并按新倍率重新光栅化"整幅形状"
+(块数 = 形状数/256 ⇒ 每 tick O(形状数));高倍率下更糟——设备矩形超过 `maximumCacheSize`(4096)后
+Qt 整体旁路缓存,拖动/生成退化成每帧全量重解析 SVG。
+- **实测(离屏基准交互口径,1024×768 画布 / 900×600 视口,分块实现,5000 形状 = 20 块)**:
+  现状缩放 tick 405 / 1198 / 1668 ms(1x/2x/6x)、拖动 tick **729 ms**、生成帧 41 ms;
+  交互期切 item 坐标缓存后 → 缩放 tick 9.5 / 7.0 / 6.3 ms(43~265x)、拖动 7.3 ms(100x)、生成 16 ms。
+- **落地**:`ImageTaskScene::setInteractiveRendering(bool)` 虚接口(基类空实现)+
+  `ImageTaskSvgScene` 覆盖——交互期把各分块 item 从 `DeviceCoordinateCache` 切到
+  `ItemCoordinateCache`(逻辑尺寸按画布、按 192MB 预算随块数钳制),交互结束切回清晰;
+  `ImageTaskGraphicsView` 在滚轮缩放/鼠标拖动时进入交互期,停手 200 ms 由单发定时器退出
+  (延迟恢复是为了让连续手势之间不来回切换缓存)。切回时**必须先经 `NoCache`**清掉 item 坐标缓存的
+  `fixedSize`,否则 QGraphicsScene 仍会按 item 坐标缓存分支走。
+- **代价(用户已同意交互期降质)**:手势起点有一次缓存重建顿挫(5000 形状 ~266 ms / 1000 形状 ~46 ms);
+  交互期放大时画面是位图放大——**1x 下与常态逐字节相同**,4x 下 94.7% 像素有差、单通道最大差 78,
+  停手 0.2 s 恢复清晰。
+- **两个被实测否掉的方案**:①把 `maximumCacheSize` 给足(32767)——高倍率下 Qt 会按**整幅设备矩形**
+  建缓存位图,单 tick 从 33 ms 恶化到 **15769 ms**,拖动/生成同步崩;②去掉 `ItemClipsToShape`——
+  无收益且改变画面(单通道最大差 184)。
+- 基准:`tools/svgscene-bench` 的交互口径(缩放/拖动/生成/手势起点四列,同会话多配置并排)。
 
 ---
 
@@ -494,21 +549,57 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
   提示:处理分辨率 ≥2048 且未勾金字塔 → 状态栏提示一次(imagetaskwindow.cpp + zh 翻译 1 条,
     补丁 patches/qt/0031);GUI 冒烟未完成(原生文件对话框不吃自动化),已核对 qm/exe 内含新串。
   门禁:ctest 2/2(分段融合一致性单例 72 断言)、run_ab 26/26、qt_render_ab 6/6、verify_patches PASS。
+
+✅ 已完成(第十九批,2026-10-07:分段颜色评估内核 AVX2 化,§5.1 第 2 条残余清账,位精确)
+  背景:第十八批把分段轨道切到融合实现后,分段档仍是"两次标量逐像素扫描"(computeSegmentColors 取色 +
+    分段混色/差分),是唯一仍慢于上游的档位(run_ab 上一轮 0.90x/0.44x)。
+  实现:取色改按通道字节和(vpsadbw + Σ[(t-c)*a + c*257] 整数恒等重排,与标量逐位一致,线型/空输入早退、
+    y<0 行占位同语义);分段融合内核复用单色 AVX2 向量循环,差别只是逐行重建预乘常量;线型形状退回整形状单色。
+    详见 §1 P1.9(含契约边界:AVX2 侧对越界列裁剪,与第十七批起既有口径一致)。
+  实测(受控 A/B,同会话强制标量对照):segment_color_fork 33639→8685 ms(3.87x)、threads1
+    12018→2920 ms(4.12x);同轮相对上游 0.646x→2.232x / 0.529x→1.611x——分段档从"慢于上游"翻到"快于上游"。
+  门禁:ctest 2/2(分段融合单测扩三实现互等 + 宽图尾部 + 负行占位,116 用例/11253 断言)、run_ab 26/26
+    (golden 全 OK,双口径哈希与上一轮逐字节相同)、verify_patches 重导出 PASS。
+  → §5.1 仅剩第 4 条(候选预算降档,opt-in,需先定验收口径)
+
+✅ 已完成(第二十批,2026-10-07:矢量视图交互流畅度,F3.10)
+  背景:用户实测"形状到几千后缩放和拖动明显卡顿"。F3.9 只压了固定变换下的帧耗时,交互路径每 tick 仍
+    按 O(形状数/256 块)全量重光栅化;高倍率下设备矩形超 maximumCacheSize 后 Qt 整体旁路缓存,更糟。
+  实现:ImageTaskScene::setInteractiveRendering 虚接口 + ImageTaskSvgScene 覆盖——交互期把分块 item 从
+    DeviceCoordinateCache 切到 ItemCoordinateCache(缓存不随视口变换失效,每 tick 只做位图缩放合成,
+    逻辑尺寸按 192MB 预算随块数钳制),停手 200ms 由单发定时器切回(先经 NoCache 清 fixedSize);
+    ImageTaskGraphicsView 在滚轮缩放/鼠标拖动时进出交互期。两个被实测否掉的方案(给足 maximumCacheSize
+    32767 → 单 tick 恶化到 15769 ms;去掉 ItemClipsToShape → 无收益且画面变)与反直觉细节见陷阱 #16 补充。
+  实测(离屏基准交互口径,1024×768 画布/5000 形状):缩放 tick 405→9.5 ms(1x,高倍率 43~265x)、
+    拖动 729→7.3 ms、生成帧 41→16 ms;代价 = 手势起点一次缓存重建顿挫(~266 ms,停手 0.2s 恢复)+
+    交互期放大位图化(1x 下与常态逐字节相同,4x 下 94.7% 像素有差,用户已同意交互期降质)。
+  基准:tools/svgscene-bench 增交互口径(缩放/拖动/生成/手势起点四列,同会话多配置并排)。
+  → 后续可选方向(未变):A2.5 新形状类型;新方向待定(CLI 批处理/HTTP API/更多导出格式)
+
+✅ 收尾(2026-10-26:第十九/二十批提交前四道门禁全量复跑)
+  改动自 10-07 完成后搁置至今,提交前按改动铁律全量复跑(ctest 2/2、run_ab 26/26 golden 全 OK、
+    verify_patches 双门禁 PASS、qt_render_ab check 6/6 全 SAME——偏好阈值按陷阱 #26 临时设回 256 后
+    跑 check,完事恢复原值)。构建目录因项目搬家(D:→H:)缓存路径失效,删除重配全量重建,产物哈希口径不变。
+  当轮参考:run_ab report_20261026_023344.csv——wide_bandwidth 7.376x、segment_color_fork 2.683x /
+    threads1 1.845x(分段档稳定快于上游)、e2e_ellipse_seagull 15.577x;耗时列与 10-07 轮同量级
+    (base 侧跨轮波动见陷阱 #28,判定只看哈希)。
 ```
 
-## 5.1 大图性能二阶段(第十八批已做第 1 项;第 2~4 项仍挂账)
+## 5.1 大图性能二阶段(第十八批做第 1~3 项,第十九批补齐第 2 项残余;仅剩第 4 项)
 
-**第十八批后的现状基线**(4096² / 8 线程 / 默认预算 / `--types ellipse`,直接可比):
-**单步 15.1 s(无金字塔)、3.1 s(金字塔);相对上游 10.8x / 11.2x(run_ab 同轮)。**
-候选按性价比排序(动手前先读本条与 §1 P1.6/P1.7、§7 陷阱 #22/#26/#27):
+**第十九批后的现状基线**(4096² / 8 线程 / 默认预算 / `--types ellipse`,直接可比):
+**单步 15.1 s(无金字塔)、3.1 s(金字塔);相对上游 10.8x / 11.2x(run_ab 第十八批同轮)。**
+分段颜色档(增强开关)第十九批后**已快于上游**(受控 A/B 内核 3.87x/4.12x,相对上游 2.16x/1.66x,见 §1 P1.9)。
+候选按性价比排序(动手前先读本条与 §1 P1.6/P1.7/P1.9、§7 陷阱 #22/#26/#27/#28):
 
 1. ✅ **融合遍 SIMD(AVX2)** — 已落地(第十八批,§1 P1.7):无除法混合式 + 取色字节和 + 差分向量化,
    实测 2.41x/2.74x/2.90x,"三实现互等"单测与三条口径指纹锁定位精确。**旧 AVX2 否决(P1.3)与
    LUT gather 两点顾虑都在实测中证伪**:LUT 换成算术式的代价被 vpsadbw/无分支派发完全覆盖。
 2. ✅ **增强轨道同模式融合** — 已落地(第十八批,§1 P1.8):非分段增强开关直切融合内核、分段颜色新增
    `defaultEnergyFunctionSegmentedFused`,并免掉增强路径的整图 scratch 拷贝;实测非分段档相对上游
-   **3.8~6.1x**、分段档 1.8~1.9x。**残余**:分段档仍低于上游(0.83x/0.55x)——`computeSegmentColors`
-   的标量取色 + 分段内核未 SIMD 是下一步(取色按 computeColor 同款字节和 SIMD 化 + 分段内核复用 AVX2 循环)。
+   **3.8~6.1x**。**残余(已于第十九批补齐)**:分段档第十八批仍低于上游(0.83x/0.55x)——第十九批按本条
+   给出的路子做完(取色按 computeColor 同款字节和 SIMD 化 + 分段内核复用 AVX2 向量循环),见 §1 P1.9:
+   内核本身 3.87x/4.12x(受控 A/B)、相对上游 2.16x/1.66x。
 3. ✅ **大图提示** — 已落地(第十八批):处理分辨率 ≥2048 且"金字塔搜索"未勾选时,状态栏提示一次
    (每张图一次,换图复位);用状态栏而非模态框,避免挂住脚本/批处理路径(陷阱 #21)。GUI 冒烟未完成
    (原生"打开图像"对话框在本机不接受 UI Automation),已核对编译产物含新串与译文,待用户真机确认。
@@ -537,8 +628,8 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 | 补丁一致性校验 | tools\verify_patches.py + patches\regen\(规范全量补丁;G1 重放复现 / G2 归档新鲜度;历史拆分系列经实测不可顺序重放——行尾混杂/缺 hunk 头/同文件重复导出,详见 patches\regen\README) |
 | 单元测试 | src\test\(doctest 双变体,CMake target 在 src\geobench\CMakeLists.txt,ctest 门禁) |
 | 测试图 | src\testdata\images\(gen_test_images.py 可再生) |
-| 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间/0018 评估内核融合/0019 内核 AVX2) |
-| 应用补丁 | patches\qt\0001-0031(0026 批处理增强/0027 导出性能/0028 Qt6 迁移/0029 审查遗留/0030 序列导出确认/0031 大图金字塔提示,累计 diff 含附注) |
+| 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间/0018 评估内核融合/0019 内核 AVX2/0020 分段内核 AVX2) |
+| 应用补丁 | patches\qt\0001-0032(0026 批处理增强/0027 导出性能/0028 Qt6 迁移/0029 审查遗留/0030 序列导出确认/0031 大图金字塔提示/0032 矢量视图交互流畅度,累计 diff 含附注) |
 | Qt 渲染侧对拍 | tools\qt_render_ab.py(+ tools\qt_render_ab\cases\ 用例、tools\qt_goldens.csv 严格项哈希、tools\qt_render_ref\ 光栅化参考图;用法见 tools\qt_render_ab\README.md) |
 | 等价性论证 | docs\bitwise-equivalence-notes.md |
 | bug 分级 | docs\bugfix-triage.md |
@@ -568,7 +659,9 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 13. **CMake 链专用**:target_link_options 传含空格的链接选项(/MANIFESTDEPENDENCY)会被 VS 生成器拆成假输入文件(LNK1104)——用 .manifest 文件走源列表(app.manifest 先例);bat 里用 Python 写 Windows 路径必须 raw string(`\b`/`\5` 会被转义吃掉);CMake 版 exe 未经 windeployqt 启动会弹缺 DLL 错误框且进程挂着不退,**勿把 HasExited=False 误判为运行正常**(看 startup_timing.log 是否新增)。
 14. **QPointer 在 Qt5 无 qHash**:`QSet<QPointer<T>>`/`QHash<QPointer<T>,V>` 编译报 qHash 无重载——受管窗口集合用 `QVector<QPointer<T>>` 线性查找(F3.3 先例);QPointer 作 connect lambda 捕获 + receiver 传宿主窗口,WA_DeleteOnClose 的 sender 销毁时 Qt 自动断连,回调不悬空;嵌套类非 QObject 的 Impl 里 `connect` 是全局五参函数直接可用,**`QTimer::singleShot(ms, context, fn)` 的 context 同理必须传 `q`(Impl 传 `this` 直接编译失败)**(第十五批先例)。
 15. **形状边界是排他上界**:`setup`/`mutate`/各 `rasterize` 一律把边界元组的 max 当排他上界消费(内部 `randomRange(xMin, xMax-1)`、`clamp` 到 `xMax-1`、y 过滤在 `[yMin, yMax)`),整幅画布即 `(0, 0, width, height)`。`mapShapeBoundsToImage` 上游返回闭区间 `size-1`,错配使最右列/最下行永不落画(C.1.4);新代码写边界时**别照抄那个 -1**,脚本模板里的 `xMax - 1` 才是对的。
-16. **QGraphicsItem 的 DeviceCoordinateCache 吃全局 QPixmapCache 配额**(默认 10MB,约 5 个全画布图层):图层数超配额后每帧重新渲染而非命中缓存,帧耗时量级跳变(0.2ms→70ms)。给场景加 item 前先算图层数 × 单层设备像素;需要更多图层就 `QPixmapCache::setCacheLimit`(应用 main.cpp 已设 128MB)。诊断手法:离屏 `QGraphicsView::render` 计时 + 打印 item 数,见 F3.9。另:`QGraphicsSvgItem` 自带 `maximumCacheSize`(默认 1024×768),设备矩形超上限时 QGraphicsScene 会**整体旁路**设备坐标缓存 —— 分块 SVG item 的 boundingRect 是整幅画布,所以视口/缩放一大缓存就失效,`QPixmapCache` 调多大都没用(需 `setMaximumCacheSize`)。
+16. **QGraphicsItem 的 DeviceCoordinateCache 吃全局 QPixmapCache 配额**(默认 10MB,约 5 个全画布图层):图层数超配额后每帧重新渲染而非命中缓存,帧耗时量级跳变(0.2ms→70ms)。给场景加 item 前先算图层数 × 单层设备像素;需要更多图层就 `QPixmapCache::setCacheLimit`(应用 main.cpp 已设 128MB)。诊断手法:离屏 `QGraphicsView::render` 计时 + 打印 item 数,见 F3.9。另:`QGraphicsSvgItem` 自带 `maximumCacheSize`(默认 1024×768),设备矩形超上限时 QGraphicsScene 会**整体旁路**设备坐标缓存 —— 分块 SVG item 的 boundingRect 是整幅画布,所以视口/缩放一大缓存就失效,`QPixmapCache` 调多大都没用(需 `setMaximumCacheSize`)。**第二十批补充(2026-10-07,两条都是实测反直觉的)**:
+    - ①**这个上限"给足"比"给小"更糟**,别想着设成 32767 一劳永逸。Qt 6.8 `qgraphicsscene.cpp` 的 DeviceCoordinateCache 分支:`maximumCacheSize` 判定用**整幅 item 的设备矩形**(`deviceRect`,未裁视口),而真正分配位图的分支里 `deviceRect &= viewRect` 只在 `allowPartialCacheExposure` 成立(设备矩形 > 1.2×视口,且 `simpleTransform` 无旋转)时才走——**高倍率下实测按整幅设备矩形建/维护位图**:1024 画布 ×16 缩放 = 16384×12288,单次缩放 tick 从 33 ms 恶化到 **15769 ms**(离屏基准,见 tools/svgscene-bench 交互口径)。**4096 是实测甜点**:低倍率(<4x)缓存生效,高倍率自动旁路退化成直接渲染,两头都不炸。判据:改这个值必须跑交互口径(缩放/拖动/生成三列),不能只看固定变换下的帧耗时。
+    - ②**真正治"缩放卡"的是交互期换缓存模式,不是调上限**:`setCacheMode(ItemCoordinateCache, logicalSize)` 的缓存不随视口变换失效(也不受 `ExtraMaxDeviceCoordCacheSize` 约束),交互期每个 tick 只做位图缩放合成(5000 形状实测 404→9.5 ms)。切回 `DeviceCoordinateCache` 时**必须先 `setCacheMode(NoCache)`**——`setCacheMode` 只重置缓存、不清 `fixedSize`,残留会让 QGraphicsScene 继续按 item 坐标缓存分支走。代价:手势起点一次重建顿挫(5000 形状 ~266 ms)、交互期放大时是位图放大(1x 下与常态逐字节相同,4x 下 94.7% 像素有差)。
 17. **不可选/不可移动的 QGraphicsItem 收不到 release**:`QGraphicsItem::mousePressEvent` 对 `ItemIsSelectable == false` 的 item 走 `event->ignore()`,场景于是**不把它设为 mouse grabber**;图像视图开着 `ScrollHandDrag`,后续 move/release 全被视图接管 —— item 的 release 信号永不触发。表现极具迷惑性:**按下有反应(信号已发)、松手什么都不发生**。凡"Ctrl+拖拽/框选"这类靠 item 的 press+release 配对的交互,必须在 press 里显式 `event->accept()`(2026-10-01 区域框选就是这么坏的:README 记了功能、代码看着完整、纯静态审查也判"能用")。定位手法:item 的 press/release 与窗口侧处理器各插一条 stderr 日志,跑一次就能看到"只有 press 没有 release";反过来,"日志里看不到 release"本身就是该 bug 的症状,别误判成测试工具不可靠。
 18. **改完应用必须同步 dist**:用户实际运行 `dist\Geometrize-Improved\Geometrize.exe`(README「直接使用」指它),它**不会**随 `build_cmake.bat` 自动更新。只重建 `src\improved-app\build\Release` 就交给用户复测 = 他测的是旧包(2026-09-30 实测:dist 停在 9-22,用户报"新修的功能没生效"其实是旧构建)。让用户复测前先 `cp src\improved-app\build\Release\Geometrize.exe dist\Geometrize-Improved\` 并比对哈希;根目录那个 `Geometrize.exe` 是更旧的遗留物,别误用。另:应用资源(模板/脚本/翻译)全部编进 exe,同步 exe 即可。
 19. **Qt6 构建适配要点(迁移后新会话最易踩)**:
@@ -595,3 +688,10 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
    `add_epi64` + 两段求和 = 把相邻两车道拼成一个 64 位数,量级错到 2^32 倍且不崩)——32 位车道要"折半相加 → hadd ×2",
    64 位车道(vpsadbw 结果)才用 add_epi64。**症状是"能量值巨大而非 NaN/崩溃"**(total 回绕到 2^64 附近),
    遇到这类"数值离谱但不崩"的 SIMD 结果,先查归约路径的位宽。
+28. **run_ab 的 base 侧耗时同机跨轮波动可达 ±40%,跨轮比"相对上游"不可靠(第十九批实测)**:同一台机器、同一
+   `geobench-base.exe`(sha 逐字节相同),`wide_bandwidth` 的 base 侧上一轮 364 s、本轮 523 s(43% 差);某轮
+   segment_color_fork 的 base 上一轮 25895 ms、本轮 18754 ms(38% 差)。base 是"上游原版 + 两遍自洽跑",
+   受后台负载/降频影响远大于 fast 侧,于是**跨轮比较 fast/base 比值会把噪声算进结论**。**判据**:要看某项改动的
+   真实提速,用**同会话受控 A/B**——临时把新实现强制回旧实现(如派发处 `return ...Scalar(...)`)、只重建被测
+   exe、跑同一 `-Case`,两次 fast_ms 相除;跨轮只引用"同一轮内"的 base/fast 比值,并注明 base 波动。**注意**:
+   重建前备份源文件(md5 对拍还原),`run_ab` 有"exe 比源码旧即拒绝"的新鲜度检查,还原后必须再重建一次。

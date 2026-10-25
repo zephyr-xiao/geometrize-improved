@@ -278,3 +278,44 @@ ctest 2/2(融合一致性单测扩为三实现互等 + 宽图尾部覆盖,276 �
 状态栏提示一次(每张图一次,换图复位);用状态栏而非模态框——脚本控制台/批处理也会程序化触发
 stepModel,模态框会把它们挂住(陷阱 #21)。GUI 冒烟未完成(原生"打开图像"对话框在本机不接受
 UI Automation),已核对 qm 内含新译文、exe 内含新 source 串,实际显示待用户真机确认。
+
+---
+
+## 分段颜色评估内核 AVX2 化(第十九批,2026-10-07,位精确)
+
+第十八批把分段颜色轨道切到融合实现后,分段档仍是"两次标量逐像素扫描"(取色 `computeSegmentColors`
++ 分段融合的混色/差分),因此仍低于上游(run_ab 上一轮 0.90x / 0.44x)。本批把两段都向量化:
+
+- **逐行取色 → 按通道字节和**:`Σ[(t-c)*a + c*257] == a*Σt + (257-a)*Σc`(整数恒等),
+  `sumRowChannelsAvx2` 用通道掩码 + `vpsadbw` 每行汇总 Σtarget/Σcurrent/计数,
+  `computeSegmentColorsAvx2` 再套用同一收尾公式——与标量 `computeSegmentColors` 逐位一致
+  (线型/空输入同样返回空向量,`y<0` 行同样填 `{0,0,0,alpha}` 占位)。
+- **分段融合内核 → 复用单色向量循环**:与 `defaultEnergyFunctionFusedAvx2` 同一套运算(无除法混合式 +
+  2 像素一组平方累加 + 32 位车道周期性并入 64 位基数),差别只是**逐行重建** aa/k 向量;
+  线型形状退回 `computeColorAvx2` 的整形状单色。
+- **派发**:`defaultEnergyFunctionSegmentedFused` 拆成运行时派发入口 + `...Scalar`(第十八批原实现)+ `...Avx2`,
+  与单色内核同形;不支持 AVX2 的机器逐位不变地走标量。
+
+**受控 A/B**(同会话同机;临时把派发强制回 `...Scalar`、只重建被测 exe、跑同一 `-Case`,再还原重建——
+跨轮比 base 比值会被 base 侧波动污染,见 ROADMAP §7 陷阱 #28):
+
+| 用例 | 强制标量(第十八批行为) | 本批 AVX2 | 内核提速 | 同会话相对上游 |
+|---|---|---|---|---|
+| segment_color_fork | 33639 ms | **8685 ms** | **3.87x** | 0.646x → **2.232x** |
+| segment_color_threads1 | 12018 ms | **2920 ms** | **4.12x** | 0.529x → **1.611x** |
+| segment_color_lines_bypass | 330 ms | 277 ms | (线型走单色路径,未触及) | 噪声内不变 |
+
+对照上一轮(第十八批)run_ab 的 fast_ms:`segment_color_fork` 28822 → 8685 ms、`segment_color_threads1`
+10733 → 2920 ms(两轮 fast 侧均为同一被测二进制族,比值 ~3.3x/~3.7x,与受控 A/B 同量级)。
+
+位精确证据:`run_ab` 26/26(golden 全 OK,增强哨兵保持 DIFF-OK;base/fast 双口径 sha 与 fp 与上一轮**逐字节相同**);
+ctest 2/2(分段融合一致性单测扩为三实现互等 + 宽图尾部覆盖 + 负行占位,116 用例 / 11253 断言)。
+
+复现:`powershell -File tools/run_ab.ps1 -Case segment_color`。
+
+> 原始记录:本批门禁报告 `benchmarks\runs\report_20261007_174711.csv`(**26/26 PASS,其 `fast_exe_sha256`
+> 与最终交付树重建出的 `geobench-fast.exe` 逐字节一致**);同源早期一轮 `report_20261007_170148.csv`
+> (同源码、A/B 实验前的二进制)。受控 A/B 报告 `benchmarks\runs\report_20261007_173626_ab-scalar-forced.csv`
+> (该轮的 fast 侧是**临时把派发强制回标量的重建**,即"第十八批行为"的基线,不是交付二进制——勿当门禁结果读)。
+> 另注:两轮 base 侧波动正好印证 ROADMAP 陷阱 #28——`wide_bandwidth` 的 base 本轮 355933 ms、早前一轮 523321 ms
+> (同一 `geobench-base.exe`,sha 相同),故"相对上游"只引用同一轮内比值。

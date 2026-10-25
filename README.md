@@ -79,6 +79,12 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
   整幅画布且各持一张全画布缓存位图,形状到几百后每帧要合成几百层、内存线性增长(越用越卡)。
   改为按块累积(每块 256 形状,封板后不再重解析),并把 Qt 全局 pixmap 缓存上限 10MB→128MB
   (设备坐标缓存的 item 位图受它约束)。实测 5000 形状:帧耗时 371ms→2.6ms,缓存内存 2.5GB→41MB
+- 矢量视图**缩放/拖动**卡顿(形状到几千后):每个交互 tick 都会让设备坐标缓存失效、按新倍率重新
+  光栅化整幅形状(块数 = 形状数/256 ⇒ 每 tick O(形状数));高倍率下设备矩形超过
+  `maximumCacheSize` 还会整体旁路缓存,拖动退化成每帧全量重解析。改为**交互期切 item 坐标缓存**
+  (不随视口变换失效,每 tick 只做位图缩放合成),停手 200ms 自动切回清晰渲染。离屏基准 5000 形状:
+  缩放 tick 405→9.5 ms、拖动 729→7.3 ms;**1x 下画面与常态逐字节相同**,交互期放大时是位图放大
+  (4x 下 94.7% 像素有差),代价是手势起点一次约 266 ms 的缓存重建
 - Qt 应用层:pro 缺 concurrent 模块、ChaiScript 需 pin 上游 commit(HEAD 在 MSVC 14.4x 下编不过)、
   步进刷新 33ms 合帧节流、SVG item 设备缓存、无 timed-update 脚本不启 100ms 轮询、
   加载链去三次整图拷贝、前条件脚本数据竞争强制单线程、默认缩放阈值 256→1024
@@ -147,7 +153,7 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 - **大图建议**:4096 场景勾选运行面板"**金字塔搜索(快速)**"可再得约 4.5x(算法增强,输出与关闭时不同属预期);
   两者叠加相对改动前共约 7.6x。
 - 门禁:ctest 2/2(新增融合一致性单测 72 断言)、run_ab 26/26(golden 全 OK)、verify_patches 重导出 PASS。
-- 后续可选项:融合遍再做 SIMD(当前 6~7 ns/px 仍算术主导,预估还有 1.5~2x);增强轨道(分段颜色/自适应步长)按同模式融合。
+- 后续可选项:融合遍再做 SIMD(当前 6~7 ns/px 仍算术主导,预估还有 1.5~2x);增强轨道(分段颜色/自适应步长)按同模式融合。—— **两项均已于第十八批落地**(见下两条)。
 
 **融合内核 AVX2 化(第十八批,2026-10-07)**——把第十七批留下的"逐像素整数算术"彻底向量化,红线仍是**输出逐位一致**:
 - **改动**(新增 `core/energykernelsimd.cpp`,单独按 `/arch:AVX2` 编译;运行时 `CPUID + XGETBV` 探测后派发,
@@ -161,7 +167,7 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
   **4096² 相对上游原版 163.0 → 15.1 s/步(10.8x,含历年优化)**。
 - 门禁:ctest 2/2(单测扩为**三实现互等**:逐遍 ≡ 融合标量 ≡ 融合 AVX2,276 断言)、run_ab 26/26(golden 全 OK)、
   `qt_render_ab check` 6/6 全 SAME(含 GIF 字节级一致)、verify_patches 重导出 PASS。
-- 后续可选项:增强轨道(分段颜色)按同模式融合——见 docs/ROADMAP.md §5.1 第 2 条。
+- 后续可选项:增强轨道(分段颜色)按同模式融合——**已落地**(见下条"增强轨道同模式融合")。
 
 **增强轨道同模式融合 + 大图提示(第十八批续,2026-10-07)**:
 - **问题**:增强轨道的评估此前仍走旧四遍内核 + 每线程每步整图 scratch 拷贝——这就是"**勾了增强反而比上游还慢**"的直接原因
@@ -175,6 +181,22 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
 - **大图提示**:处理分辨率 ≥2048 且未勾选"金字塔搜索(快速)"时,状态栏提示一次(每张图一次),
   提醒勾选可再快数倍(用状态栏而非弹窗,不影响脚本/批处理路径)。
 - 门禁:ctest 2/2(新增"分段融合 ≡ 逐遍分段实现"单测)、run_ab 26/26、qt_render_ab check 6/6 全 SAME。
+
+**分段颜色评估内核 AVX2 化(第十九批,2026-10-07)**——补齐第十八批留下的分段档缺口,红线仍是**输出逐位一致**:
+- **问题**:分段颜色轨道此前是"两次标量逐像素扫描"(取色 `computeSegmentColors` + 分段融合混色/差分),
+  所以第十八批虽提速 1.8~1.9x,**仍低于上游**。
+- **改动**(`core/energykernelsimd.cpp`,与单色内核同一个 `/arch:AVX2` TU):
+  ① **逐行取色改按通道字节和**(`Σ[(t-c)*a + c*257] == a*Σt + (257-a)*Σc` 整数恒等,`vpsadbw` 汇总),
+  与标量 `computeSegmentColors` 逐位一致(线型/空输入同样早退,`y<0` 行同样占位);
+  ② **分段融合内核复用单色那套向量循环**(无除法混合式 + 2 像素一组平方累加 + 32 位车道周期性并入 64 位基数),
+  差别只是**逐行重建**混合常量;线型形状退回整形状单色。
+- **实测**(受控 A/B:同会话同机,临时把派发强制回标量再跑同样用例——跨轮比 base 比值会被 base 侧波动污染):
+  `segment_color_fork` 33639 → **8685 ms(3.87x)**、`segment_color_threads1` 12018 → **2920 ms(4.12x)**;
+  相对上游由 **0.65x/0.53x 翻到 2.23x/1.61x**(即分段颜色开关从"比上游慢"变成"比上游快")。
+- 门禁:ctest 2/2(分段融合单测扩为**三实现互等** + 宽图尾部覆盖 + 负行占位)、run_ab 26/26(golden 全 OK,
+  双口径哈希与上一轮逐字节相同)、verify_patches 重导出 PASS。
+- 备注:AVX2 取色对越界列裁剪、裁剪后无像素时填 `{0,0,0,alpha}` 占位;标量实现在同样输入下是未定义读取。
+  库内扫描线由 `clipScanlinesToBitmap` 保证在界内,契约内两侧恒等(与第十七批起"越界列两侧不保证一致"的既有口径相同)。
 
 ## 目录结构
 
@@ -276,6 +298,8 @@ python tools\qt_render_ab.py accept  --exe src\improved-app\build\Release\Geomet
 - `dialog/imagetaskwindow.cpp`(33ms 合帧节流、定时器按需启动)
 - `scene/imagetasksvgscene.cpp` + `scene/svgitem.cpp/.h`(矢量视图分块累积:每块 256 形状,
   片段 append-only + 封板,设备坐标缓存,见 docs/bugfix-triage.md C.3.1)
+- `scene/imagetasksvgscene.cpp/.h` + `scene/imagetaskscene.cpp/.h` + `scene/imagetaskgraphicsview.cpp`
+  (矢量视图交互流畅度:交互期切 item 坐标缓存 + 停手 200ms 恢复清晰,见 docs/bugfix-triage.md C.3.2)
 - `main.cpp`(QPixmapCache 上限 10MB→128MB,配合上面的图层缓存)
 - `image/imageloader.cpp`(加载链精简 + Bitmap move)
 - `task/imagetask.cpp`(前条件脚本单线程门控 + 固定开启形状边界 off-by-one 修复)
