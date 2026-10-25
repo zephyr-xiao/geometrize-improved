@@ -1,6 +1,6 @@
 # Geometrize Improved — 迭代路线图
 
-> 版本基准:2026-10-26 第二十二次交付(**CLI 批处理工具 geocli**:dist 包内 headless 跑批,SVG/PNG/JSON 导出,幂等可挂计划任务,六个增强开关全支持)
+> 版本基准:2026-10-26 第二十三次交付(**geocli GIF 导出**:`--format gif` 四参数,GIF导出器全自包含复用;imageconvert 拆分解 CLI 链接依赖)
 > 下次会话:§5.1 已清账;§4.6 仅剩有意搁置项;后续可选方向:A2.5 新形状类型 / HTTP API / 更多导出格式(geocli 加 GIF/序列帧),动手前查 §7 陷阱速查(28 条)
 > 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ **Qt 6.8.3 LTS(msvc2022_64)**
 > 使用约定:**双轨制**——纯性能优化维持 bit-exact 门禁(与上游逐位一致);算法增强做成独立开关(默认关),不破坏验证体系。暂自用,不排开源工程项。
@@ -623,6 +623,20 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
     纯色图 0 形状正常退出、dist 包内运行(dll 共享)全过;门禁 verify_patches 重导出 PASS(补丁 0034)。
   → 后续可选方向:A2.5 新形状类型;HTTP API;更多导出格式(GIF/序列帧可用树内 BurstLinker 扩展)
 
+✅ 已完成(第二十三批,2026-10-26:geocli GIF 导出 + imageconvert 拆分)
+  功能:--format gif + --gif-frame-shapes(默认 20)/--gif-delay-ms(50=20FPS)/--gif-scale(1)/
+    --gif-loop(0 无限);帧口径照 GUI(frameIdx % frameStep != 0,末帧必取/封顶抽稀由导出器兜底);
+    复用 app 侧 exporter::exportGIF(自包含:增量帧渲染 + BurstLinker + uint16/2GB 护栏 + 1000 帧封顶)。
+  拆分:image/imageconvert.h/.cpp(新增)——createBitmap/createImage/createPixmap 从 imageloader 移出
+    (纯转换零依赖);imageloader.h 转发 include 保旧调用方。动机:整编 imageloader.cpp 给 geocli 会拖
+    GlobalPreferences → globalpreferences.cpp → util::split → util.cpp 的 QApplication/ScriptConsole/
+    ImageTaskWindow GUI 深链(LNK 链式失控,实测三轮),拆函数是唯一干净解。
+  语义:0 形状图(纯色)GIF 必然失败 → 严格口径记失败(stderr 提示),不静默缺产物。
+  冒烟:GIF89a/512²、scale=2 → 1024²、frame-shapes 5 帧数正确、1100 形状封顶抽稀、flat 0 形状 exit 1、
+    qt_render_ab check 6/6 全 SAME(拆分零渲染扰动);verify_patches 重导出 PASS(补丁 0035);
+    dist 双 exe 同步(geocli + Geometrize 均重建)。
+  → 后续可选方向:A2.5 新形状类型;HTTP API;geocli 序列帧 PNG 导出(增量帧渲染已就位)
+
 ✅ 收尾(2026-10-26:第十九/二十批提交前四道门禁全量复跑)
   改动自 10-07 完成后搁置至今,提交前按改动铁律全量复跑(ctest 2/2、run_ab 26/26 golden 全 OK、
     verify_patches 双门禁 PASS、qt_render_ab check 6/6 全 SAME——偏好阈值按陷阱 #26 临时设回 256 后
@@ -678,7 +692,7 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 | 单元测试 | src\test\(doctest 双变体,CMake target 在 src\geobench\CMakeLists.txt,ctest 门禁) |
 | 测试图 | src\testdata\images\(gen_test_images.py 可再生) |
 | 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间/0018 评估内核融合/0019 内核 AVX2/0020 分段内核 AVX2/0021 候选预算降档) |
-| 应用补丁 | patches\qt\0001-0032(0026 批处理增强/0027 导出性能/0028 Qt6 迁移/0029 审查遗留/0030 序列导出确认/0031 大图金字塔提示/0032 矢量视图交互流畅度/0033 预算降档勾选框/0034 geocli 批处理工具,累计 diff 含附注) |
+| 应用补丁 | patches\qt\0001-0032(0026 批处理增强/0027 导出性能/0028 Qt6 迁移/0029 审查遗留/0030 序列导出确认/0031 大图金字塔提示/0032 矢量视图交互流畅度/0033 预算降档勾选框/0034 geocli 批处理工具/0035 geocli GIF 导出,累计 diff 含附注) |
 | Qt 渲染侧对拍 | tools\qt_render_ab.py(+ tools\qt_render_ab\cases\ 用例、tools\qt_goldens.csv 严格项哈希、tools\qt_render_ref\ 光栅化参考图;用法见 tools\qt_render_ab\README.md) |
 | 等价性论证 | docs\bitwise-equivalence-notes.md |
 | bug 分级 | docs\bugfix-triage.md |

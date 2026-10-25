@@ -37,9 +37,10 @@ geocli --input <图片或目录> [--output 目录] [--steps 300] [--types ellips
 :: 幂等:目标产物已全部存在的图自动跳过(重复跑只处理新增,适配定时任务);--overwrite 强制重跑
 ```
 
-图像加载/缩放与 GUI 完全同口径(单边超 `--max-size` 平滑缩小);输出 SVG/PNG/JSON(`--format` 选择);
-退出码 0 全成 / 1 有失败 / 2 参数错(未知参数、非数字、超范围一律拒绝,不会静默跑错配置);
-参数全集见 `geocli --help`。
+图像加载/缩放与 GUI 完全同口径(单边超 `--max-size` 平滑缩小);输出 SVG/PNG/JSON/GIF(`--format` 选择,
+GIF 参数 `--gif-frame-shapes 20 / --gif-delay-ms 50 / --gif-scale 1 / --gif-loop 0`,帧画面与 GUI 导出同源,
+帧数自动封顶 1000,0 形状图记失败不静默);退出码 0 全成 / 1 有失败 / 2 参数错(未知参数、非数字、
+超范围一律拒绝,不会静默跑错配置);参数全集见 `geocli --help`。
 
 **导出性能**:GIF/PNG 帧序列导出走增量帧渲染(O(N),百万形状级秒出)+ 帧数自动封顶 1000
 (超限均匀抽稀,末帧必取)+ 后台线程执行(弹进度框,UI 不卡死)。帧画面与任务运行时位图
@@ -239,6 +240,16 @@ geocli --input <图片或目录> [--output 目录] [--steps 300] [--types ellips
 - 退出码 0/1/2(全成/有失败/参数错);见上方「命令行批处理」小节。
 - 实现:ShapeResult 全 const 成员(可拷贝构造不可赋值)→ 形状收集用 push_back(insert 区间拷贝编译不过);
   补丁 patches/qt/0034。
+
+**geocli GIF 导出(第二十三批,2026-10-26)**——CLI 批处理补齐动画产物:
+- `--format gif` + `--gif-frame-shapes`(默认 20)/`--gif-delay-ms`(默认 50=20FPS)/`--gif-scale`/
+  `--gif-loop`;复用 app 侧 `exporter::exportGIF`(增量帧渲染 + BurstLinker Octree 量化 + 尺寸护栏 +
+  1000 帧封顶抽稀 + 末帧必取,全自包含)。
+- 为解链接依赖把 QImage↔Bitmap 纯转换(createBitmap/createImage/createPixmap)从 imageloader 拆到
+  `image/imageconvert.*`(行为零变化,qt_render_ab check 6/6 全 SAME)——整编 imageloader 会拖
+  GlobalPreferences → util → QApplication/ScriptConsole 的 GUI 深链。
+- 0 形状图(纯色)GIF 必然失败:严格口径记失败 + stderr 提示,不静默缺产物。
+- 冒烟:GIF89a/尺寸/scale 倍率/帧数/封顶抽稀/0 形状边界全过;补丁 patches/qt/0035。
 
 ## 目录结构
 
