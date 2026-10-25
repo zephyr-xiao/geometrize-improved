@@ -29,6 +29,18 @@
 支持队列持久化(关窗重开不丢)、批进度显示(窗口标题 N/M + 任务栏进度条)、完成后自动导出
 PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加序号)。
 
+**命令行批处理(geocli)**:dist 包内 `geocli.exe`(与 GUI 共享 Qt 运行库),headless 跑批/挂计划任务用:
+
+```bat
+geocli --input <图片或目录> [--output 目录] [--steps 300] [--types ellipse] [--max-size 1024] [--format svg,png]
+:: 增强开关照 geobench 同名参数:--pyramid --budget-by-area --adaptive-step --alpha-search --error-guide --segment-colors
+:: 幂等:目标产物已全部存在的图自动跳过(重复跑只处理新增,适配定时任务);--overwrite 强制重跑
+```
+
+图像加载/缩放与 GUI 完全同口径(单边超 `--max-size` 平滑缩小);输出 SVG/PNG/JSON(`--format` 选择);
+退出码 0 全成 / 1 有失败 / 2 参数错(未知参数、非数字、超范围一律拒绝,不会静默跑错配置);
+参数全集见 `geocli --help`。
+
 **导出性能**:GIF/PNG 帧序列导出走增量帧渲染(O(N),百万形状级秒出)+ 帧数自动封顶 1000
 (超限均匀抽稀,末帧必取)+ 后台线程执行(弹进度框,UI 不卡死)。帧画面与任务运行时位图
 同源(同一套光栅化混合函数,分段颜色同样生效)。GIF 默认每帧 20 形状、20FPS(GIF 格式
@@ -219,10 +231,19 @@ PNG/SVG 到指定目录(默认 文档\geometrize_batch_output\,同名自动加�
   qt_render_ab check 6/6 全 SAME、verify_patches 重导出 PASS;dist 已同步。
 - 曲线全表见 docs/ROADMAP.md §1 P1.10(实测脚本 tmp/budget_curve.csv,会话产物)。
 
+**CLI 批处理工具 geocli(第二十二批,2026-10-26)**——headless 几何化命令行,dist 包内与 GUI 共享 Qt dll:
+- 单图/目录批量、SVG/PNG/JSON 三格式导出(lib 纯 C++ 导出器 + QImage PNG 保存,无 GUI 依赖,
+  无 QGuiApplication 实例已冒烟验证);图像加载/缩放与 GUI 同口径(RGBA8888 + KeepAspectRatio 平滑缩放)。
+- 六个 opt-in 增强开关与 geobench 同名(`--pyramid --budget-by-area --adaptive-step --alpha-search
+  --error-guide --segment-colors`);参数严格校验 exit 2;幂等(产物齐全即跳过,适配计划任务)。
+- 退出码 0/1/2(全成/有失败/参数错);见上方「命令行批处理」小节。
+- 实现:ShapeResult 全 const 成员(可拷贝构造不可赋值)→ 形状收集用 push_back(insert 区间拷贝编译不过);
+  补丁 patches/qt/0034。
+
 ## 目录结构
 
 ```
-├─ dist\Geometrize-Improved\   # 免安装发布包(双击即用)
+├─ dist\Geometrize-Improved\   # 免安装发布包(双击即用;含 geocli.exe 命令行批处理)
 ├─ upstream\                    # 上游只读快照(lib + app + 全部子模块)
 ├─ patches\lib\                 # 核心库编号补丁系列(历史按特性归档,不可顺序重放,见 patches\regen\README)
 ├─ patches\qt\                  # 应用层改动(见下"应用构建")
@@ -307,6 +328,7 @@ python tools\qt_render_ab.py accept  --exe src\improved-app\build\Release\Geomet
 
 应用层改动集中在这些文件(相对上游):
 - `CMakeLists.txt` + `build_cmake.bat`(Q4.2 引入;Qt6 迁移后为唯一在维护的构建链,见 patches/qt/0025/0028)
+- `geocli/main.cpp`(命令行批处理工具,同 CMake 树独立 target,见 patches/qt/0034)
 - `geometrize.pro`(concurrent 模块 + /utf-8;Qt6 后冻结不再维护)
 - `dialog/appsplashscreen.cpp`(Qt6 移除 QSplashScreen 的 QWidget* 父参重载,改默认构造,见 patches/qt/0028)
 - `dialog/launchwindow.ui/.cpp`(处理分辨率上限下拉,见 patches/qt/0016)

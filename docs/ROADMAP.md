@@ -1,7 +1,7 @@
 # Geometrize Improved — 迭代路线图
 
-> 版本基准:2026-10-26 第二十一次交付(**候选预算按面积降档**:opt-in 大图加速,2048² 2.30x / 4096² 1.98x,质量在噪声内;与金字塔叠加 5.6~8.5x)
-> 下次会话:§5.1 已清账;§4.6 仅剩有意搁置项(见该节第 7 条"仍有意未做");§5 尾部"后续可选方向"无优先级承诺,动手前查 §7 陷阱速查(28 条)
+> 版本基准:2026-10-26 第二十二次交付(**CLI 批处理工具 geocli**:dist 包内 headless 跑批,SVG/PNG/JSON 导出,幂等可挂计划任务,六个增强开关全支持)
+> 下次会话:§5.1 已清账;§4.6 仅剩有意搁置项;后续可选方向:A2.5 新形状类型 / HTTP API / 更多导出格式(geocli 加 GIF/序列帧),动手前查 §7 陷阱速查(28 条)
 > 机器基准:i3-13100F(4C8T 全 P 核)/ RX 5700XT / Win11 / VS2022(MSVC 14.44)/ **Qt 6.8.3 LTS(msvc2022_64)**
 > 使用约定:**双轨制**——纯性能优化维持 bit-exact 门禁(与上游逐位一致);算法增强做成独立开关(默认关),不破坏验证体系。暂自用,不排开源工程项。
 
@@ -609,6 +609,20 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
     setintegritylevel 属 NO_WRITE_UP 同机理,目标已达成,无需处理。
   → §5.1 全部清账;后续可选方向不变(A2.5 新形状类型/CLI 批处理/HTTP API/更多导出格式)
 
+✅ 已完成(第二十二批,2026-10-26:CLI 批处理工具 geocli)
+  形态:dist 包内 geocli.exe(与 GUI 共享 Qt dll,windeployqt 部署同目录天然共享)——headless 跑批/挂
+    计划任务;不进 run_ab/ctest(纯新增工具,lib 零改动)。
+  功能:单图/目录单层批量、SVG/PNG/JSON 导出(lib 纯 C++ 导出器 + QImage PNG 保存,无 QGuiApplication
+    实例冒烟验证)、--max-size 处理分辨率上限(与 GUI 同口径:KeepAspectRatio 平滑缩放)、六个 opt-in
+    增强开关与 geobench 同名、幂等(产物齐全即跳过,--overwrite 强制)、参数严格校验 exit 2、
+    退出码 0/1/2。用法见 README「命令行批处理」小节。
+  坑位记录:ShapeResult 全 const 成员(可拷贝构造、拷贝赋值删除)→ 形状收集必须 push_back,
+    insert 区间拷贝在 MSVC xutility 内部赋值路径编译不过;QImage 花括号初始化会命中错误重载
+    (narrowing),用圆括号形式(同 imageloader)。
+  冒烟:单图三格式、幂等跳过、批量 10 张、max-size 512 精确缩放(输出 512²)、金字塔+预算降档组合、
+    纯色图 0 形状正常退出、dist 包内运行(dll 共享)全过;门禁 verify_patches 重导出 PASS(补丁 0034)。
+  → 后续可选方向:A2.5 新形状类型;HTTP API;更多导出格式(GIF/序列帧可用树内 BurstLinker 扩展)
+
 ✅ 收尾(2026-10-26:第十九/二十批提交前四道门禁全量复跑)
   改动自 10-07 完成后搁置至今,提交前按改动铁律全量复跑(ctest 2/2、run_ab 26/26 golden 全 OK、
     verify_patches 双门禁 PASS、qt_render_ab check 6/6 全 SAME——偏好阈值按陷阱 #26 临时设回 256 后
@@ -664,7 +678,7 @@ cereal/BurstLinker 全部与 Qt 版本无关),CMake 链路(Q4.2)正是 Qt6 硬�
 | 单元测试 | src\test\(doctest 双变体,CMake target 在 src\geobench\CMakeLists.txt,ctest 门禁) |
 | 测试图 | src\testdata\images\(gen_test_images.py 可再生) |
 | 库补丁 | patches\lib\0001 全量 + 按文件拆分(0012 金字塔/0013 增强轨道/0014 误差图引导/0015 区域优先/0016 分段颜色/0017 SVG 命名空间/0018 评估内核融合/0019 内核 AVX2/0020 分段内核 AVX2/0021 候选预算降档) |
-| 应用补丁 | patches\qt\0001-0032(0026 批处理增强/0027 导出性能/0028 Qt6 迁移/0029 审查遗留/0030 序列导出确认/0031 大图金字塔提示/0032 矢量视图交互流畅度/0033 预算降档勾选框,累计 diff 含附注) |
+| 应用补丁 | patches\qt\0001-0032(0026 批处理增强/0027 导出性能/0028 Qt6 迁移/0029 审查遗留/0030 序列导出确认/0031 大图金字塔提示/0032 矢量视图交互流畅度/0033 预算降档勾选框/0034 geocli 批处理工具,累计 diff 含附注) |
 | Qt 渲染侧对拍 | tools\qt_render_ab.py(+ tools\qt_render_ab\cases\ 用例、tools\qt_goldens.csv 严格项哈希、tools\qt_render_ref\ 光栅化参考图;用法见 tools\qt_render_ab\README.md) |
 | 等价性论证 | docs\bitwise-equivalence-notes.md |
 | bug 分级 | docs\bugfix-triage.md |
