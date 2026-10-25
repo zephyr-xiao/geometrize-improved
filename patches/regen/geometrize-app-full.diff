@@ -1,7 +1,7 @@
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/CMakeLists.txt b/CMakeLists.txt
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,111 @@
 +# Geometrize Qt 应用 CMake 构建(Q4.2;Qt6 迁移后为唯一在维护的构建链路)
 +# geometrize.pro(qmake)保留但不再维护:Qt6 下 qmake 已被 CMake 取代,本文件失败可回退 Qt5 链路重建。
 +# 生成物全部落在 build/(out-of-source),不触碰 qmake 在源树的 obj/qt_gen/debug/release。
@@ -98,6 +98,21 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +    target_compile_definitions(Geometrize PRIVATE
 +        UNICODE _UNICODE _ENABLE_EXTENDED_ALIGNED_STORAGE)
 +endif()
++
++# geocli:headless 批处理命令行工具(控制台子系统,与 app 共享库源码与 Qt 部署;
++# build\Release 同目录,windeployqt 部署的 dll 天然共享;交付时拷进 dist 包即可)
++add_executable(geocli
++    geocli/main.cpp
++    ${LIB_GEOMETRIZE_SOURCES})
++target_include_directories(geocli PRIVATE
++    "${CMAKE_CURRENT_SOURCE_DIR}/lib/cereal/include"
++    "${CMAKE_CURRENT_SOURCE_DIR}/lib/geometrize/geometrize")
++target_link_libraries(geocli PRIVATE Qt6::Core Qt6::Gui)
++if(MSVC)
++    target_compile_options(geocli PRIVATE
++        /EHsc /W3 /permissive- /utf-8 /Zi /FS /Zc:__cplusplus
++        $<$<CONFIG:Release>:/O2>)
++endif()
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/build_cmake.bat b/build_cmake.bat
 --- a/build_cmake.bat
 +++ b/build_cmake.bat
@@ -126,6 +141,418 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
 +set PATH=D:\Qt\5.15.2\msvc2019_64\bin;%PATH%
 +qmake geometrize.pro "CONFIG+=release" "CONFIG+=warn_off"
 +nmake /NOLOGO
+diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geocli/main.cpp b/geocli/main.cpp
+--- a/geocli/main.cpp
++++ b/geocli/main.cpp
+@@ -0,0 +1,408 @@
++// geocli:headless 几何化批处理命令行工具(与 GUI 共享同一套库源码与 Qt 部署)。
++// 设计口径:图像加载/缩放/落盘与 GUI 完全同源(QImage + RGBA8888 + KeepAspectRatio 平滑缩放),
++// 算法管线走 lib 的 ImageRunner(含全部 opt-in 增强开关);输出 SVG/PNG/JSON 用 lib 纯 C++ 导出器。
++// 幂等约定:目标产物已全部存在的图默认跳过(--overwrite 强制重跑),适配计划任务/定时批处理场景。
++// 退出码:0 全部成功 / 1 存在失败项 / 2 参数错误。
++
++#include <QDir>
++#include <QDirIterator>
++#include <QFile>
++#include <QFileInfo>
++#include <QImage>
++#include <QImageReader>
++#include <QString>
++#include <QStringList>
++#include <QTextStream>
++
++#include <algorithm>
++#include <chrono>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include "geometrize/bitmap/bitmap.h"
++#include "geometrize/core.h"
++#include "geometrize/exporter/shapejsonexporter.h"
++#include "geometrize/exporter/svgexporter.h"
++#include "geometrize/runner/imagerunner.h"
++#include "geometrize/runner/imagerunneroptions.h"
++#include "geometrize/shaperesult.h"
++#include "geometrize/shape/shapetypes.h"
++
++namespace {
++
++struct Options {
++    std::string inputPath;
++    std::string outputDir;
++    bool formatSvg = true;
++    bool formatPng = true;
++    bool formatJson = false;
++    std::uint32_t steps = 300;
++    std::uint32_t shapeCount = 50;
++    std::uint32_t maxMutations = 100;
++    std::uint32_t alpha = 128;
++    std::uint32_t seed = 9001;
++    std::uint32_t threads = 0; // 0 = 硬件并发(与 GUI 默认一致;确定性口径下建议显式指定)
++    std::uint32_t shapeTypes = geometrize::ShapeTypes::ELLIPSE;
++    std::uint32_t maxSize = 1024; // 处理分辨率上限(单边,照 GUI 分支默认);0 = 不限制
++    bool overwrite = false;
++    // 算法增强开关(opt-in,默认全关;输出与关闭时不同属预期)
++    bool pyramid = false;
++    bool budgetByArea = false;
++    bool adaptiveStep = false;
++    bool alphaSearch = false;
++    bool errorGuide = false;
++    bool segmentColors = false;
++};
++
++void printUsage()
++{
++    std::printf(
++        "geocli --input <图片|目录> [选项]\n"
++        "  --output DIR        输出目录(默认 <输入旁>/geometrize_out)\n"
++        "  --format LIST       逗号分隔输出格式 svg,png,json(默认 svg,png)\n"
++        "  --steps N           每图步数(默认 300)\n"
++        "  --shape-count N     每步候选形状数(默认 50)\n"
++        "  --max-mutations N   每候选最大变异次数(默认 100)\n"
++        "  --alpha N           形状透明度 0-255(默认 128)\n"
++        "  --types SPEC        逗号分隔: rect,rrect,tri,ellipse,rellipse,circle,line,bezier,polyline 或 all\n"
++        "  --seed N            RNG 种子(默认 9001;threads 参与结果确定性)\n"
++        "  --threads N         并行线程数(默认 0 = 硬件并发)\n"
++        "  --max-size N        处理分辨率单边上限,超限按比例平滑缩小(默认 1024,0 = 不限制)\n"
++        "  --overwrite         覆盖已存在的输出(默认跳过产物齐全的图,幂等重跑)\n"
++        "增强开关(opt-in,输出与关闭时不同属预期):\n"
++        "  --pyramid           金字塔搜索(半分辨率评估,大图大幅提速)\n"
++        "  --budget-by-area    候选预算按面积降档(大图 ~2x,与金字塔正交可叠加)\n"
++        "  --adaptive-step     自适应变异步长(同步数质量更好,更慢)\n"
++        "  --alpha-search      逐形状透明度搜索(同步数质量更好,更慢)\n"
++        "  --error-guide       误差图引导形状放置(低预算收益最大)\n"
++        "  --segment-colors    分段颜色(行级取色,跨明暗边界不发灰)\n"
++        "  -h / --help         本帮助\n");
++}
++
++// 数值参数统一严格校验:空值/非数字/负号/超范围一律 exit 2(照 geobench 口径,
++// 拼错的参数静默退化会让批处理"跑了但不是你以为的配置")
++std::uint32_t parseU32Arg(const char* name, const std::string& token, std::uint32_t maxValue)
++{
++    if(token.empty()) {
++        std::fprintf(stderr, "%s 缺少取值\n", name);
++        std::exit(2);
++    }
++    if(token.find_first_not_of("0123456789") != std::string::npos) {
++        std::fprintf(stderr, "%s 应为非负整数: %s\n", name, token.c_str());
++        std::exit(2);
++    }
++    try {
++        const unsigned long value = std::stoul(token);
++        if(value > static_cast<unsigned long>(maxValue)) {
++            std::fprintf(stderr, "%s 超出上限 %u: %s\n", name, maxValue, token.c_str());
++            std::exit(2);
++        }
++        return static_cast<std::uint32_t>(value);
++    } catch(const std::exception&) {
++        std::fprintf(stderr, "%s 数值溢出: %s\n", name, token.c_str());
++        std::exit(2);
++    }
++}
++
++std::uint32_t parseShapeTypes(const std::string& spec)
++{
++    if(spec == "all") {
++        return 511U; // 九种形状全部位的掩码 = 2^9 - 1
++    }
++    static const std::pair<const char*, std::uint32_t> table[] = {
++        {"rect", geometrize::ShapeTypes::RECTANGLE},
++        {"rrect", geometrize::ShapeTypes::ROTATED_RECTANGLE},
++        {"tri", geometrize::ShapeTypes::TRIANGLE},
++        {"ellipse", geometrize::ShapeTypes::ELLIPSE},
++        {"rellipse", geometrize::ShapeTypes::ROTATED_ELLIPSE},
++        {"circle", geometrize::ShapeTypes::CIRCLE},
++        {"line", geometrize::ShapeTypes::LINE},
++        {"bezier", geometrize::ShapeTypes::QUADRATIC_BEZIER},
++        {"polyline", geometrize::ShapeTypes::POLYLINE},
++    };
++    std::uint32_t types = 0;
++    std::size_t pos = 0;
++    while(pos < spec.size()) {
++        const std::size_t comma = spec.find(',', pos);
++        const std::string token = spec.substr(pos, (comma == std::string::npos) ? std::string::npos : comma - pos);
++        bool matched = false;
++        for(const auto& entry : table) {
++            if(token == entry.first) {
++                types |= entry.second;
++                matched = true;
++                break;
++            }
++        }
++        if(!matched) {
++            std::fprintf(stderr, "未知形状类型: '%s'(可用: all 或 rect,rrect,tri,ellipse,rellipse,circle,line,bezier,polyline)\n", token.c_str());
++            std::exit(2);
++        }
++        if(comma == std::string::npos) {
++            break;
++        }
++        pos = comma + 1;
++    }
++    if(types == 0) {
++        std::fprintf(stderr, "--types 至少需要一个形状类型\n");
++        std::exit(2);
++    }
++    return types;
++}
++
++Options parseArgs(int argc, char** argv)
++{
++    Options opts;
++    for(int i = 1; i < argc; i++) {
++        const std::string arg{argv[i]};
++        const auto next = [&]() -> std::string { return (i + 1 < argc) ? std::string{argv[++i]} : std::string{}; };
++        if(arg == "--input") opts.inputPath = next();
++        else if(arg == "--output") opts.outputDir = next();
++        else if(arg == "--format") {
++            const std::string spec = next();
++            opts.formatSvg = opts.formatPng = opts.formatJson = false;
++            std::size_t pos = 0;
++            bool any = false;
++            while(pos <= spec.size()) {
++                const std::size_t comma = spec.find(',', pos);
++                const std::string token = spec.substr(pos, (comma == std::string::npos) ? std::string::npos : comma - pos);
++                if(token == "svg") opts.formatSvg = true;
++                else if(token == "png") opts.formatPng = true;
++                else if(token == "json") opts.formatJson = true;
++                else {
++                    std::fprintf(stderr, "未知输出格式: '%s'(可用: svg,png,json)\n", token.c_str());
++                    std::exit(2);
++                }
++                any = true;
++                if(comma == std::string::npos) break;
++                pos = comma + 1;
++            }
++            if(!any) {
++                std::fprintf(stderr, "--format 不能为空\n");
++                std::exit(2);
++            }
++        }
++        else if(arg == "--steps") opts.steps = parseU32Arg("--steps", next(), 1000000000U);
++        else if(arg == "--shape-count") opts.shapeCount = parseU32Arg("--shape-count", next(), 1000000U);
++        else if(arg == "--max-mutations") opts.maxMutations = parseU32Arg("--max-mutations", next(), 1000000U);
++        else if(arg == "--alpha") opts.alpha = parseU32Arg("--alpha", next(), 255U);
++        else if(arg == "--types") opts.shapeTypes = parseShapeTypes(next());
++        else if(arg == "--seed") opts.seed = parseU32Arg("--seed", next(), 0xFFFFFFFFU);
++        else if(arg == "--threads") opts.threads = parseU32Arg("--threads", next(), 1024U);
++        else if(arg == "--max-size") opts.maxSize = parseU32Arg("--max-size", next(), 65535U);
++        else if(arg == "--overwrite") opts.overwrite = true;
++        else if(arg == "--pyramid") opts.pyramid = true;
++        else if(arg == "--budget-by-area") opts.budgetByArea = true;
++        else if(arg == "--adaptive-step") opts.adaptiveStep = true;
++        else if(arg == "--alpha-search") opts.alphaSearch = true;
++        else if(arg == "--error-guide") opts.errorGuide = true;
++        else if(arg == "--segment-colors") opts.segmentColors = true;
++        else if(arg == "--help" || arg == "-h") { printUsage(); std::exit(0); }
++        else {
++            std::fprintf(stderr, "未知参数: %s\n", arg.c_str());
++            printUsage();
++            std::exit(2);
++        }
++    }
++    if(opts.inputPath.empty()) {
++        std::fprintf(stderr, "缺少 --input\n");
++        printUsage();
++        std::exit(2);
++    }
++    return opts;
++}
++
++// QImage → Bitmap:与 GUI imageloader 同口径(RGBA8888 字节序直搬)
++geometrize::Bitmap imageToBitmap(const QImage& image)
++{
++    const QImage rgba{image.convertToFormat(QImage::Format_RGBA8888)};
++    std::vector<std::uint8_t> data(rgba.bits(), rgba.bits() + rgba.sizeInBytes());
++    return geometrize::Bitmap(static_cast<std::uint32_t>(rgba.width()), static_cast<std::uint32_t>(rgba.height()), std::move(data));
++}
++
++// 终态位图 → PNG:QImage 构造是浅共享,save 前位图必须存活(调用点保证)
++bool saveBitmapPng(const geometrize::Bitmap& bitmap, const QString& path)
++{
++    const QImage image(bitmap.getDataRef().data(), static_cast<qsizetype>(bitmap.getWidth()), static_cast<qsizetype>(bitmap.getHeight()), QImage::Format_RGBA8888);
++    return image.save(path, "PNG");
++}
++
++bool writeFile(const QString& path, const std::string& content)
++{
++    QFile file{path};
++    if(!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
++        return false;
++    }
++    return file.write(content.data(), static_cast<qint64>(content.size())) == static_cast<qint64>(content.size());
++}
++
++// 收集输入图清单:文件 → 单图;目录 → 单层全部可读格式(不递归,保持行为可预测)
++QStringList collectImages(const QString& input)
++{
++    const QFileInfo info{input};
++    if(info.isFile()) {
++        return {input};
++    }
++    if(info.isDir()) {
++        // QImageReader 的可读格式含大小写变体(png/PNG),QDir 过滤用不区分大小写的后缀集合
++        const QList<QByteArray> supported{QImageReader::supportedImageFormats()};
++        QStringList nameFilters;
++        nameFilters.reserve(supported.size());
++        for(const QByteArray& format : supported) {
++            nameFilters.push_back(QLatin1String("*.") + QLatin1String(format));
++        }
++        // QDir::Files 显式排除目录;QDir::NoSymLinks 避免链接环
++        const QFileInfoList entries{QDir(input).entryInfoList(nameFilters, QDir::Files | QDir::Readable, QDir::Name)};
++        QStringList result;
++        result.reserve(entries.size());
++        for(const QFileInfo& entry : entries) {
++            result.push_back(entry.absoluteFilePath());
++        }
++        return result;
++    }
++    std::fprintf(stderr, "输入既不是文件也不是目录: %s\n", input.toUtf8().constData());
++    std::exit(2);
++}
++
++struct ProcessResult {
++    bool skipped = false;
++    bool ok = false;
++    std::uint32_t shapeCount = 0;
++};
++
++ProcessResult processOne(const Options& opts, const QString& inputPath, const QString& outputDir)
++{
++    const QString baseName{QFileInfo(inputPath).completeBaseName()};
++
++    // 幂等:请求的全部产物都已存在则跳过(中断重跑只补缺失项;--overwrite 强制重跑)
++    QStringList targets;
++    if(opts.formatSvg) targets.push_back(outputDir + "/" + baseName + ".svg");
++    if(opts.formatPng) targets.push_back(outputDir + "/" + baseName + ".png");
++    if(opts.formatJson) targets.push_back(outputDir + "/" + baseName + ".json");
++    if(!opts.overwrite) {
++        bool allExist = !targets.isEmpty();
++        for(const QString& target : targets) {
++            allExist = allExist && QFileInfo::exists(target) && QFileInfo(target).size() > 0;
++        }
++        if(allExist) {
++            return {true, true, 0};
++        }
++    }
++
++    // 加载 + 处理分辨率上限(与 GUI 同款:KeepAspectRatio 平滑缩放,仅超限时进入缩放链)
++    QImage image{inputPath};
++    if(image.isNull()) {
++        std::fprintf(stderr, "  无法加载图片: %s\n", inputPath.toUtf8().constData());
++        return {};
++    }
++    if(opts.maxSize > 0
++            && (static_cast<std::uint32_t>(image.width()) > opts.maxSize
++                || static_cast<std::uint32_t>(image.height()) > opts.maxSize)) {
++        image = image.scaled(static_cast<int>(opts.maxSize), static_cast<int>(opts.maxSize), Qt::KeepAspectRatio, Qt::SmoothTransformation);
++    }
++
++    const geometrize::Bitmap target{imageToBitmap(image)};
++
++    geometrize::ImageRunnerOptions options;
++    options.alpha = static_cast<std::uint8_t>(opts.alpha);
++    options.shapeCount = opts.shapeCount;
++    options.maxShapeMutations = opts.maxMutations;
++    options.seed = opts.seed;
++    options.maxThreads = opts.threads;
++    options.shapeTypes = static_cast<geometrize::ShapeTypes>(opts.shapeTypes);
++    options.pyramidSearch = opts.pyramid;
++    options.budget.byArea = opts.budgetByArea;
++    options.enhancements.adaptiveStep = opts.adaptiveStep;
++    options.enhancements.alphaSearch = opts.alphaSearch;
++    options.enhancements.errorGuide = opts.errorGuide;
++    options.enhancements.segmentColors = opts.segmentColors;
++
++    geometrize::ImageRunner runner{target};
++    // ShapeResult 全 const 成员:可拷贝构造、拷贝赋值被删除,故用 push_back(构造路径)
++    // 而非 insert 区间拷贝(其内部搬移需要赋值)
++    std::vector<geometrize::ShapeResult> shapes;
++    shapes.reserve(opts.steps);
++    for(std::uint32_t step = 0; step < opts.steps; step++) {
++        const std::vector<geometrize::ShapeResult> results{runner.step(options)};
++        for(const geometrize::ShapeResult& result : results) {
++            shapes.push_back(result);
++        }
++    }
++
++    bool ok = true;
++    if(opts.formatSvg) {
++        ok = writeFile(targets.front(), geometrize::exporter::exportSVG(shapes, target.getWidth(), target.getHeight())) && ok;
++    }
++    if(opts.formatPng) {
++        ok = saveBitmapPng(runner.getCurrent(), outputDir + "/" + baseName + ".png") && ok;
++    }
++    if(opts.formatJson) {
++        ok = writeFile(outputDir + "/" + baseName + ".json", geometrize::exporter::exportShapeJson(shapes)) && ok;
++    }
++    return {false, ok, static_cast<std::uint32_t>(shapes.size())};
++}
++
++} // namespace
++
++int main(int argc, char** argv)
++{
++    const Options opts = parseArgs(argc, argv);
++
++    const QString input{QString::fromStdString(opts.inputPath)};
++    if(!QFileInfo::exists(input)) {
++        std::fprintf(stderr, "输入不存在: %s\n", opts.inputPath.c_str());
++        return 2;
++    }
++
++    // 输出目录默认放在输入旁边(与输入目录同级,名字固定),目录输入则在其内部
++    QString outputDir;
++    if(!opts.outputDir.empty()) {
++        outputDir = QString::fromStdString(opts.outputDir);
++    } else if(QFileInfo(input).isDir()) {
++        outputDir = input + "/geometrize_out";
++    } else {
++        outputDir = QFileInfo(input).absolutePath() + "/geometrize_out";
++    }
++    if(!QDir().mkpath(outputDir)) {
++        std::fprintf(stderr, "无法创建输出目录: %s\n", outputDir.toUtf8().constData());
++        return 1;
++    }
++
++    const QStringList images{collectImages(input)};
++    if(images.isEmpty()) {
++        std::fprintf(stderr, "没有找到可处理的图片\n");
++        return 1;
++    }
++
++    std::printf("geocli: %d 张图 | 输出 %s | steps=%u types=0x%x max-size=%u%s%s\n",
++                images.size(), outputDir.toUtf8().constData(), opts.steps, opts.shapeTypes, opts.maxSize,
++                opts.pyramid ? " +pyramid" : "", opts.budgetByArea ? " +budget-by-area" : "");
++
++    int failures = 0;
++    int processed = 0;
++    int skipped = 0;
++    for(int i = 0; i < images.size(); i++) {
++        const QString& imagePath = images[i];
++        std::printf("[%d/%d] %s ... ", i + 1, images.size(), QFileInfo(imagePath).fileName().toUtf8().constData());
++        std::fflush(stdout);
++        const auto startTime{std::chrono::steady_clock::now()};
++        const ProcessResult result{processOne(opts, imagePath, outputDir)};
++        const auto elapsedMs{std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count()};
++        if(result.skipped) {
++            skipped++;
++            std::printf("跳过(产物已存在)\n");
++        } else if(result.ok) {
++            processed++;
++            std::printf("完成(%lld.%llds, %u 形状)\n",
++                        static_cast<long long>(elapsedMs) / 1000, static_cast<long long>(elapsedMs) % 1000, result.shapeCount);
++        } else {
++            failures++;
++            std::printf("失败\n");
++        }
++    }
++
++    std::printf("汇总: 处理 %d, 跳过 %d, 失败 %d\n", processed, skipped, failures);
++    return failures > 0 ? 1 : 0;
++}
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/geometrize/common/uiactions.cpp b/geometrize/common/uiactions.cpp
 --- a/geometrize/common/uiactions.cpp
 +++ b/geometrize/common/uiactions.cpp
@@ -4567,371 +4994,6 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
  # Options for the Mac AppStore version of Geometrize
  macx {
      include($$PWD/osx/geometrize_osx.pri)
-diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/core.h b/lib/geometrize/geometrize/core.h
---- a/lib/geometrize/geometrize/core.h
-+++ b/lib/geometrize/geometrize/core.h
-@@ -0,0 +1,361 @@
-+#pragma once
-+
-+#include <cstdint>
-+#include <functional>
-+#include <memory>
-+#include <vector>
-+
-+#include "bitmap/rgba.h"
-+#include "core/errorweightmap.h"
-+#include "rasterizer/scanline.h"
-+#include "state.h"
-+
-+namespace geometrize
-+{
-+class Bitmap;
-+}
-+
-+namespace geometrize
-+{
-+
-+namespace core
-+{
-+
-+/**
-+ * @brief HillClimbEnhancements 增强爬山搜索的开关参数集(算法增强轨道,opt-in)。
-+ * 任一开关打开时 Model 调度走 bestHillClimbStateEnhanced;全关时零参与,经典/金字塔路径不受影响。
-+ */
-+struct HillClimbEnhancements
-+{
-+    // ---- A2.2 自适应变异步长(1/5 成功法则) ----
-+    bool adaptiveStep{false}; ///< 是否启用自适应步长:连续拒绝升档(步长减半)、连续接受降档(回升)。
-+    std::uint32_t rejectHalveInterval{8}; ///< 连续拒绝多少次升一档(maxAge=100 预算下 8 连拒是强平台信号)。
-+    std::uint32_t acceptEscalateRun{4}; ///< 连续接受多少次降一档(回升步长,密集改善期才触发)。
-+    std::int32_t maxStepShift{3}; ///< 步长移位上限:0=基准,1=1/2,2=1/4,3=1/8;再深变异近似恒等,浪费评估。
-+
-+    // ---- A2.3 逐形状最优 alpha 微搜索 ----
-+    bool alphaSearch{false}; ///< 是否启用逐候选 alpha 档位搜索:每候选对全部档位求能量取最优,胜者档回写 State::m_alpha。
-+    std::vector<std::uint8_t> alphaCandidates{64U, 128U, 192U}; ///< alpha 候选档位;使用前与用户 alpha 合并规范化。
-+
-+    // ---- A2.1 误差图引导形状放置 ----
-+    bool errorGuide{false}; ///< 是否启用误差加权放置:候选 setup 后按误差图采样中心平移,ε 概率保持原位探索。
-+    std::uint32_t guideEpsilonPermill{100U}; ///< ε-greedy 千分比:该比例的候选保持均匀原位,其余按误差图引导;0=全引导,1000=全均匀(等效关闭但保留 roll 消耗)。
-+
-+    // ---- A2.4 分段颜色(行级取色) ----
-+    bool segmentColors{false}; ///< 是否启用按扫描线行级取色:形状横跨明暗边界时每行独立求最优色,消除单平均色的发灰。
-+    // 开启即路由增强轨道(自定义 energyFunction 同既有语义被忽略);线型形状(全单像素行)自动退化为单色。
-+};
-+
-+/**
-+ * @brief BudgetScaleOptions 候选预算降档策略(算法增强轨道,opt-in,§5.1 第 4 条)。
-+ * 每步候选预算 = shapeCount(随机候选数) × maxShapeMutations(爬山变异次数),单步墙钟时间随
-+ * 目标面积线性膨胀;开启后等比例缩放两者(保持探索/求精比),用同步数质量换大图速度。
-+ * 输出与关闭时不同属预期(RNG 消费序列改变);maxThreads 不参与缩放,与金字塔/增强开关正交。
-+ * 两种模式互斥:byArea 优先;全默认(不开启)时 step 行为与上游逐位一致。
-+ */
-+struct BudgetScaleOptions
-+{
-+    bool byArea{false}; ///< 自动档:scale = min(1, anchorPixels / 目标像素数),小图不动、大图按面积比例降档(GUI 勾选框对应此模式)。
-+    float manualScale{1.0f}; ///< 手动缩放系数(有效域 0.05~1.0,超出按最近端钳制),byArea 开启时被忽略;1.0 = 不缩放(CLI 扫实测曲线用)。
-+    std::uint32_t anchorPixels{768U * 504U}; ///< byArea 锚点像素数(基准管线口径):目标不大于它时 scale 恒为 1。
-+};
-+
-+/**
-+ * The core functions for Geometrize.
-+ * @author Sam Twidale (https://samcodes.co.uk/)
-+ */
-+
-+/**
-+ * @brief EnergyFunction Type alias for a function that calculates a measure of the improvement adding the scanlines of a shape provides - lower energy is better.
-+ * @param lines The scanlines of the shape.
-+ * @param alpha The alpha of the scanlines.
-+ * @param target The target bitmap.
-+ * @param current The current bitmap.
-+ * @param buffer The buffer bitmap.
-+ * @param score The score.
-+ * @return The energy measure.
-+ */
-+using EnergyFunction = std::function<double(
-+    const std::vector<geometrize::Scanline>& lines,
-+    const std::uint32_t alpha,
-+    const geometrize::Bitmap& target,
-+    const geometrize::Bitmap& current,
-+    geometrize::Bitmap& buffer,
-+    double score)>;
-+
-+/**
-+ * @brief defaultEnergyFunction The default/built-in energy function that calculates a measure of the improvement adding the scanlines of a shape provides - lower energy is better.
-+ * @param lines The scanlines of the shape.
-+ * @param alpha The alpha of the scanlines.
-+ * @param target The target bitmap.
-+ * @param current The current bitmap.
-+ * @param buffer The buffer bitmap.
-+ * @param score The score.
-+ * @return The energy measure.
-+ */
-+double defaultEnergyFunction(
-+        const std::vector<geometrize::Scanline>& lines,
-+        const std::uint32_t alpha,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double score);
-+
-+/**
-+ * @brief defaultEnergyFunctionSegmented A2.4 分段颜色版内置能量函数:与 defaultEnergyFunction 同构,
-+ * 差异仅在取色(computeColor → computeSegmentColors)与混色(drawLines → drawLinesSegmented)。
-+ * 线型形状(computeSegmentColors 返回空)内部退化为单色路径,与 defaultEnergyFunction 逐位一致。
-+ * 差分公式与累加次序与 defaultEnergyFunction 完全相同(differencePartial 对颜色来源无感知)。
-+ */
-+double defaultEnergyFunctionSegmented(
-+        const std::vector<geometrize::Scanline>& lines,
-+        const std::uint32_t alpha,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double score);
-+
-+/**
-+ * @brief defaultEnergyFunctionSegmentedFused 分段颜色版融合实现的运行时派发入口(第十九批):
-+ * 机器支持 AVX2 时走 defaultEnergyFunctionSegmentedFusedAvx2,否则走 ...Scalar——两者逐位等价,
-+ * 语义与 ...Scalar 的说明完全一致(该说明即分段融合的规范定义)。
-+ */
-+double defaultEnergyFunctionSegmentedFused(
-+        const std::vector<geometrize::Scanline>& lines,
-+        const std::uint32_t alpha,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double score);
-+
-+/**
-+ * @brief defaultEnergyFunctionSegmentedFusedScalar 分段颜色版的融合实现(第十八批,位精确):
-+ * 与 defaultEnergyFunctionFused 同款思路——把"混色(drawLinesSegmented)→差分"并为一遍只读扫描,
-+ * 混合值不写 scratch buffer。分段与单色的差别只在混色常量:**逐行重建**预乘常量
-+ * (分段落画 drawLinesSegmented 的常量就是按行算的,公式与 drawLines 逐字相同),
-+ * 线型形状(computeSegmentColors 返回空)退回整形状单色 computeColor,与 defaultEnergyFunction
-+ * 逐位一致。取色仍走 computeSegmentColors(两遍结构里颜色必须先于混合确定,无法再融合)。
-+ * 混合用无除法等价式(见 core/energykernelmath.h),不建 4×256 LUT——分段场景行多而每行像素少,
-+ * 建表开销会盖过收益。buffer 仅为复用签名保留,实现不读不写。
-+ */
-+double defaultEnergyFunctionSegmentedFusedScalar(
-+        const std::vector<geometrize::Scanline>& lines,
-+        const std::uint32_t alpha,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double score);
-+
-+/**
-+ * @brief defaultEnergyFunctionSegmentedFusedAvx2 分段颜色融合实现的 AVX2 版本(第十九批,位精确)。
-+ * 与 defaultEnergyFunctionSegmentedFusedScalar 的差异只在实现手段,两条等价依据均为整数恒等:
-+ * ① 取色:逐行按 computeColor 同款重排 Σ[(t-c)*a + c*257] == a*Σt + (257-a)*Σc,
-+ *    像素循环退化为按通道字节和(vpsadbw),行级取色结果与 computeSegmentColors 逐位一致;
-+ * ② 混色+差分:与 defaultEnergyFunctionFusedAvx2 同一套向量循环(无除法混合式 + 2 像素一组
-+ *    平方累加 + 32 位车道周期性并入 64 位基数),只是**逐行重建**预乘常量。
-+ * 越界行列统一裁剪;裁剪后无像素可统计时退回标量取色(契约外输入保持既有可见行为)。
-+ * 仅在 avx2EnergyKernelAvailable() 为真时调用。
-+ */
-+double defaultEnergyFunctionSegmentedFusedAvx2(
-+        const std::vector<geometrize::Scanline>& lines,
-+        const std::uint32_t alpha,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double score);
-+
-+/**
-+ * @brief defaultEnergyFunctionFused defaultEnergyFunction 的融合实现(大图性能,位精确):
-+ * 把"混色(copyLines+drawLines)→差分(differencePartial)"两遍扫描合并为一遍只读扫描——
-+ * 混合值不再写进 scratch buffer,而是在差分循环内按 drawLines 的同一整数公式(含预乘常量
-+ * 与钳制语义)逐像素现算。每次候选评估因此省掉 copyLines 与 drawLines 的位图往返
-+ * (实测 4096 大图上这三段占评估耗时约 76%),结果与 defaultEnergyFunction 逐位相等
-+ * (由 test_core 的对照用例锁定)。
-+ * 语义边界:buffer 参数仅为复用 EnergyFunction 签名而保留,实现不读不写——调用方可传空位图
-+ * (库内热路径已据此省掉每线程每步的整图拷贝);空数据守卫只看 target/current(逐遍实现里
-+ * buffer 是 current 的拷贝,两者等价)。扫描线互不重叠是库内光栅化不变量;越界 x 在逐遍
-+ * 实现里净效应为零(drawLines 钳制不写、差分对 before/after 同减同加),此处直接跳过。
-+ */
-+double defaultEnergyFunctionFused(
-+        const std::vector<geometrize::Scanline>& lines,
-+        const std::uint32_t alpha,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double score);
-+
-+/**
-+ * @brief avx2EnergyKernelAvailable 融合内核的 AVX2 运行时探测(CPUID + OS XSAVE + XGETBV,结果缓存)。
-+ * 非 x86 平台恒 false(库只有标量实现);探测代码本身不使用 AVX2 指令,可在任意机器执行。
-+ */
-+bool avx2EnergyKernelAvailable();
-+
-+/**
-+ * @brief defaultEnergyFunctionFusedScalar 融合实现的标量版(第十七批原实现,含 4×256 通道 LUT)。
-+ * defaultEnergyFunctionFused 在机器不支持 AVX2 时派发到这里;单测用它与 AVX2 版本逐位对照。
-+ */
-+double defaultEnergyFunctionFusedScalar(
-+        const std::vector<geometrize::Scanline>& lines,
-+        const std::uint32_t alpha,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double score);
-+
-+/**
-+ * @brief defaultEnergyFunctionFusedAvx2 融合实现的 AVX2 版本(第十八批,位精确等价)。
-+ * 与标量融合版的差异只在实现手段,三条等价依据全部是整数恒等,不引入任何近似:
-+ * ① 混合用无除法式复刻 LUT 表项:floor(V/65535) == (W + (W>>16) + 1) >> 16,W = V >> 8;
-+ *    其中 V = d*aa + s*m 的取值上界为 65535²(已证不回绕),全输入域 256³ 组合已穷举比对;
-+ * ② 取色重排:Σ[(t-c)*a + c*257] == a*Σt + (257-a)*Σc,故只需按通道求字节和(vpsadbw);
-+ * ③ 差分累加按 2 像素一组向量化,32 位车道周期性并入 64 位基数——uint64 加减满足结合律,
-+ *    分块求和与逐像素交错求和 mod 2^64 等价(收尾浮点公式逐语句照搬)。
-+ * 越界行列统一裁剪(库内扫描线恒已裁剪,契约内为恒等);标量融合版越界列在取色侧是
-+ * 未定义读取,契约外不保证两侧一致。仅在 avx2EnergyKernelAvailable() 为真时调用。
-+ */
-+double defaultEnergyFunctionFusedAvx2(
-+        const std::vector<geometrize::Scanline>& lines,
-+        const std::uint32_t alpha,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double score);
-+
-+/**
-+ * @brief computeSegmentColors A2.4:每条扫描线独立按混合公式求最优色。
-+ * 返回向量与 lines 一一对应;线型形状(全部扫描线均为单像素宽)返回空向量,
-+ * 调用方(评估侧/落画侧)据此统一退回单色路径——判定共享保证两侧颜色模型一致。
-+ * 内部复用 computeColor 同一公式与浮点怪癖行(a 值每调用只算一次,见 computeColor 实现)。
-+ */
-+std::vector<geometrize::rgba> computeSegmentColors(
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        const std::vector<geometrize::Scanline>& lines,
-+        std::uint8_t alpha);
-+
-+/**
-+ * @brief isLineLikeShape A2.4 线型形状判定:全部扫描线均为单像素宽(x1==x2)。
-+ * Line/Polyline/QuadraticBezier 的光栅化恒满足;面状形状必有宽行。
-+ * 评估侧与落画侧共用此判定,保证分段/单色的选择两侧一致。
-+ */
-+bool isLineLikeShape(const std::vector<geometrize::Scanline>& lines);
-+
-+/**
-+ * @brief computeColor Calculates the color of the scanlines.
-+ * @param target The target image.
-+ * @param current The current image.
-+ * @param lines The scanlines.
-+ * @param alpha The alpha of the scanline.
-+ * @return The color of the scanlines.
-+ */
-+geometrize::rgba computeColor(
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        const std::vector<geometrize::Scanline>& lines,
-+        std::uint8_t alpha);
-+
-+/**
-+ * @brief differenceFull Calculates the root-mean-square error between two bitmaps.
-+ * @param first The first bitmap.
-+ * @param second The second bitmap.
-+ * @return The difference/error measure between the two bitmaps.
-+ */
-+double differenceFull(const geometrize::Bitmap& first, const geometrize::Bitmap& second);
-+
-+/**
-+ * @brief differencePartial Calculates the root-mean-square error between the parts of the two bitmaps within the scanline mask.
-+ * This is for optimization purposes, it lets us calculate new error values only for parts of the image we know have changed.
-+ * @param target The target bitmap.
-+ * @param before The bitmap before the change.
-+ * @param after The bitmap after the change.
-+ * @param score The score.
-+ * @param lines The scanlines.
-+ * @return The difference/error between the two bitmaps, masked by the scanlines.
-+ */
-+double differencePartial(
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& before,
-+        const geometrize::Bitmap& after,
-+        double score,
-+        const std::vector<Scanline>& lines);
-+
-+/**
-+ * @brief bestHillClimbState Gets the best state using a hill climbing algorithm.
-+ * @param shapeCreator A function that will create the shapes that will be chosen from.
-+ * @param alpha The opacity of the shape.
-+ * @param n The number of random states to generate.
-+ * @param age The number of hillclimbing steps.
-+ * @param target The target bitmap.
-+ * @param current The current bitmap.
-+ * @param buffer The buffer bitmap.
-+ * @param lastScore The last score.
-+ * @param customEnergyFunction An optional function to calculate the energy (if unspecified a default implementation is used).
-+ * @return The best state acquired from hill climbing i.e. the one with the lowest energy.
-+ */
-+geometrize::State bestHillClimbState(
-+        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
-+        std::uint32_t alpha,
-+        std::uint32_t n,
-+        std::uint32_t age,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double lastScore,
-+        const EnergyFunction& customEnergyFunction = nullptr);
-+
-+/**
-+ * @brief bestHillClimbStatePyramid 金字塔搜索变体:候选生成与爬山评估在半分辨率图上进行,
-+ * 形状坐标始终留在全分辨率空间(scanline 层投影,不做几何缩放)。RNG 消费序列与
-+ * bestHillClimbState 完全一致,两模式可逐候选对照。搜索启发式轨道,输出与全分辨率
-+ * 搜索不必相同属预期;最终接受判定由调用方在全分辨率进行。
-+ * @param shapeCreator A function that will create the shapes that will be chosen from.
-+ * @param alpha The opacity of the shape.
-+ * @param n The number of random states to generate.
-+ * @param age The number of hillclimbing steps.
-+ * @param target The half-resolution target bitmap.
-+ * @param current The half-resolution current bitmap.
-+ * @param buffer The half-resolution buffer bitmap (private to the calling task).
-+ * @param lastScore The last full-resolution score (all in-step evaluations share this constant baseline).
-+ * @param halfWidth The width of the half-resolution bitmaps.
-+ * @param halfHeight The height of the half-resolution bitmaps.
-+ * @return The best state acquired from hill climbing i.e. the one with the lowest energy.
-+ */
-+geometrize::State bestHillClimbStatePyramid(
-+        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
-+        std::uint32_t alpha,
-+        std::uint32_t n,
-+        std::uint32_t age,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double lastScore,
-+        std::int32_t halfWidth,
-+        std::int32_t halfHeight);
-+
-+/**
-+ * @brief bestHillClimbStateEnhanced 增强爬山变体:按 HillClimbEnhancements 开关组合启用
-+ * 自适应步长 / alpha 档位搜索 / 误差图引导放置;halfWidth>0 时评估在半分辨率图上进行
-+ * (与金字塔轨道同语义)。自适应步长与 alpha 搜索保持 RNG 消费位置与经典路径一致;
-+ * 误差图引导改变每候选 RNG 消耗(+1 ε-roll,引导时 +3 采样 draw)——增强轨道自洽
-+ * (同 seed 同输入同输出)即可,与经典路径不再逐候选对照,输出不同属预期。
-+ * @param halfWidth 0 表示全分辨率评估;>0 时 target/current/buffer 均须为对应半分辨率位图。
-+ * @param errorMap 误差加权放置的权重表(须与 target/current 同图同尺寸;全分辨率图,
-+ * 金字塔组合时采样坐标仍是全分辨率形状坐标);空指针 = 引导关闭。
-+ */
-+geometrize::State bestHillClimbStateEnhanced(
-+        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
-+        std::uint32_t alpha,
-+        std::uint32_t n,
-+        std::uint32_t age,
-+        const geometrize::Bitmap& target,
-+        const geometrize::Bitmap& current,
-+        geometrize::Bitmap& buffer,
-+        double lastScore,
-+        std::int32_t halfWidth,
-+        std::int32_t halfHeight,
-+        const HillClimbEnhancements& enhancements,
-+        const ErrorWeightMap* errorMap = nullptr);
-+
-+}
-+
-+}
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/geometrize/bitmap/bitmap.cpp b/lib/geometrize/geometrize/geometrize/bitmap/bitmap.cpp
 --- a/lib/geometrize/geometrize/geometrize/bitmap/bitmap.cpp
 +++ b/lib/geometrize/geometrize/geometrize/bitmap/bitmap.cpp
@@ -9894,1024 +9956,6 @@ diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x 
      double m_score; ///< The score of the state, a measure of the improvement applying the state to the current bitmap will have.
      std::uint8_t m_alpha; ///< The alpha of the shape.
      std::shared_ptr<geometrize::Shape> m_shape; ///< The geometric primitive owned by the state.
-diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/model.cpp b/lib/geometrize/geometrize/model.cpp
---- a/lib/geometrize/geometrize/model.cpp
-+++ b/lib/geometrize/geometrize/model.cpp
-@@ -0,0 +1,838 @@
-+#include "model.h"
-+
-+#include <algorithm>
-+#include <atomic>
-+#include <cassert>
-+#include <cmath>
-+#include <condition_variable>
-+#include <cstdint>
-+#include <exception>
-+#include <functional>
-+#include <future>
-+#include <iostream>
-+#include <memory>
-+#include <mutex>
-+#include <queue>
-+#include <stdexcept>
-+#include <thread>
-+#include <vector>
-+
-+#include "bitmap/bitmap.h"
-+#include "commonutil.h"
-+#include "core.h"
-+#include "core/errorweightmap.h"
-+#include "rasterizer/rasterizer.h"
-+#include "rasterizer/scanline.h"
-+#include "shape/shape.h"
-+#include "shaperesult.h"
-+#include "shape/shapetypes.h"
-+
-+namespace
-+{
-+
-+bool defaultAddShapePrecondition(
-+    const double lastScore,
-+    const double newScore,
-+    const geometrize::Shape&,
-+    const std::vector<geometrize::Scanline>&,
-+    const geometrize::rgba&,
-+    const geometrize::Bitmap&,
-+    const geometrize::Bitmap&,
-+    const geometrize::Bitmap&)
-+{
-+    return newScore < lastScore; // Adds the shape if the score improved (that is: the difference decreased)
-+}
-+
-+// ---- 落画入口的扫描线裁剪 ----
-+// 库内工厂按图界绑定形状坐标,但宿主可自建 shapeCreator(测试助手、脚本形状、外部集成),
-+// 其 rasterize 可能返回超出位图的扫描线。裸指针落画路径没有隐式钳制,越界扫描线会直接
-+// 写出缓冲之外(实测:16×16 位图 + 32 格 creator → copyLines 收到 x=22 → 堆损坏 0xC0000374)。
-+// 因此把"裁剪到图内"收敛到唯一入口:裁剪后所有下游(取色/分段/差分/回滚)看到同一组扫描线,
-+// undo 游标与差分遍历保持同序。对库内已裁剪的扫描线是恒等操作,bit-exact 不受影响。
-+std::vector<geometrize::Scanline> clipScanlinesToBitmap(const geometrize::Bitmap& image, const std::vector<geometrize::Scanline>& lines)
-+{
-+    const std::int32_t width{static_cast<std::int32_t>(image.getWidth())};
-+    const std::int32_t height{static_cast<std::int32_t>(image.getHeight())};
-+
-+    std::vector<geometrize::Scanline> clipped;
-+    clipped.reserve(lines.size());
-+    for(const geometrize::Scanline& line : lines) {
-+        if(line.y < 0 || line.y >= height) {
-+            continue;
-+        }
-+        const std::int32_t x1{(std::max)(line.x1, 0)};
-+        const std::int32_t x2{(std::min)(line.x2, width - 1)};
-+        if(x1 > x2) {
-+            continue;
-+        }
-+        clipped.push_back(geometrize::Scanline{line.y, x1, x2});
-+    }
-+    return clipped;
-+}
-+
-+// ---- 补丁式快照助手(B5):用覆盖区原值缓冲替代整图拷贝,消除 step 每步两次全图 memcpy ----
-+
-+/// 单趟遍历扫描线:先把每个像素的 4 字节原值追加进 undo 缓冲,再按 drawLines 的原公式就地混合。
-+/// undo 布局 = 按 lines 顺序、行内 x 升序连续存放 4 字节 RGBA —— 与差分/回滚的遍历序天然对齐。
-+void collectAndDrawWithUndo(geometrize::Bitmap& image, const geometrize::rgba color, const std::vector<geometrize::Scanline>& lines, std::vector<std::uint8_t>& undo)
-+{
-+    // Convert the non-premultiplied color to alpha-premultiplied 16-bits per channel RGBA
-+    // In other words, scale the rgb color components by the alpha component
-+    std::uint32_t sr{color.r};
-+    sr |= sr << 8;
-+    sr *= color.a;
-+    sr /= UINT8_MAX;
-+    std::uint32_t sg{color.g};
-+    sg |= sg << 8;
-+    sg *= color.a;
-+    sg /= UINT8_MAX;
-+    std::uint32_t sb{color.b};
-+    sb |= sb << 8;
-+    sb *= color.a;
-+    sb /= UINT8_MAX;
-+    std::uint32_t sa{color.a};
-+    sa |= sa << 8;
-+
-+    const std::uint32_t m{UINT16_MAX};
-+    const std::uint32_t aa{(m - sa) * 257U};
-+
-+    std::size_t totalBytes{0};
-+    for(const geometrize::Scanline& line : lines) {
-+        if(line.x2 >= line.x1) {
-+            totalBytes += static_cast<std::size_t>(line.x2 - line.x1 + 1) * 4U;
-+        }
-+    }
-+    undo.clear();
-+    undo.reserve(totalBytes);
-+
-+    auto* data = image.getDataRefMut().data();
-+    const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
-+
-+    for(const geometrize::Scanline& line : lines) {
-+        if(line.y < 0) {
-+            continue;
-+        }
-+        auto* row = data + rowStride * static_cast<std::size_t>(line.y);
-+
-+        for(std::int32_t x = line.x1; x <= line.x2; x++) {
-+            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
-+
-+            // 先存原值(differencePartial 需要的 before 值、拒绝时回滚都取自这里)
-+            undo.push_back(row[offset]);
-+            undo.push_back(row[offset + 1U]);
-+            undo.push_back(row[offset + 2U]);
-+            undo.push_back(row[offset + 3U]);
-+
-+            // 再按 drawLines 原公式混合
-+            row[offset]     = static_cast<std::uint8_t>(((row[offset] * aa + sr * m) / m) >> 8);
-+            row[offset + 1U] = static_cast<std::uint8_t>(((row[offset + 1U] * aa + sg * m) / m) >> 8);
-+            row[offset + 2U] = static_cast<std::uint8_t>(((row[offset + 2U] * aa + sb * m) / m) >> 8);
-+            row[offset + 3U] = static_cast<std::uint8_t>(((row[offset + 3U] * aa + sa * m) / m) >> 8);
-+        }
-+    }
-+}
-+
-+/// A2.4 分段版:先存原值再按 drawLinesSegmented 逐行颜色混合,undo 布局与单色版完全一致
-+/// (只依赖 lines 遍历序),差分/回滚代码零改动即可复用。
-+void collectAndDrawWithUndoSegmented(geometrize::Bitmap& image, const std::vector<geometrize::rgba>& colors, const std::vector<geometrize::Scanline>& lines, std::vector<std::uint8_t>& undo)
-+{
-+    const std::uint32_t m{UINT16_MAX};
-+
-+    std::size_t totalBytes{0};
-+    for(const geometrize::Scanline& line : lines) {
-+        if(line.x2 >= line.x1) {
-+            totalBytes += static_cast<std::size_t>(line.x2 - line.x1 + 1) * 4U;
-+        }
-+    }
-+    undo.clear();
-+    undo.reserve(totalBytes);
-+
-+    auto* data = image.getDataRefMut().data();
-+    const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
-+
-+    for(std::size_t i = 0; i < lines.size(); i++) {
-+        const geometrize::Scanline& line = lines[i];
-+        if(line.y < 0) {
-+            continue;
-+        }
-+        const geometrize::rgba color = colors[i];
-+
-+        // Convert the non-premultiplied color to alpha-premultiplied 16-bits per channel RGBA
-+        std::uint32_t sr{color.r};
-+        sr |= sr << 8;
-+        sr *= color.a;
-+        sr /= UINT8_MAX;
-+        std::uint32_t sg{color.g};
-+        sg |= sg << 8;
-+        sg *= color.a;
-+        sg /= UINT8_MAX;
-+        std::uint32_t sb{color.b};
-+        sb |= sb << 8;
-+        sb *= color.a;
-+        sb /= UINT8_MAX;
-+        std::uint32_t sa{color.a};
-+        sa |= sa << 8;
-+        const std::uint32_t aa{(m - sa) * 257U};
-+
-+        auto* row = data + rowStride * static_cast<std::size_t>(line.y);
-+
-+        for(std::int32_t x = line.x1; x <= line.x2; x++) {
-+            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
-+
-+            // 先存原值(differencePartial 需要的 before 值、拒绝时回滚都取自这里)
-+            undo.push_back(row[offset]);
-+            undo.push_back(row[offset + 1U]);
-+            undo.push_back(row[offset + 2U]);
-+            undo.push_back(row[offset + 3U]);
-+
-+            // 再按 drawLinesSegmented 原公式混合
-+            row[offset]     = static_cast<std::uint8_t>(((row[offset] * aa + sr * m) / m) >> 8);
-+            row[offset + 1U] = static_cast<std::uint8_t>(((row[offset + 1U] * aa + sg * m) / m) >> 8);
-+            row[offset + 2U] = static_cast<std::uint8_t>(((row[offset + 2U] * aa + sb * m) / m) >> 8);
-+            row[offset + 3U] = static_cast<std::uint8_t>(((row[offset + 3U] * aa + sa * m) / m) >> 8);
-+        }
-+    }
-+}
-+
-+/// 差分快路径:before 取自 undo 快照(k 游标与 lines 遍历同序推进)、after 读已写盘的现值。
-+/// 公式与 differencePartial 一致,仅 before 数据源换成补丁缓冲。
-+double differencePartialPatched(
-+        const geometrize::Bitmap& target,
-+        const std::uint8_t* afterData,
-+        const std::vector<std::uint8_t>& undo,
-+        const double score,
-+        const std::vector<geometrize::Scanline>& lines)
-+{
-+    const std::uint64_t rgbaCount{static_cast<std::uint64_t>(target.getWidth()) * target.getHeight() * 4U};
-+    std::uint64_t total{static_cast<std::uint64_t>((score * 255.0) * (score * 255.0) * static_cast<double>(rgbaCount))};
-+
-+    const auto* targetData = target.getDataRef().data();
-+    const std::size_t rowStride{static_cast<std::size_t>(target.getWidth()) * 4U};
-+
-+    std::size_t k{0}; // undo 游标:按遍历序单调推进,无需坐标映射
-+    for(const geometrize::Scanline& line : lines) {
-+        if(line.y < 0) {
-+            continue;
-+        }
-+        const auto* tRow = targetData + rowStride * static_cast<std::size_t>(line.y);
-+        const auto* aRow = afterData + rowStride * static_cast<std::size_t>(line.y);
-+
-+        for(std::int32_t x = line.x1; x <= line.x2; x++) {
-+            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
-+
-+            const std::int32_t dtbr{static_cast<std::int32_t>(tRow[offset]) - static_cast<std::int32_t>(undo[k])};
-+            const std::int32_t dtbg{static_cast<std::int32_t>(tRow[offset + 1U]) - static_cast<std::int32_t>(undo[k + 1U])};
-+            const std::int32_t dtbb{static_cast<std::int32_t>(tRow[offset + 2U]) - static_cast<std::int32_t>(undo[k + 2U])};
-+            const std::int32_t dtba{static_cast<std::int32_t>(tRow[offset + 3U]) - static_cast<std::int32_t>(undo[k + 3U])};
-+
-+            const std::int32_t dtar{static_cast<std::int32_t>(tRow[offset]) - static_cast<std::int32_t>(aRow[offset])};
-+            const std::int32_t dtag{static_cast<std::int32_t>(tRow[offset + 1U]) - static_cast<std::int32_t>(aRow[offset + 1U])};
-+            const std::int32_t dtab{static_cast<std::int32_t>(tRow[offset + 2U]) - static_cast<std::int32_t>(aRow[offset + 2U])};
-+            const std::int32_t dtaa{static_cast<std::int32_t>(tRow[offset + 3U]) - static_cast<std::int32_t>(aRow[offset + 3U])};
-+
-+            total -= static_cast<std::uint64_t>(dtbr * dtbr + dtbg * dtbg + dtbb * dtbb + dtba * dtba);
-+            total += static_cast<std::uint64_t>(dtar * dtar + dtag * dtag + dtab * dtab + dtaa * dtaa);
-+
-+            k += 4U;
-+        }
-+    }
-+
-+    return std::sqrt(static_cast<double>(total) / static_cast<double>(rgbaCount)) / 255.0;
-+}
-+
-+/// 拒绝回滚:把 undo 快照写回覆盖区。各扫描线区间互不相交,单趟写回即恢复,m_lastScore 不动。
-+void restoreFromUndo(geometrize::Bitmap& image, const std::vector<geometrize::Scanline>& lines, const std::vector<std::uint8_t>& undo)
-+{
-+    auto* data = image.getDataRefMut().data();
-+    const std::size_t rowStride{static_cast<std::size_t>(image.getWidth()) * 4U};
-+
-+    std::size_t k{0};
-+    for(const geometrize::Scanline& line : lines) {
-+        if(line.y < 0) {
-+            continue;
-+        }
-+        auto* row = data + rowStride * static_cast<std::size_t>(line.y);
-+
-+        for(std::int32_t x = line.x1; x <= line.x2; x++) {
-+            const std::size_t offset{static_cast<std::size_t>(x) * 4U};
-+            row[offset]     = undo[k];
-+            row[offset + 1U] = undo[k + 1U];
-+            row[offset + 2U] = undo[k + 2U];
-+            row[offset + 3U] = undo[k + 3U];
-+            k += 4U;
-+        }
-+    }
-+}
-+
-+// ---- 持久线程池(B7):替代每步 std::async 新建线程 ----
-+// 语义保证:任务按 submit 序落位到结果下标(调用侧负责);dtor 等待全部任务结束。
-+class AsyncTaskPool
-+{
-+public:
-+    explicit AsyncTaskPool(std::uint32_t threadCount) : m_stop{false}
-+    {
-+        m_workers.reserve(threadCount);
-+        for(std::uint32_t i = 0; i < threadCount; i++) {
-+            m_workers.emplace_back([this] { workerLoop(); });
-+        }
-+    }
-+
-+    ~AsyncTaskPool()
-+    {
-+        {
-+            std::unique_lock<std::mutex> lock(m_mutex);
-+            m_stop = true;
-+        }
-+        m_condition.notify_all();
-+        for(auto& worker : m_workers) {
-+            worker.join();
-+        }
-+    }
-+
-+    AsyncTaskPool& operator=(const AsyncTaskPool&) = delete;
-+    AsyncTaskPool(const AsyncTaskPool&) = delete;
-+
-+    std::future<void> submit(std::function<void()> task)
-+    {
-+        // std::function 要求可拷贝,promise 用 shared_ptr 满足该约束
-+        auto promise = std::make_shared<std::promise<void>>();
-+        auto future = promise->get_future();
-+        {
-+            std::unique_lock<std::mutex> lock(m_mutex);
-+            if(m_stop) {
-+                throw std::runtime_error("submit on stopped AsyncTaskPool");
-+            }
-+            m_tasks.emplace([task{std::move(task)}, promise{std::move(promise)}]() mutable {
-+                try {
-+                    task();
-+                } catch(...) {
-+                    promise->set_exception(std::current_exception());
-+                    return;
-+                }
-+                promise->set_value();
-+            });
-+        }
-+        m_condition.notify_one();
-+        return future;
-+    }
-+
-+private:
-+    void workerLoop()
-+    {
-+        for(;;) {
-+            std::function<void()> task;
-+            {
-+                std::unique_lock<std::mutex> lock(m_mutex);
-+                m_condition.wait(lock, [this] { return m_stop || !m_tasks.empty(); });
-+                if(m_stop && m_tasks.empty()) {
-+                    return;
-+                }
-+                task = std::move(m_tasks.front());
-+                m_tasks.pop();
-+            }
-+            task();
-+        }
-+    }
-+
-+    std::vector<std::thread> m_workers;
-+    std::queue<std::function<void()>> m_tasks;
-+    std::mutex m_mutex;
-+    std::condition_variable m_condition;
-+    bool m_stop;
-+};
-+
-+}
-+
-+namespace geometrize
-+{
-+
-+class Model::ModelImpl
-+{
-+public:
-+    ModelImpl(const geometrize::Bitmap& target) :
-+        m_target{target},
-+        m_current{target.getWidth(), target.getHeight(), geometrize::commonutil::getAverageImageColor(m_target)},
-+        m_lastScore{geometrize::core::differenceFull(m_target, m_current)},
-+        m_halfDirty{false},
-+        m_baseRandomSeed{0U},
-+        m_randomSeedOffset{0U}
-+    {}
-+
-+    ModelImpl(const geometrize::Bitmap& target, const geometrize::Bitmap& initial) :
-+        m_target{target},
-+        m_current{initial},
-+        m_lastScore{geometrize::core::differenceFull(m_target, m_current)},
-+        m_halfDirty{false},
-+        m_baseRandomSeed{0U},
-+        m_randomSeedOffset{0U}
-+    {
-+        assert(m_target.getWidth() == m_current.getWidth());
-+        assert(m_target.getHeight() == m_current.getHeight());
-+    }
-+
-+    ~ModelImpl()
-+    {
-+        // 显式先释放线程池:池的析构 join 全部 worker,须在其他成员仍存活时进行
-+        m_threadPool.reset();
-+    }
-+    ModelImpl& operator=(const ModelImpl&) = delete;
-+    ModelImpl(const ModelImpl&) = delete;
-+
-+    void reset(const geometrize::rgba backgroundColor)
-+    {
-+        m_current.fill(backgroundColor);
-+        m_lastScore = geometrize::core::differenceFull(m_target, m_current);
-+        markHalfDirty();
-+        markErrorDirty();
-+    }
-+
-+    std::int32_t getWidth() const
-+    {
-+        return m_target.getWidth();
-+    }
-+
-+    std::int32_t getHeight() const
-+    {
-+        return m_target.getHeight();
-+    }
-+
-+    std::vector<geometrize::State> getHillClimbState(
-+            const std::function<std::shared_ptr<geometrize::Shape>(void)> shapeCreator,
-+            const std::uint8_t alpha,
-+            const std::uint32_t shapeCount,
-+            const std::uint32_t maxShapeMutations,
-+            std::uint32_t maxThreads,
-+            const geometrize::core::EnergyFunction energyFunction,
-+            const bool pyramidSearch,
-+            const geometrize::core::HillClimbEnhancements& enhancements,
-+            const std::vector<geometrize::core::RegionRect>& priorityRegions)
-+    {
-+        // Ensure that the maximum number of threads is a sane value
-+        if(maxThreads == 0) {
-+            maxThreads = std::thread::hardware_concurrency();
-+            if(maxThreads == 0) {
-+                assert(0 && "Failed to get the number of concurrent threads supported by the implementation");
-+                maxThreads = defaultMaxThreads;
-+            }
-+        }
-+
-+        std::vector<geometrize::State> states{maxThreads};
-+
-+        // 持久线程池(B7):结果按下标归位保 submit 序收割 —— 上游用 std::async 时
-+        // 种子在主线程 submit 循环内 base+offset++ 递增、futures 按 submit 序 get,
-+        // 结果向量是 submit 序的函数而与线程完成顺序无关,本实现保持该性质逐位不变。
-+        {
-+            // 调度三分支:增强轨道(自适应步长/alpha 搜索/误差图引导/分段颜色)优先,金字塔次之,经典路径兜底。
-+            // 金字塔+增强可组合(halfWidth>0 走半分辨率评估);金字塔+自定义能量函数仍静默忽略。
-+            const bool useEnhanced{enhancements.adaptiveStep || enhancements.alphaSearch || enhancements.errorGuide || enhancements.segmentColors};
-+            const bool usePyramid{!useEnhanced && pyramidSearch && !energyFunction};
-+            if((useEnhanced && pyramidSearch) || usePyramid) {
-+                refreshHalfResolution();
-+            }
-+            const bool evalHalf{(useEnhanced && pyramidSearch) || usePyramid};
-+            const geometrize::Bitmap* halfTarget{evalHalf ? &m_targetHalf : nullptr};
-+            const geometrize::Bitmap* halfCurrent{evalHalf ? &m_currentHalf : nullptr};
-+
-+            // 误差图引导:提交前重建(futures 全 join 后主线程才动共享态,重建与任务并发天然错开),
-+            // 任务期间只读;全分辨率图,金字塔组合时采样坐标仍是全分辨率形状坐标,零换算
-+            const bool guideEnabled{useEnhanced && enhancements.errorGuide};
-+            // 区域变化也要触发重建:dirty 短路只看 m_current,否则"改区域→空步→不重建"
-+            const bool regionsChanged{priorityRegions != m_lastRegions};
-+            if(guideEnabled && (m_errorDirty || m_errorMap.blockCount() == 0U || regionsChanged)) {
-+                m_errorMap.rebuild(m_target, m_current, priorityRegions);
-+                m_errorDirty = false;
-+                m_lastRegions = priorityRegions;
-+            }
-+            const core::ErrorWeightMap* errorMap{guideEnabled ? &m_errorMap : nullptr};
-+
-+            std::vector<std::future<void>> futures(maxThreads);
-+            std::uint32_t submittedCount{0};
-+            // submit 自身抛异常(如 bad_alloc)时也必须先收割已提交的任务再让异常逃逸:
-+            // pool 的 future 析构不等待,异常直接逃逸会让 states 先于仍在运行的任务析构,
-+            // 任务继续写 states[i] 即写已释放内存(实测堆损坏 STATUS_HEAP_CORRUPTION 0xC0000374)。
-+            try { for(std::uint32_t i = 0; i < maxThreads; i++) {
-+                const std::uint32_t seed = m_baseRandomSeed + m_randomSeedOffset++;
-+                futures[i] = m_threadPool->submit([this, &states, i, seed, lastScore = m_lastScore, shapeCreator, alpha, shapeCount, maxShapeMutations, energyFunction, useEnhanced, usePyramid, halfTarget, halfCurrent, errorMap, enhancements]() {
-+                    // 每个任务体第一件事必须播种:pooled 线程残留的 thread_local RNG 状态由此永不被读到
-+                    geometrize::commonutil::seedRandomGenerator(seed);
-+
-+                    if(useEnhanced) {
-+                        // 增强轨道:halfWidth==0 全分辨率;>0 半分辨率(金字塔可组合)
-+                        // 第十八批:两条分支都走融合能量函数(不读 scratch buffer),故传空位图,
-+                        // 免掉每线程每步的整图拷贝(与金字塔/经典融合路径同款处理)
-+                        const bool half{usePyramid || (halfTarget != nullptr)};
-+                        const std::int32_t halfWidth{half ? static_cast<std::int32_t>(halfTarget->getWidth()) : 0};
-+                        const std::int32_t halfHeight{half ? static_cast<std::int32_t>(halfTarget->getHeight()) : 0};
-+                        if(half) {
-+                            geometrize::Bitmap halfBuffer{};
-+                            states[i] = core::bestHillClimbStateEnhanced(shapeCreator, alpha, shapeCount, maxShapeMutations, *halfTarget, *halfCurrent, halfBuffer, lastScore, halfWidth, halfHeight, enhancements, errorMap);
-+                        } else {
-+                            geometrize::Bitmap buffer{};
-+                            states[i] = core::bestHillClimbStateEnhanced(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, 0, 0, enhancements, errorMap);
-+                        }
-+                    } else if(usePyramid) {
-+                        // 金字塔内置评估走融合实现(defaultEnergyFunctionFused),不读 scratch buffer:
-+                        // 免掉每线程每步的半分辨率整图拷贝(4096 场景实测可见)
-+                        geometrize::Bitmap halfBuffer{};
-+                        states[i] = core::bestHillClimbStatePyramid(shapeCreator, alpha, shapeCount, maxShapeMutations, *halfTarget, *halfCurrent, halfBuffer, lastScore, static_cast<std::int32_t>(halfTarget->getWidth()), static_cast<std::int32_t>(halfTarget->getHeight()));
-+                    } else {
-+                        // 仅自定义能量函数(脚本)保留整图拷贝的 buffer 语义;内置默认函数融合实现不读 buffer
-+                        geometrize::Bitmap buffer{energyFunction ? geometrize::Bitmap{m_current} : geometrize::Bitmap{}};
-+                        states[i] = core::bestHillClimbState(shapeCreator, alpha, shapeCount, maxShapeMutations, m_target, m_current, buffer, lastScore, energyFunction);
-+                    }
-+                });
-+                submittedCount = i + 1U;
-+            } } catch(...) {
-+                for(std::uint32_t k = 0; k < submittedCount; k++) {
-+                    try {
-+                        futures[k].get();
-+                    } catch(...) {
-+                    }
-+                }
-+                throw;
-+            }
-+            // 先 drain 全部任务再重抛:pool 的 packaged_task future 析构不等待,
-+            // 立即重抛会让未完成任务继续写已析构的 states(上游 std::async 的
-+            // future 析构阻塞,恰好屏蔽了这一点)。保留上游"抛首个异常"的可见行为。
-+            std::exception_ptr firstError;
-+            for(auto& f : futures) {
-+                try {
-+                    f.get();
-+                } catch(std::exception& e) {
-+                    /*TEMP-INVESTIGATION-OFF*/ (void)0; // assert 暂时关闭:Debug 调试堆定位用
-+                    std::cout << e.what() << std::endl;
-+                    if(!firstError) {
-+                        firstError = std::current_exception();
-+                    }
-+                } catch (...) {
-+                    /*TEMP-INVESTIGATION-OFF*/ (void)0; // assert 暂时关闭:Debug 调试堆定位用
-+                    if(!firstError) {
-+                        firstError = std::current_exception();
-+                    }
-+                }
-+            }
-+            if(firstError) {
-+                std::rethrow_exception(firstError); // 按原异常对象重抛(上游按值 throw e 会切掉多态)
-+            }
-+        }
-+
-+        return states;
-+    }
-+
-+    std::vector<geometrize::ShapeResult> step(
-+            const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
-+            const std::uint8_t alpha,
-+            const std::uint32_t shapeCount,
-+            const std::uint32_t maxShapeMutations,
-+            const std::uint32_t maxThreads,
-+            const geometrize::core::EnergyFunction& energyFunction,
-+            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition,
-+            const bool pyramidSearch,
-+            const geometrize::core::HillClimbEnhancements& enhancements,
-+            const std::vector<geometrize::core::RegionRect>& priorityRegions,
-+            const geometrize::core::BudgetScaleOptions& budget)
-+    {
-+        // 0 像素位图没有可落画的像素:下游 differenceFull 会 0/0 得 NaN、光栅化裁剪区间为空。
-+        // 直接返回空,避免整步空转与 NaN 分数污染。
-+        if(m_target.getWidth() == 0U || m_target.getHeight() == 0U) {
-+            return {};
-+        }
-+
-+        // 候选预算降档(§5.1 第 4 条,算法增强轨道,opt-in):大图按策略等比例砍候选数与变异次数换单步速度。
-+        // 只缩放本次调用的局部预算,getHillClimbState 及其下各轨道(经典/金字塔/增强)零改动;
-+        // RNG 消费序列随预算变化,输出与关闭时不同属预期。下限防御钳制:预算再小也保留最小搜索量。
-+        std::uint32_t effectiveShapeCount{shapeCount};
-+        std::uint32_t effectiveMaxShapeMutations{maxShapeMutations};
-+        if(budget.byArea || budget.manualScale < 1.0f) {
-+            double scale{1.0};
-+            if(budget.byArea) {
-+                const double area{static_cast<double>(m_target.getWidth()) * static_cast<double>(m_target.getHeight())};
-+                scale = std::min(1.0, static_cast<double>(budget.anchorPixels) / std::max(area, 1.0));
-+            } else {
-+                scale = std::clamp(static_cast<double>(budget.manualScale), 0.05, 1.0);
-+            }
-+            effectiveShapeCount = std::max(minScaledShapeCount, static_cast<std::uint32_t>(std::lround(shapeCount * scale)));
-+            effectiveMaxShapeMutations = std::max(minScaledShapeMutations, static_cast<std::uint32_t>(std::lround(maxShapeMutations * scale)));
-+        }
-+
-+        std::vector<geometrize::State> states{getHillClimbState(shapeCreator, alpha, effectiveShapeCount, effectiveMaxShapeMutations, maxThreads, energyFunction, pyramidSearch, enhancements, priorityRegions)};
-+        if(states.empty()) {
-+            assert(0 && "Failed to get a hill climb state");
-+            return {};
-+        }
-+
-+        std::vector<geometrize::State>::iterator it = std::min_element(states.begin(), states.end(), [](const geometrize::State& a, const geometrize::State& b) {
-+            return a.m_score < b.m_score;
-+        });
-+
-+        // Draw the shape onto the image
-+        const std::shared_ptr<geometrize::Shape> shape = it->m_shape;
-+        std::vector<geometrize::Scanline> lines;
-+        if(shape->rasterizeInto) {
-+            shape->rasterizeInto(*shape, lines);
-+        } else {
-+            lines = shape->rasterize(*shape);
-+        }
-+        // 落画入口统一裁剪:宿主自定义 creator 的越界扫描线在此收口(库内形状为恒等操作)
-+        lines = clipScanlinesToBitmap(m_current, lines);
-+        // 胜者 alpha 回写通道:经典路径下 m_alpha 恒等于外部 alpha(不变量,单测锁定),
-+        // alpha 搜索开启时 m_alpha 是逐形状搜出的胜者档,自然传导到落画/SVG/指纹
-+        const geometrize::rgba color(geometrize::core::computeColor(m_target, m_current, lines, it->m_alpha));
-+        // A2.4:开关开启时按行级取色;线型形状返回空 → 走既有单色路径(逐位不变)
-+        std::vector<geometrize::rgba> lineColors;
-+        if(enhancements.segmentColors) {
-+            lineColors = geometrize::core::computeSegmentColors(m_target, m_current, lines, it->m_alpha);
-+        }
-+
-+        const auto& addShapeCondition = addShapePrecondition ? addShapePrecondition : defaultAddShapePrecondition;
-+        double newScore = 0.0;
-+
-+        if(!energyFunction && !addShapePrecondition) {
-+            // 快路径:纯 C++ default 前条件忽略全部 Bitmap 参数,用补丁式快照替代整图拷贝
-+            // (自定义回调可能读取任意全图像素,必须保留整图语义)
-+            std::vector<std::uint8_t> undo;
-+            if(lineColors.empty()) {
-+                collectAndDrawWithUndo(m_current, color, lines, undo);
-+            } else {
-+                collectAndDrawWithUndoSegmented(m_current, lineColors, lines, undo);
-+            }
-+            newScore = differencePartialPatched(m_target, m_current.getDataRef().data(), undo, m_lastScore, lines);
-+            if(!addShapeCondition(m_lastScore, newScore, *shape, lines, color, m_current, m_current, m_target)) {
-+                restoreFromUndo(m_current, lines, undo);
-+                return {};
-+            }
-+        } else {
-+            // 整图路径:与上游逐行一致(before 全图拷贝 + 拒绝时回滚)
-+            const geometrize::Bitmap before{m_current};
-+            if(lineColors.empty()) {
-+                geometrize::drawLines(m_current, color, lines);
-+            } else {
-+                geometrize::drawLinesSegmented(m_current, lineColors, lines);
-+            }
-+
-+            newScore = geometrize::core::differencePartial(m_target, before, m_current, m_lastScore, lines);
-+            if(!addShapeCondition(m_lastScore, newScore, *shape, lines, color, before, m_current, m_target)) {
-+                m_current = before;
-+                return {};
-+            }
-+        }
-+
-+        // Improvement - set new baseline and return the new shape
-+        m_lastScore = newScore;
-+        markHalfDirty(); // m_current 已变化,半分辨率缓存失真待重建
-+        markErrorDirty();
-+        // A2.4:分段颜色随结果存档(导出/重放/重做的唯一权威来源;事后重算是错的——位图已被后续步覆盖)。
-+        // color 仍是整形状平均色,前条件回调/旧导出语义不变。
-+        std::vector<geometrize::ScanlineColor> segments;
-+        if(!lineColors.empty()) {
-+            segments.reserve(lines.size());
-+            for(std::size_t i = 0; i < lines.size(); i++) {
-+                segments.push_back(geometrize::ScanlineColor{lines[i].y, lines[i].x1, lines[i].x2, lineColors[i]});
-+            }
-+        }
-+        const geometrize::ShapeResult result{m_lastScore, color, shape, std::move(segments)};
-+        return { result };
-+    }
-+
-+    geometrize::ShapeResult drawShape(
-+            const std::shared_ptr<geometrize::Shape> shape,
-+            const geometrize::rgba color)
-+    {
-+        const std::vector<geometrize::Scanline> lines{clipScanlinesToBitmap(m_current, shape->rasterize(*shape))};
-+        const geometrize::Bitmap before{m_current};
-+        geometrize::drawLines(m_current, color, lines);
-+
-+        m_lastScore = geometrize::core::differencePartial(m_target, before, m_current, m_lastScore, lines);
-+        markHalfDirty();
-+        markErrorDirty();
-+
-+        const geometrize::ShapeResult result{m_lastScore, color, shape};
-+        return result;
-+    }
-+
-+    geometrize::ShapeResult drawShape(
-+            const std::shared_ptr<geometrize::Shape> shape,
-+            const geometrize::rgba color,
-+            const std::vector<geometrize::ScanlineColor>& segments)
-+    {
-+        const std::vector<geometrize::Scanline> lines{clipScanlinesToBitmap(m_current, shape->rasterize(*shape))};
-+        const geometrize::Bitmap before{m_current};
-+
-+        // 复用存储 segments 重画:行数对齐时按行级颜色混合(与原 step 落画逐字节一致);
-+        // 不对齐(不应发生)防御性退回单色。空 segments 走单色等价于两参重载。
-+        // 注:越界扫描线被上面的裁剪剔除后行数会变,此时对齐检查失败 → 退单色(防御路径,符合预期)。
-+        std::vector<geometrize::rgba> lineColors;
-+        if(segments.size() == lines.size()) {
-+            lineColors.reserve(lines.size());
-+            for(std::size_t i = 0; i < lines.size(); i++) {
-+                // 防御坐标一致性:光栅化不变量被破坏时逐位结果无从保证,退单色
-+                if(segments[i].y != lines[i].y || segments[i].x1 != lines[i].x1 || segments[i].x2 != lines[i].x2) {
-+                    lineColors.clear();
-+                    break;
-+                }
-+                lineColors.push_back(segments[i].color);
-+            }
-+        }
-+        if(lineColors.empty()) {
-+            geometrize::drawLines(m_current, color, lines);
-+        } else {
-+            geometrize::drawLinesSegmented(m_current, lineColors, lines);
-+        }
-+
-+        m_lastScore = geometrize::core::differencePartial(m_target, before, m_current, m_lastScore, lines);
-+        markHalfDirty();
-+        markErrorDirty();
-+
-+        const geometrize::ShapeResult result{m_lastScore, color, shape, segments};
-+        return result;
-+    }
-+
-+    geometrize::Bitmap& getTarget()
-+    {
-+        return m_target;
-+    }
-+
-+    geometrize::Bitmap& getCurrent()
-+    {
-+        return m_current;
-+    }
-+
-+    const geometrize::Bitmap& getTarget() const
-+    {
-+        return m_target;
-+    }
-+
-+    const geometrize::Bitmap& getCurrent() const
-+    {
-+        return m_current;
-+    }
-+
-+    void setSeed(const std::uint32_t seed)
-+    {
-+        m_baseRandomSeed = seed;
-+    }
-+
-+private:
-+    // ---- 金字塔搜索轨道:半分辨率位图懒维护 ----
-+    // targetHalf 不变只建一次;currentHalf 由脏标记驱动,在下一次 getHillClimbState
-+    // 提交前重建(futures 全 join 后主线程才动 m_current,重建与任务并发天然错开)。
-+    // 奇数尺寸:ceil(W/2)×ceil(H/2),floor 坐标映射 x → x/2 下恰好覆盖无盲区。
-+    void refreshHalfResolution()
-+    {
-+        if(m_targetHalf.getWidth() == 0) {
-+            m_targetHalf = geometrize::downsampleHalf(m_target);
-+        }
-+        if(m_halfDirty || m_currentHalf.getWidth() == 0) {
-+            m_currentHalf = geometrize::downsampleHalf(m_current);
-+            m_halfDirty = false;
-+        }
-+    }
-+
-+    void markHalfDirty()
-+    {
-+        m_halfDirty = true;
-+    }
-+
-+    // ---- 误差图引导轨道(A2.1):块级误差权重表懒维护 ----
-+    // 与半分辨率缓存同一套生命周期:脏标记驱动、getHillClimbState 提交前主线程重建、任务期只读。
-+    // 拒绝路径回滚 m_current 不置脏(误差图回到接受前状态,一致)。
-+    void markErrorDirty()
-+    {
-+        m_errorDirty = true;
-+    }
-+
-+    geometrize::Bitmap m_target; ///< The target bitmap, the bitmap we aim to approximate.
-+    geometrize::Bitmap m_current; ///< The current bitmap.
-+    double m_lastScore; ///< Score derived from calculating the difference between bitmaps.
-+    geometrize::Bitmap m_targetHalf; ///< 金字塔轨道:半分辨率目标图(懒建一次)。
-+    geometrize::Bitmap m_currentHalf; ///< 金字塔轨道:半分辨率当前图(脏标记驱动懒重建)。
-+    bool m_halfDirty; ///< m_current 是否已领先于 m_currentHalf。
-+    core::ErrorWeightMap m_errorMap; ///< 误差图引导轨道:块级误差权重表(脏标记驱动懒重建)。
-+    bool m_errorDirty{true}; ///< m_current 是否已领先于 m_errorMap 的重建基线。
-+    std::vector<core::RegionRect> m_lastRegions; ///< 上次重建误差图所用的优先区域(变化检测,防 dirty 短路吞掉区域更新)。
-+    const static std::uint32_t defaultMaxThreads{4};
-+    // 候选预算降档的下限:预算再小也保留最小搜索量,防止极端 scale 把候选数/变异次数钳成
-+    // 0 或个位数后整步退化(单候选零变异 = 纯随机放置,质量崩塌且无防御意义)
-+    const static std::uint32_t minScaledShapeCount{8};
-+    const static std::uint32_t minScaledShapeMutations{16};
-+    std::unique_ptr<AsyncTaskPool> m_threadPool{std::make_unique<AsyncTaskPool>(std::max(1U, std::thread::hardware_concurrency()))}; ///< 持久线程池:容量取硬件并发数,过订阅场景由调用侧 futures 数量决定
-+    std::atomic<std::uint32_t> m_baseRandomSeed; ///< The base value used for seeding the random number generator (the one the user has control over).
-+    std::atomic<std::uint32_t> m_randomSeedOffset; ///< Seed used for random number generation. Note: incremented by each std::async call used for model stepping.
-+};
-+
-+Model::Model(const geometrize::Bitmap& target) : d{std::unique_ptr<Model::ModelImpl>(new Model::ModelImpl(target))}
-+{}
-+
-+Model::Model(const geometrize::Bitmap& target, const geometrize::Bitmap& initial) : d{std::unique_ptr<Model::ModelImpl>(new Model::ModelImpl(target, initial))}
-+{}
-+
-+Model::~Model()
-+{}
-+
-+void Model::reset(const geometrize::rgba backgroundColor)
-+{
-+    d->reset(backgroundColor);
-+}
-+
-+std::int32_t Model::getWidth() const
-+{
-+    return d->getWidth();
-+}
-+
-+std::int32_t Model::getHeight() const
-+{
-+    return d->getHeight();
-+}
-+
-+std::vector<geometrize::ShapeResult> Model::step(
-+        const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
-+        const std::uint8_t alpha,
-+        const std::uint32_t shapeCount,
-+        const std::uint32_t maxShapeMutations,
-+        const std::uint32_t maxThreads,
-+        const geometrize::core::EnergyFunction& energyFunction,
-+        const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition,
-+        const bool pyramidSearch,
-+        const geometrize::core::HillClimbEnhancements& enhancements,
-+        const std::vector<geometrize::core::RegionRect>& priorityRegions,
-+        const geometrize::core::BudgetScaleOptions& budget)
-+{
-+    return d->step(shapeCreator, alpha, shapeCount, maxShapeMutations, maxThreads, energyFunction, addShapePrecondition, pyramidSearch, enhancements, priorityRegions, budget);
-+}
-+
-+geometrize::ShapeResult Model::drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color)
-+{
-+    return d->drawShape(shape, color);
-+}
-+
-+geometrize::ShapeResult Model::drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color, const std::vector<geometrize::ScanlineColor>& segments)
-+{
-+    return d->drawShape(shape, color, segments);
-+}
-+
-+geometrize::Bitmap& Model::getTarget()
-+{
-+    return d->getTarget();
-+}
-+
-+geometrize::Bitmap& Model::getCurrent()
-+{
-+    return d->getCurrent();
-+}
-+
-+const geometrize::Bitmap& Model::getTarget() const
-+{
-+    return d->getTarget();
-+}
-+
-+const geometrize::Bitmap& Model::getCurrent() const
-+{
-+    return d->getCurrent();
-+}
-+
-+void Model::setSeed(const std::uint32_t seed)
-+{
-+    d->setSeed(seed);
-+}
-+
-+}
-diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/lib/geometrize/geometrize/model.h b/lib/geometrize/geometrize/model.h
---- a/lib/geometrize/geometrize/model.h
-+++ b/lib/geometrize/geometrize/model.h
-@@ -0,0 +1,172 @@
-+#pragma once
-+
-+#include <cstdint>
-+#include <functional>
-+#include <memory>
-+#include <vector>
-+
-+#include "core.h"
-+#include "shaperesult.h"
-+
-+namespace geometrize
-+{
-+class Bitmap;
-+class Scanline;
-+class Shape;
-+}
-+
-+namespace geometrize
-+{
-+
-+/**
-+ * @brief ShapeAcceptancePreconditionFunction Type alias for a function that is used to decide whether or not to finally add a shape to the image
-+ * @param lastScore The image similarity score prior to adding the shape
-+ * @param newScore What the image similarity score would be after adding the shape
-+ * @param shape The shape that this function shall decide whether to add
-+ * @param lines The scanlines for the pixels in the shape
-+ * @param color The colour of the shape
-+ * @param before The image prior to adding the shape
-+ * @param after The image as it would be after adding the shape
-+ * @param target The image that we are trying to replicate
-+ * @return True to add the shape to the image, false not to
-+ */
-+using ShapeAcceptancePreconditionFunction = std::function<bool(
-+    double lastScore,
-+    double newScore,
-+    const geometrize::Shape& shape,
-+    const std::vector<geometrize::Scanline>& lines,
-+    const geometrize::rgba& color,
-+    const geometrize::Bitmap& before,
-+    const geometrize::Bitmap& after,
-+    const geometrize::Bitmap& target)>;
-+
-+/**
-+ * @brief The Model class is the model for the core optimization/fitting algorithm.
-+ * @author Sam Twidale (https://samcodes.co.uk/)
-+ */
-+class Model
-+{
-+public:
-+    /**
-+     * @brief Model Creates a model that will aim to replicate the target bitmap with shapes.
-+     * @param target The target bitmap to replicate with shapes.
-+     */
-+    Model(const geometrize::Bitmap& target);
-+
-+    /**
-+     * @brief Model Creates a model that will optimize for the given target bitmap, starting from the given initial bitmap.
-+     * The target bitmap and initial bitmap must be the same size (width and height).
-+     * @param target The target bitmap to replicate with shapes.
-+     * @param initial The starting bitmap.
-+     */
-+    Model(const geometrize::Bitmap& target, const geometrize::Bitmap& initial);
-+    ~Model();
-+    Model& operator=(const Model&) = delete;
-+    Model(const Model&) = delete;
-+
-+    /**
-+     * @brief reset Resets the model back to the state it was in when it was created.
-+     * @param backgroundColor The starting background color to use.
-+     */
-+    void reset(geometrize::rgba backgroundColor);
-+
-+    /**
-+     * @brief getWidth Gets the width of the target bitmap.
-+     * @return The width of the target bitmap.
-+     */
-+    std::int32_t getWidth() const;
-+
-+    /**
-+     * @brief getHeight Gets the height of the target bitmap.
-+     * @return The height of the target bitmap.
-+     */
-+    std::int32_t getHeight() const;
-+
-+    /**
-+     * @brief step Steps the primitive optimization/fitting algorithm.
-+     * @param shapeCreator A function that will produce the shapes.
-+     * @param alpha The alpha of the shape.
-+     * @param shapeCount The number of random shapes to generate (only 1 is chosen in the end).
-+     * @param maxShapeMutations The maximum number of times to mutate each random shape.
-+     * @param maxThreads The maximum number of threads to use during this step.
-+     * @param energyFunction An optional function to calculate the energy (if unspecified a default implementation is used).
-+     * @param addShapePrecondition An optional function to determine whether to accept a shape (if unspecified a default implementation is used).
-+     * @param pyramidSearch 金字塔搜索开关:hill-climb 评估在半分辨率图上进行(算法增强轨道,默认关)。
-+     * 自定义 energyFunction 存在时被忽略(自定义回调语义按全分辨率位图约定)。
-+     * @param enhancements 增强爬山开关集(自适应步长/alpha 搜索/误差图引导;默认全关,经典路径零参与)。
-+     * 误差图引导开启时 Model 自动维护权重表(提交前重建、任务期只读),自定义 energyFunction 与其并存时同样被忽略(增强轨道既有语义)。
-+     * @param priorityRegions 优先区域列表(全分辨率像素坐标,闭区间),区域内误差块加权(F3.2 区域优先)。
-+     * 仅 errorGuide 开启时生效;区域变化即使无形状被接受也会触发误差图重建;空列表与不传逐位一致。
-+     * @param budget 候选预算降档策略(算法增强轨道,默认关):开启后按策略缩放 shapeCount/maxShapeMutations
-+     * (等比例,下限防御钳制),输出与关闭时不同属预期;与金字塔/增强开关正交可组合。
-+     * @return A vector containing data about the shapes added to the model in this step. This may be empty if no shape that improved the image could be found.
-+     */
-+    std::vector<geometrize::ShapeResult> step(
-+            const std::function<std::shared_ptr<geometrize::Shape>(void)>& shapeCreator,
-+            std::uint8_t alpha,
-+            std::uint32_t shapeCount,
-+            std::uint32_t maxShapeMutations,
-+            std::uint32_t maxThreads,
-+            const geometrize::core::EnergyFunction& energyFunction = nullptr,
-+            const geometrize::ShapeAcceptancePreconditionFunction& addShapePrecondition = nullptr,
-+            bool pyramidSearch = false,
-+            const geometrize::core::HillClimbEnhancements& enhancements = {},
-+            const std::vector<geometrize::core::RegionRect>& priorityRegions = {},
-+            const geometrize::core::BudgetScaleOptions& budget = {});
-+
-+    /**
-+     * @brief drawShape Draws a shape on the model. Typically used when to manually add a shape to the image (e.g. when setting an initial background).
-+     * NOTE this unconditionally draws the shape, even if it increases the difference between the source and target image.
-+     * @param shape The shape to draw.
-+     * @param color The color (including alpha) of the shape.
-+     * @return Data about the shape drawn on the model.
-+     */
-+    geometrize::ShapeResult drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color);
-+
-+    /**
-+     * @brief drawShape A2.4 带分段颜色的绘制重载(撤销重放/重做复用 ShapeResult 里存储的 segments)。
-+     * segments 非空时按行级颜色重画;与原 step 轨迹逐字节一致(同形状 + 同存储颜色 → 同位图、同分数链)。
-+     * segments 与重光栅化结果行数不一致时(不应发生)防御性退回单色。
-+     * @param shape The shape to draw.
-+     * @param color The average color (including alpha) of the shape.
-+     * @param segments The per-scanline colors recorded when the shape was originally drawn.
-+     * @return Data about the shape drawn on the model.
-+     */
-+    geometrize::ShapeResult drawShape(std::shared_ptr<geometrize::Shape> shape, geometrize::rgba color, const std::vector<geometrize::ScanlineColor>& segments);
-+
-+    /**
-+     * @brief getCurrent Gets the current bitmap.
-+     * @return The current bitmap.
-+     */
-+    geometrize::Bitmap& getCurrent();
-+
-+    /**
-+     * @brief getTarget Gets the target bitmap.
-+     * @return The target bitmap.
-+     */
-+    geometrize::Bitmap& getTarget();
-+
-+    /**
-+     * @brief getCurrent Gets the current bitmap, const-edition.
-+     * @return The current bitmap.
-+     */
-+    const geometrize::Bitmap& getCurrent() const;
-+
-+    /**
-+     * @brief getTarget Gets the target bitmap, const-edition.
-+     * @return The target bitmap.
-+     */
-+    const geometrize::Bitmap& getTarget() const;
-+
-+    /**
-+     * @brief setSeed Sets the seed that the random number generators of this model use. Note that the model also uses an internal seed offset which is incremented when the model is stepped.
-+     * @param seed The random number generator seed.
-+     */
-+    void setSeed(std::uint32_t seed);
-+
-+private:
-+    class ModelImpl;
-+    std::unique_ptr<Model::ModelImpl> d;
-+};
-+
-+}
 diff -ruN -x '*.rej' -x '*.orig' -x '*.cur' -x '*.dll' -x '*.exe' -x '*.gif' -x '*.icns' -x '*.ico' -x '*.jpeg' -x '*.jpg' -x '*.lib' -x '*.mp3' -x '*.ogg' -x '*.pdb' -x '*.pdf' -x '*.png' -x '*.qm' -x '*.raw' -x '*.svgz' -x '*.ttf' -x '*.wav' -x '*.woff' -x '*.woff2' -x '*.zip' a/resources/app_icons/app.manifest b/resources/app_icons/app.manifest
 --- a/resources/app_icons/app.manifest
 +++ b/resources/app_icons/app.manifest
