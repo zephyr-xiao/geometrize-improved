@@ -94,3 +94,18 @@ if(MSVC)
     target_compile_definitions(Geometrize PRIVATE
         UNICODE _UNICODE _ENABLE_EXTENDED_ALIGNED_STORAGE)
 endif()
+
+# geocli:headless 批处理命令行工具(控制台子系统,与 app 共享库源码与 Qt 部署;
+# build\Release 同目录,windeployqt 部署的 dll 天然共享;交付时拷进 dist 包即可)
+add_executable(geocli
+    geocli/main.cpp
+    ${LIB_GEOMETRIZE_SOURCES})
+target_include_directories(geocli PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/lib/cereal/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/lib/geometrize/geometrize")
+target_link_libraries(geocli PRIVATE Qt6::Core Qt6::Gui)
+if(MSVC)
+    target_compile_options(geocli PRIVATE
+        /EHsc /W3 /permissive- /utf-8 /Zi /FS /Zc:__cplusplus
+        $<$<CONFIG:Release>:/O2>)
+endif()
