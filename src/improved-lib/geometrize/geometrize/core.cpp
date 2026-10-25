@@ -611,6 +611,21 @@ double defaultEnergyFunctionSegmentedFused(
         const std::uint32_t alpha,
         const geometrize::Bitmap& target,
         const geometrize::Bitmap& current,
+        geometrize::Bitmap& buffer,
+        const double score)
+{
+    // 运行时派发:两条实现位精确等价(见 core.h 与 test_core 的三实现互等用例)
+    if(avx2EnergyKernelAvailable()) {
+        return defaultEnergyFunctionSegmentedFusedAvx2(lines, alpha, target, current, buffer, score);
+    }
+    return defaultEnergyFunctionSegmentedFusedScalar(lines, alpha, target, current, buffer, score);
+}
+
+double defaultEnergyFunctionSegmentedFusedScalar(
+        const std::vector<geometrize::Scanline>& lines,
+        const std::uint32_t alpha,
+        const geometrize::Bitmap& target,
+        const geometrize::Bitmap& current,
         geometrize::Bitmap& /*buffer*/,
         const double score)
 {

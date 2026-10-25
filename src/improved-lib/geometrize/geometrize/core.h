@@ -102,7 +102,20 @@ double defaultEnergyFunctionSegmented(
         double score);
 
 /**
- * @brief defaultEnergyFunctionSegmentedFused 分段颜色版的融合实现(第十八批,位精确):
+ * @brief defaultEnergyFunctionSegmentedFused 分段颜色版融合实现的运行时派发入口(第十九批):
+ * 机器支持 AVX2 时走 defaultEnergyFunctionSegmentedFusedAvx2,否则走 ...Scalar——两者逐位等价,
+ * 语义与 ...Scalar 的说明完全一致(该说明即分段融合的规范定义)。
+ */
+double defaultEnergyFunctionSegmentedFused(
+        const std::vector<geometrize::Scanline>& lines,
+        const std::uint32_t alpha,
+        const geometrize::Bitmap& target,
+        const geometrize::Bitmap& current,
+        geometrize::Bitmap& buffer,
+        double score);
+
+/**
+ * @brief defaultEnergyFunctionSegmentedFusedScalar 分段颜色版的融合实现(第十八批,位精确):
  * 与 defaultEnergyFunctionFused 同款思路——把"混色(drawLinesSegmented)→差分"并为一遍只读扫描,
  * 混合值不写 scratch buffer。分段与单色的差别只在混色常量:**逐行重建**预乘常量
  * (分段落画 drawLinesSegmented 的常量就是按行算的,公式与 drawLines 逐字相同),
@@ -111,7 +124,25 @@ double defaultEnergyFunctionSegmented(
  * 混合用无除法等价式(见 core/energykernelmath.h),不建 4×256 LUT——分段场景行多而每行像素少,
  * 建表开销会盖过收益。buffer 仅为复用签名保留,实现不读不写。
  */
-double defaultEnergyFunctionSegmentedFused(
+double defaultEnergyFunctionSegmentedFusedScalar(
+        const std::vector<geometrize::Scanline>& lines,
+        const std::uint32_t alpha,
+        const geometrize::Bitmap& target,
+        const geometrize::Bitmap& current,
+        geometrize::Bitmap& buffer,
+        double score);
+
+/**
+ * @brief defaultEnergyFunctionSegmentedFusedAvx2 分段颜色融合实现的 AVX2 版本(第十九批,位精确)。
+ * 与 defaultEnergyFunctionSegmentedFusedScalar 的差异只在实现手段,两条等价依据均为整数恒等:
+ * ① 取色:逐行按 computeColor 同款重排 Σ[(t-c)*a + c*257] == a*Σt + (257-a)*Σc,
+ *    像素循环退化为按通道字节和(vpsadbw),行级取色结果与 computeSegmentColors 逐位一致;
+ * ② 混色+差分:与 defaultEnergyFunctionFusedAvx2 同一套向量循环(无除法混合式 + 2 像素一组
+ *    平方累加 + 32 位车道周期性并入 64 位基数),只是**逐行重建**预乘常量。
+ * 越界行列统一裁剪;裁剪后无像素可统计时退回标量取色(契约外输入保持既有可见行为)。
+ * 仅在 avx2EnergyKernelAvailable() 为真时调用。
+ */
+double defaultEnergyFunctionSegmentedFusedAvx2(
         const std::vector<geometrize::Scanline>& lines,
         const std::uint32_t alpha,
         const geometrize::Bitmap& target,

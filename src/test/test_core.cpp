@@ -395,10 +395,11 @@ TEST_CASE("defaultEnergyFunctionFusedAvx2 宽图尾部像素与多行覆盖")
     }
 }
 
-// 分段颜色版的融合实现(defaultEnergyFunctionSegmentedFused)与逐遍实现
+// 分段颜色版的融合实现(defaultEnergyFunctionSegmentedFused 及其标量/AVX2 两个版本)与逐遍实现
 // (computeSegmentColors + copyLines + drawLinesSegmented + differencePartial)逐位一致,且不写 buffer。
 // 覆盖面状(逐行取色)、线型(computeSegmentColors 返回空 → 退回整形状单色)、含 y<0 行与空扫描线。
-TEST_CASE("defaultEnergyFunctionSegmentedFused 与逐遍分段实现逐位一致且不写 buffer")
+// 第十九批起 AVX2 版本单独对照:三实现必须逐位相等(avx2EnergyKernelAvailable 为假时只比标量路径)。
+TEST_CASE("defaultEnergyFunctionSegmentedFused/Scalar/Avx2 与逐遍分段实现逐位一致且不写 buffer")
 {
     const auto target = makeGradientBitmap(32, 24);
 
@@ -434,10 +435,93 @@ TEST_CASE("defaultEnergyFunctionSegmentedFused 与逐遍分段实现逐位一致
 
                 CHECK(fused == classic); // double 逐位相等(非 Approx)
                 CHECK(sentinel.getDataRef() == current.getDataRef()); // 融合实现不写 buffer
+
+                geometrize::Bitmap sentinelScalar{current};
+                const double scalar = geometrize::core::defaultEnergyFunctionSegmentedFusedScalar(lines, alpha, target, current, sentinelScalar, score);
+                CHECK(scalar == classic);
+                CHECK(sentinelScalar.getDataRef() == current.getDataRef());
+
+                if(geometrize::core::avx2EnergyKernelAvailable()) {
+                    geometrize::Bitmap sentinelAvx2{current};
+                    const double avx2 = geometrize::core::defaultEnergyFunctionSegmentedFusedAvx2(lines, alpha, target, current, sentinelAvx2, score);
+                    CHECK(avx2 == classic);
+                    CHECK(sentinelAvx2.getDataRef() == current.getDataRef());
+                    CHECK(fused == avx2); // 派发在 AVX2 机器上必须落到 AVX2 版本
+                } else {
+                    CHECK(fused == scalar);
+                }
             }
         }
     }
 }
+
+// 分段 AVX2 向量路径的覆盖用例:37 宽(4 个整向量 + 5 像素标量尾部)× 多行,含整行/错位起止/单像素行,
+// 逐行对照逐遍分段实现与标量分段融合版——同时覆盖"逐行重建预乘常量"在跨向量边界上的正确性。
+TEST_CASE("defaultEnergyFunctionSegmentedFusedAvx2 宽图尾部像素与多行覆盖")
+{
+    if(!geometrize::core::avx2EnergyKernelAvailable()) {
+        return; // 非 AVX2 机器:无对照对象(标量与派发路径已由上一条用例覆盖)
+    }
+
+    const auto target = makeGradientBitmap(37, 9);
+    std::vector<std::uint8_t> currentData(37U * 9U * 4U);
+    for(std::uint32_t y = 0; y < 9; y++) {
+        for(std::uint32_t x = 0; x < 37; x++) {
+            const std::size_t offset{(static_cast<std::size_t>(37U) * y + x) * 4U};
+            currentData[offset] = static_cast<std::uint8_t>((x * 13U + y * 29U) & 0xFFU);
+            currentData[offset + 1U] = static_cast<std::uint8_t>((x * 7U + y * 37U) & 0xFFU);
+            currentData[offset + 2U] = static_cast<std::uint8_t>(((x | y) * 19U) & 0xFFU);
+            currentData[offset + 3U] = static_cast<std::uint8_t>((x * 3U + y * 2U) & 0xFFU);
+        }
+    }
+    const geometrize::Bitmap current{37, 9, currentData};
+
+    const std::vector<std::vector<geometrize::Scanline>> cases{
+        {geometrize::Scanline{0, 0, 36}},                                                             // 整行(4 向量 + 5 尾部)
+        {geometrize::Scanline{3, 3, 30}, geometrize::Scanline{7, 1, 19}},                             // 错位起止 + 跨行
+        {geometrize::Scanline{2, 17, 17}, geometrize::Scanline{4, 0, 11}},                            // 单像素 + 宽行混合
+        {geometrize::Scanline{1, 8, 8}, geometrize::Scanline{5, 29, 35}, geometrize::Scanline{8, 0, 7}} // 首尾片段
+    };
+
+    for(const auto& lines : cases) {
+        for(const std::uint32_t alpha : {17U, 200U, 255U}) {
+            geometrize::Bitmap buffer{current};
+            const double classic = geometrize::core::defaultEnergyFunctionSegmented(lines, alpha, target, current, buffer, 0.5);
+            const double scalar = geometrize::core::defaultEnergyFunctionSegmentedFusedScalar(lines, alpha, target, current, buffer, 0.5);
+            const double avx2 = geometrize::core::defaultEnergyFunctionSegmentedFusedAvx2(lines, alpha, target, current, buffer, 0.5);
+            CHECK(scalar == classic);
+            CHECK(avx2 == classic);
+        }
+    }
+}
+
+// 分段 AVX2 的行级占位语义一致性:y<0 的行两侧都必须填 {0,0,0,alpha} 且下标与 lines 一一对应
+// (该行在混合侧被跳过)。契约外(x 越界)的取色在标量实现里是未定义读取,不属对照范围。
+TEST_CASE("defaultEnergyFunctionSegmentedFusedAvx2 负行占位与标量版一致")
+{
+    if(!geometrize::core::avx2EnergyKernelAvailable()) {
+        return;
+    }
+
+    const auto target = makeGradientBitmap(16, 8);
+    const geometrize::Bitmap current{16, 8, std::vector<std::uint8_t>(16U * 8U * 4U, 90U)};
+
+    const std::vector<geometrize::Scanline> lines{
+        geometrize::Scanline{-2, 1, 9},   // y<0:占位
+        geometrize::Scanline{4, 2, 12},   // 正常宽行
+        geometrize::Scanline{-1, 0, 15},  // y<0:占位
+        geometrize::Scanline{7, 5, 10}    // 末行
+    };
+
+    for(const std::uint32_t alpha : {1U, 128U, 255U}) {
+        geometrize::Bitmap bufferA{current};
+        geometrize::Bitmap bufferB{current};
+        const double scalar = geometrize::core::defaultEnergyFunctionSegmentedFusedScalar(lines, alpha, target, current, bufferA, 0.25);
+        const double avx2 = geometrize::core::defaultEnergyFunctionSegmentedFusedAvx2(lines, alpha, target, current, bufferB, 0.25);
+        CHECK(avx2 == scalar);
+    }
+}
+
 
 #endif
 
